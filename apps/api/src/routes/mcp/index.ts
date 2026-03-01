@@ -7,27 +7,47 @@ import {
   transports,
   mcpServers,
   cleanupSession,
-  type StoredAdapterConfig,
 } from "./session.js";
 import { registerDocTools } from "./tools/doc-tools.js";
 import { registerActionTools } from "./tools/action-tools.js";
 
-export { transports, mcpServers, runToSession, runToProgress } from "./session.js";
+export { transports, mcpServers } from "./session.js";
 
 function createMcpServer(app: FastifyInstance, apiKeyId: string, userId: string): McpServer {
   const mcpServer = new McpServer(
     { name: "voiceci", version: "0.5.0" },
     {
-      capabilities: { logging: {} },
-      instructions: "VoiceCI is a CI/CD testing platform for voice AI agents. It tests latency, barge-in, echo, conversation quality, tool calls, and load. Supports WebSocket, SIP, WebRTC, Vapi, Retell, ElevenLabs, and Bland adapters. Start with voiceci_get_scenario_guide to design tests, or voiceci_get_setup_guide for installation help.",
+      capabilities: {},
+      instructions: [
+        "VoiceCI — CI/CD testing for voice AI agents.",
+        "",
+        "## Workflow",
+        "",
+        "All test configuration lives in voiceci.json in the project root. This file is the single source of truth — you MUST read it before running tests, and write it before the first run.",
+        "",
+        "Step 1: Check if voiceci.json exists in the project root.",
+        "  - If YES → read it and skip to Step 2.",
+        "  - If NO → call voiceci_get_scenario_guide, then read agent code, design tests, and create voiceci.json.",
+        "",
+        "Step 2: Read voiceci.json, then call voiceci_run_suite with its parsed contents as the `config` parameter.",
+        "  - For remote/deployed agents: the run queues immediately — done.",
+        "  - For bundled agents: run the returned upload_command in the project root.",
+        "",
+        "Step 3: voiceci_get_status → poll with run_id until status is 'pass' or 'fail'.",
+        "",
+        "On failure: update the failing tests in voiceci.json, then re-run from Step 2.",
+        "",
+        "## Important rules",
+        "- ALWAYS read voiceci.json and pass its contents as the `config` parameter to voiceci_run_suite.",
+        "- VoiceCI runs tests REMOTELY in cloud infrastructure — it CANNOT reach localhost. Do NOT start the agent locally. For bundled agents (websocket with start_command), VoiceCI uploads your code and runs it in its own infrastructure. You MUST execute the returned upload command.",
+        "- Only call voiceci_get_scenario_guide for first-time setup. Do NOT call multiple guide tools at once.",
+        "- voiceci_get_result_guide is an optional deep-dive — only call it when you need detailed result interpretation help.",
+      ].join("\n"),
     },
   );
 
-  // Per-session adapter config store
-  const adapterConfigs = new Map<string, StoredAdapterConfig>();
-
   registerDocTools(mcpServer);
-  registerActionTools(mcpServer, app, apiKeyId, userId, adapterConfigs);
+  registerActionTools(mcpServer, app, apiKeyId, userId);
 
   return mcpServer;
 }

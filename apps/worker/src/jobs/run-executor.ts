@@ -11,7 +11,7 @@ import type {
 } from "@voiceci/shared";
 import type { AudioChannelConfig } from "@voiceci/adapters";
 import { executeTests } from "@voiceci/runner/executor";
-import { createMachine, waitForMachine, destroyMachine } from "../fly-machines.js";
+import { createMachine, waitForMachine, destroyMachine, resolveAppImage } from "../fly-machines.js";
 
 // ---------------------------------------------------------------------------
 // Event emission — writes to DB and notifies API for SSE/MCP broadcast
@@ -240,7 +240,7 @@ async function executeRemoteRun(db: Database, job: RunJob): Promise<void> {
   const callbackSecret = process.env["RUNNER_CALLBACK_SECRET"] ?? "";
   const callbackUrl = `${apiUrl}/internal/runner-callback`;
 
-  const adapterType = (job.adapter ?? "ws-voice") as AdapterType;
+  const adapterType = (job.adapter ?? "websocket") as AdapterType;
   const agentUrl = job.agent_url ?? "http://localhost:3001";
 
   // Parse voice config
@@ -261,12 +261,55 @@ async function executeRemoteRun(db: Database, job: RunJob): Promise<void> {
   };
 
   const testSpec = job.test_spec as TestSpec;
+  const totalTests =
+    (testSpec.audio_tests?.length ?? 0) + (testSpec.conversation_tests?.length ?? 0);
+  let completedTests = 0;
 
   try {
     const { status, audioResults, conversationResults, aggregate } = await executeTests({
       testSpec,
       channelConfig,
       audioTestThresholds,
+      onTestComplete: async (result) => {
+        completedTests++;
+        const isAudio = "test_name" in result;
+        const testName = isAudio
+          ? (result as { test_name: string }).test_name
+          : (result as { name?: string }).name ?? "conversation";
+        const testType = isAudio ? "audio" : "conversation";
+
+        // Insert partial result directly (worker has DB access)
+        try {
+          await db.insert(schema.scenarioResults).values({
+            run_id: job.run_id,
+            name: testName,
+            status: result.status,
+            test_type: testType,
+            metrics_json: result as unknown as Record<string, unknown>,
+            trace_json: isAudio ? [] : (result as unknown as { transcript?: unknown }).transcript ?? [],
+          });
+        } catch {
+          // Best-effort
+        }
+
+        // Notify API for SSE/MCP push (lightweight, no result to avoid double-insert)
+        void fetch(`${apiUrl}/internal/test-progress`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            [RUNNER_CALLBACK_HEADER]: callbackSecret,
+          },
+          body: JSON.stringify({
+            run_id: job.run_id,
+            completed: completedTests,
+            total: totalTests,
+            test_type: testType,
+            test_name: testName,
+            status: result.status,
+            duration_ms: result.duration_ms,
+          }),
+        }).catch(() => {});
+      },
     });
 
     // POST results to callback (stores in DB + triggers SSE push)
@@ -336,14 +379,14 @@ export async function executeRun(job: RunJob): Promise<void> {
     job.adapter === "webrtc" ||
     !!job.agent_url;
   if (isRemote) {
-    await emitEvent(db, job.run_id, "connecting", `Connecting to remote agent (${job.adapter ?? "ws-voice"})...`);
+    await emitEvent(db, job.run_id, "connecting", `Connecting to remote agent (${job.adapter ?? "websocket"})...`);
     return executeRemoteRun(db, job);
   }
 
   // Bundled agents: provision a Fly Machine
-  const appName = process.env["FLY_APP_NAME"] ?? "voiceci-runner";
-  const region = process.env["FLY_REGION"] ?? "iad";
-  const baseImage = process.env["RUNNER_IMAGE"] ?? "registry.fly.io/voiceci-runner:latest";
+  const appName = "voiceci-runner";
+  const region = process.env["FLY_REGION"]!;
+  const baseImage = await resolveAppImage(appName) ?? `registry.fly.io/${appName}:latest`;
   const apiUrl = process.env["API_URL"] ?? "https://voiceci-api.fly.dev";
   const callbackSecret = process.env["RUNNER_CALLBACK_SECRET"] ?? "";
 
@@ -463,16 +506,16 @@ export async function executeRun(job: RunJob): Promise<void> {
 
     let cpuKind = "shared";
     let cpus = 1;
-    let memoryMb = 1024;
+    let memoryMb = 4096;
 
     if (testCount > 12) {
       cpuKind = "performance";
       cpus = 4;
-      memoryMb = 4096;
+      memoryMb = 8192;
     } else if (testCount > 6) {
       cpuKind = "performance";
       cpus = 2;
-      memoryMb = 2048;
+      memoryMb = 4096;
     }
 
     await emitEvent(db, job.run_id, "provisioning", "Provisioning runner machine...");

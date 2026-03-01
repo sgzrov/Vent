@@ -1,5 +1,9 @@
 # VoiceCI Agent Guidelines
 
+## Testing Context
+
+This is the MCP src repo. There is a separate test repo used for testing the VoiceCI MCP server against actual codebases. When logs, errors, or test output from the MCP or integration tests are pasted here, they originate from that test repo.
+
 ## Workflow Orchestration
 
 Important: PRODUCTION-ONLY fixes, no localhost.

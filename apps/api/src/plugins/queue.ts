@@ -15,7 +15,7 @@ export const queuePlugin = fp(async (app) => {
   const queues = new Map<string, Queue>();
 
   app.decorate("getRunQueue", (userId: string) => {
-    const name = `voice-ci-runs:${userId}`;
+    const name = `voice-ci-runs-${userId}`;
     if (!queues.has(name)) {
       const q = new Queue(name, { connection });
       queues.set(name, q);

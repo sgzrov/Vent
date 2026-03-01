@@ -26,7 +26,7 @@ export const TestSpecSchema = z
     { message: "At least one audio_test or conversation_test is required" }
   );
 
-export const AdapterTypeSchema = z.enum(["ws-voice", "sip", "webrtc", "vapi", "retell", "elevenlabs", "bland"]);
+export const AdapterTypeSchema = z.enum(["websocket", "sip", "webrtc", "vapi", "retell", "elevenlabs", "bland"]);
 
 // ============================================================
 // Tool call schemas

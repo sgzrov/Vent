@@ -30,7 +30,7 @@ export function createAudioChannel(config: AudioChannelConfig): AudioChannel {
   const agentUrl = config.agentUrl ?? "http://localhost:3001";
 
   switch (config.adapter) {
-    case "ws-voice":
+    case "websocket":
       return new WsAudioChannel({
         wsUrl: agentUrl.replace(/^http/, "ws"),
       });

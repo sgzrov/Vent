@@ -1,5 +1,5 @@
 /**
- * VoiceCIServer — HTTP + WebSocket server that speaks the ws-voice protocol.
+ * VoiceCIServer — HTTP + WebSocket server that speaks the websocket protocol.
  *
  * - GET /health → { status: "ok" } (runner's waitForHealth() needs this)
  * - WS upgrades at root path → VoiceCIConnection per connection

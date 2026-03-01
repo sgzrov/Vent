@@ -25,7 +25,7 @@ export interface AudioChannel {
   disconnect(): Promise<void>;
   readonly connected: boolean;
 
-  /** Get tool call data after call ends. Platform adapters pull from API, ws-voice returns collected events. */
+  /** Get tool call data after call ends. Platform adapters pull from API, websocket returns collected events. */
   getCallData?(): Promise<ObservedToolCall[]>;
 
   on<E extends keyof AudioChannelEvents>(event: E, listener: AudioChannelEvents[E]): this;

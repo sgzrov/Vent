@@ -37,8 +37,6 @@ interface TenVADModule {
   HEAP16: Int16Array;
   HEAP32: Int32Array;
   HEAPF32: Float32Array;
-  getValue(ptr: number, type: "i32" | "float"): number;
-  setValue(ptr: number, value: number, type: "i32" | "float"): void;
   UTF8ToString(ptr: number): string;
 }
 
@@ -94,7 +92,7 @@ export class VoiceActivityDetector {
       this.module._free(handlePtr);
       throw new Error("Failed to create TEN VAD instance");
     }
-    this.handle = this.module.getValue(handlePtr, "i32");
+    this.handle = this.module.HEAP32[handlePtr >> 2]!;
     this.module._free(handlePtr);
 
     // Pre-allocate WASM memory for processing
@@ -159,8 +157,8 @@ export class VoiceActivityDetector {
     mod.HEAP16.set(samples, this.audioPtr / 2);
 
     // Reset output pointers
-    mod.setValue(this.probPtr, 0, "float");
-    mod.setValue(this.flagPtr, 0, "i32");
+    mod.HEAPF32[this.probPtr >> 2] = 0;
+    mod.HEAP32[this.flagPtr >> 2] = 0;
 
     const result = mod._ten_vad_process(
       this.handle,
@@ -174,7 +172,7 @@ export class VoiceActivityDetector {
       throw new Error("TEN VAD process failed");
     }
 
-    const isVoice = mod.getValue(this.flagPtr, "i32") === 1;
+    const isVoice = mod.HEAP32[this.flagPtr >> 2] === 1;
     const now = Date.now();
 
     if (isVoice) {
@@ -221,7 +219,7 @@ export class VoiceActivityDetector {
 
     if (this.handle) {
       const handlePtr = this.module._malloc(4);
-      this.module.setValue(handlePtr, this.handle, "i32");
+      this.module.HEAP32[handlePtr >> 2] = this.handle;
       this.module._ten_vad_destroy(handlePtr);
       this.module._free(handlePtr);
     }

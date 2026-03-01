@@ -12,7 +12,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { ConversationTurn, EvalResult, BehavioralMetrics, ObservedToolCall } from "@voiceci/shared";
 
-const MODEL = "claude-sonnet-4-6-20250514";
+const MODEL = "claude-sonnet-4-6";
 const MAX_TOKENS = 300;
 
 function formatTranscript(transcript: ConversationTurn[]): string {
@@ -35,11 +35,16 @@ function formatToolCalls(toolCalls: ObservedToolCall[]): string {
     .join("\n");
 }
 
+/** Strip markdown code fences if the LLM wrapped its JSON output */
+function stripFences(text: string): string {
+  return text.replace(/^```(?:json)?\s*\n?/i, "").replace(/\n?```\s*$/i, "").trim();
+}
+
 export class JudgeLLM {
   private client: Anthropic;
 
   constructor() {
-    this.client = new Anthropic();
+    this.client = new Anthropic({ maxRetries: 5 });
   }
 
   /**
@@ -82,7 +87,7 @@ export class JudgeLLM {
       temperature: 0,
       system: `You are a voice agent quality evaluator. Analyze the conversation transcript and evaluate conversational quality.
 
-Respond with ONLY a JSON object matching this exact schema:
+Output raw JSON only — no markdown, no code fences, no explanation. Your entire response must be a single valid JSON object matching this schema:
 {
   "intent_accuracy": { "score": 0-1, "reasoning": "..." },
   "context_retention": { "score": 0-1, "reasoning": "..." },
@@ -113,7 +118,7 @@ Be strict but fair.`,
       temperature: 0,
       system: `You are a voice agent quality evaluator. Analyze the conversation transcript for sentiment and empathy.
 
-Respond with ONLY a JSON object matching this exact schema:
+Output raw JSON only — no markdown, no code fences, no explanation. Your entire response must be a single valid JSON object matching this schema:
 {
   "sentiment_trajectory": [
     { "turn": 0, "role": "caller", "value": "positive"|"neutral"|"negative" },
@@ -143,7 +148,7 @@ Be strict but fair.`,
       temperature: 0,
       system: `You are a voice agent quality evaluator. Analyze the conversation transcript for safety, compliance, and escalation handling.
 
-Respond with ONLY a JSON object matching this exact schema:
+Output raw JSON only — no markdown, no code fences, no explanation. Your entire response must be a single valid JSON object matching this schema:
 {
   "hallucination_detected": { "detected": true/false, "reasoning": "..." },
   "safety_compliance": { "compliant": true/false, "reasoning": "..." },
@@ -168,7 +173,8 @@ Be strict but fair.`,
     response: Anthropic.Message,
     label: string,
   ): Partial<BehavioralMetrics> {
-    const text = response.content[0]?.type === "text" ? response.content[0].text : "";
+    const raw = response.content[0]?.type === "text" ? response.content[0].text : "";
+    const text = stripFences(raw);
     try {
       return JSON.parse(text) as Partial<BehavioralMetrics>;
     } catch {
@@ -211,18 +217,15 @@ Based on BOTH the transcript AND the tool call data, determine if the agent PASS
 
 Be strict but fair. Use the tool call data as ground truth — it shows exactly which tools were called, with what arguments, and what results were returned.
 
-Respond with ONLY a JSON object: {"relevant": true/false, "passed": true/false, "reasoning": "brief explanation"}
+Output raw JSON only — no markdown, no code fences, no explanation: {"relevant": true/false, "passed": true/false, "reasoning": "brief explanation"}
 
 Set "relevant" to false if the conversation didn't touch on the subject of the criterion.`,
       messages: [
-        {
-          role: "user",
-          content: `${context}\n\nCRITERION: ${question}`,
-        },
+        { role: "user", content: `${context}\n\nCRITERION: ${question}` },
       ],
     });
 
-    const text = response.content[0]?.type === "text" ? response.content[0].text : "";
+    const text = stripFences(response.content[0]?.type === "text" ? response.content[0].text : "");
 
     try {
       const parsed = JSON.parse(text) as {
@@ -260,18 +263,15 @@ First determine if the criterion is RELEVANT — did the conversation touch on t
 
 Then, if relevant, determine if the agent PASSES or FAILS the criterion. Be strict but fair.
 
-Respond with ONLY a JSON object: {"relevant": true/false, "passed": true/false, "reasoning": "brief explanation"}
+Output raw JSON only — no markdown, no code fences, no explanation: {"relevant": true/false, "passed": true/false, "reasoning": "brief explanation"}
 
 Set "relevant" to false if the conversation didn't touch on the subject of the criterion.`,
       messages: [
-        {
-          role: "user",
-          content: `TRANSCRIPT:\n${transcript}\n\nCRITERION: ${question}`,
-        },
+        { role: "user", content: `TRANSCRIPT:\n${transcript}\n\nCRITERION: ${question}` },
       ],
     });
 
-    const text = response.content[0]?.type === "text" ? response.content[0].text : "";
+    const text = stripFences(response.content[0]?.type === "text" ? response.content[0].text : "");
 
     try {
       const parsed = JSON.parse(text) as {

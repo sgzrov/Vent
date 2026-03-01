@@ -34,8 +34,8 @@ interface TenVADModule {
   _malloc(size: number): number;
   _free(ptr: number): void;
   HEAP16: Int16Array;
-  getValue(ptr: number, type: "i32" | "float"): number;
-  setValue(ptr: number, value: number, type: "i32" | "float"): void;
+  HEAP32: Int32Array;
+  HEAPF32: Float32Array;
 }
 
 const HOP_SIZE = 256;
@@ -75,7 +75,7 @@ export class BatchVAD {
       this.module._free(handlePtr);
       throw new Error("Failed to create TEN VAD instance for batch analysis");
     }
-    this.handle = this.module.getValue(handlePtr, "i32");
+    this.handle = this.module.HEAP32[handlePtr >> 2]!;
     this.module._free(handlePtr);
 
     this.audioPtr = this.module._malloc(HOP_SIZE * 2);
@@ -105,8 +105,8 @@ export class BatchVAD {
         samples.subarray(offset, offset + HOP_SIZE),
         this.audioPtr / 2
       );
-      this.module.setValue(this.probPtr, 0, "float");
-      this.module.setValue(this.flagPtr, 0, "i32");
+      this.module.HEAPF32[this.probPtr >> 2] = 0;
+      this.module.HEAP32[this.flagPtr >> 2] = 0;
 
       this.module._ten_vad_process(
         this.handle,
@@ -116,8 +116,8 @@ export class BatchVAD {
         this.flagPtr
       );
 
-      flags[i] = this.module.getValue(this.flagPtr, "i32") === 1;
-      probs[i] = this.module.getValue(this.probPtr, "float");
+      flags[i] = this.module.HEAP32[this.flagPtr >> 2] === 1;
+      probs[i] = this.module.HEAPF32[this.probPtr >> 2]!;
     }
 
     // Pass 2: hysteresis smoothing → speech segments
@@ -132,7 +132,7 @@ export class BatchVAD {
 
     if (this.handle) {
       const handlePtr = this.module._malloc(4);
-      this.module.setValue(handlePtr, this.handle, "i32");
+      this.module.HEAP32[handlePtr >> 2] = this.handle;
       this.module._ten_vad_destroy(handlePtr);
       this.module._free(handlePtr);
     }

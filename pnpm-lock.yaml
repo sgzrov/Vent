@@ -184,44 +184,6 @@ importers:
         specifier: ^5.7.0
         version: 5.9.3
 
-  demo/agents/sdk-pipeline:
-    dependencies:
-      '@anthropic-ai/sdk':
-        specifier: ^0.78.0
-        version: 0.78.0(zod@3.25.76)
-      '@voiceci/sdk':
-        specifier: workspace:*
-        version: link:../../../packages/sdk
-    devDependencies:
-      typescript:
-        specifier: ^5.7.0
-        version: 5.9.3
-
-  demo/agents/sdk-simple:
-    dependencies:
-      '@voiceci/sdk':
-        specifier: workspace:*
-        version: link:../../../packages/sdk
-    devDependencies:
-      typescript:
-        specifier: ^5.7.0
-        version: 5.9.3
-
-  demo/agents/ws-echo:
-    dependencies:
-      ws:
-        specifier: ^8.18.0
-        version: 8.19.0
-
-  demo/agents/ws-llm:
-    dependencies:
-      '@anthropic-ai/sdk':
-        specifier: ^0.78.0
-        version: 0.78.0(zod@3.25.76)
-      ws:
-        specifier: ^8.18.0
-        version: 8.19.0
-
   packages/adapters:
     dependencies:
       '@livekit/rtc-node':

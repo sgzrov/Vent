@@ -19,7 +19,7 @@ async function main() {
   const runId = requireEnv("RUN_ID");
   const bundleDownloadUrl = process.env["BUNDLE_DOWNLOAD_URL"];
   const testSpec = JSON.parse(requireEnv("TEST_SPEC_JSON")) as TestSpec;
-  const adapterType = (process.env["ADAPTER_TYPE"] ?? "ws-voice") as AdapterType;
+  const adapterType = (process.env["ADAPTER_TYPE"] ?? "websocket") as AdapterType;
 
   console.log(`Runner starting for run ${runId}`);
 
@@ -86,8 +86,8 @@ async function main() {
     }
 
     void reportRunEvent({ run_id: runId, event_type: "starting_agent", message: "Starting agent..." });
-    console.log("Starting agent...");
     const startCmd = process.env["START_COMMAND"] ?? "npm run start";
+    console.log(`Starting agent: ${startCmd}`);
     agentProcess = require("node:child_process").spawn(
       startCmd.split(" ")[0]!,
       startCmd.split(" ").slice(1),
@@ -99,10 +99,29 @@ async function main() {
       }
     );
 
+    // Forward agent stdout/stderr so startup failures are visible
+    const proc = agentProcess!;
+    proc.stdout?.on("data", (data: Buffer) => {
+      process.stdout.write(`[agent] ${data}`);
+    });
+    proc.stderr?.on("data", (data: Buffer) => {
+      process.stderr.write(`[agent] ${data}`);
+    });
+
+    // Detect if agent exits before health check passes
+    const earlyExit = new Promise<never>((_, reject) => {
+      proc.on("exit", (code, signal) => {
+        reject(new Error(`Agent process exited before health check passed (code=${code}, signal=${signal}). Check [agent] logs above.`));
+      });
+    });
+
     const healthEndpoint = process.env["HEALTH_ENDPOINT"] ?? "/health";
     void reportRunEvent({ run_id: runId, event_type: "health_check_waiting", message: "Waiting for health check..." });
-    console.log("Waiting for agent health...");
-    await waitForHealth(`${agentUrl}${healthEndpoint}`);
+    console.log(`Waiting for agent health at ${agentUrl}${healthEndpoint}...`);
+    await Promise.race([
+      waitForHealth(`${agentUrl}${healthEndpoint}`),
+      earlyExit,
+    ]);
     await reportRunEvent({ run_id: runId, event_type: "health_check_passed", message: "Health check passed" });
     console.log("Agent is ready");
   } else {
@@ -147,6 +166,7 @@ async function main() {
             : (result as { name?: string }).name ?? "conversation",
           status: result.status,
           duration_ms: result.duration_ms,
+          result: result as unknown as Record<string, unknown>,
         });
       },
     });
@@ -176,7 +196,10 @@ function requireEnv(key: string): string {
   return value;
 }
 
-main().catch((err) => {
+main().then(() => {
+  console.log("Runner finished successfully, exiting.");
+  process.exit(0);
+}).catch((err) => {
   console.error("Runner failed:", err);
   process.exit(1);
 });

@@ -14,6 +14,7 @@ interface MachineConfig {
 interface Machine {
   id: string;
   state: string;
+  config?: { image?: string };
 }
 
 function getHeaders(): Record<string, string> {
@@ -23,6 +24,19 @@ function getHeaders(): Record<string, string> {
     Authorization: `Bearer ${token}`,
     "Content-Type": "application/json",
   };
+}
+
+export async function resolveAppImage(appName: string): Promise<string | null> {
+  const response = await fetch(
+    `${FLY_API_BASE}/apps/${appName}/machines`,
+    { headers: getHeaders() }
+  );
+
+  if (!response.ok) return null;
+
+  const machines = (await response.json()) as Machine[];
+  const image = machines.find((m) => m.config?.image)?.config?.image;
+  return image ?? null;
 }
 
 export async function createMachine(config: MachineConfig): Promise<string> {
@@ -40,7 +54,7 @@ export async function createMachine(config: MachineConfig): Promise<string> {
           guest: {
             cpu_kind: config.cpuKind ?? "shared",
             cpus: config.cpus ?? 1,
-            memory_mb: config.memoryMb ?? 1024,
+            memory_mb: config.memoryMb ?? 4096,
           },
           auto_destroy: true,
           restart: { policy: "no" },
