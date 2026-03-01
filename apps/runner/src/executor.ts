@@ -90,10 +90,26 @@ export async function executeTests(opts: ExecuteTestsOpts): Promise<ExecuteTests
     onTestStart?.({ test_name: testName, test_type: "conversation" });
     console.log(`  Conversation: ${spec.caller_prompt.slice(0, 60)}...`);
     const channel = createAudioChannel(channelConfig);
+    const start = Date.now();
     try {
       await channel.connect();
       const result = await runConversationTest(spec, channel);
       console.log(`    Status: ${result.status} (${result.duration_ms}ms)`);
+      onTestComplete?.(result);
+      return result;
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      console.error(`    ${testName}: error — ${errorMsg}`);
+      const result: ConversationTestResult = {
+        name: spec.name,
+        caller_prompt: spec.caller_prompt,
+        status: "fail",
+        transcript: [],
+        eval_results: [],
+        duration_ms: Date.now() - start,
+        metrics: { turns: 0, mean_ttfb_ms: 0, total_duration_ms: Date.now() - start },
+        error: errorMsg,
+      };
       onTestComplete?.(result);
       return result;
     } finally {

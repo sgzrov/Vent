@@ -251,6 +251,7 @@ export interface ConversationTestResult {
   observed_tool_calls?: ObservedToolCall[];
   duration_ms: number;
   metrics: ConversationMetrics;
+  error?: string;
 }
 
 export interface RunAggregateV2 {
