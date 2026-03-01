@@ -51,6 +51,8 @@ export interface TestProgressPayload {
   test_name: string;
   status: "pass" | "fail";
   duration_ms: number;
+  /** Full test result for incremental DB insertion */
+  result?: Record<string, unknown>;
 }
 
 export interface RunEventPayload {

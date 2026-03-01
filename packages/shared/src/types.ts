@@ -36,7 +36,7 @@ export const AUDIO_TEST_NAMES = [
 
 export type AudioTestName = (typeof AUDIO_TEST_NAMES)[number];
 
-export type AdapterType = "ws-voice" | "sip" | "webrtc" | "vapi" | "retell" | "elevenlabs" | "bland";
+export type AdapterType = "websocket" | "sip" | "webrtc" | "vapi" | "retell" | "elevenlabs" | "bland";
 
 export interface ConversationTestSpec {
   name?: string;

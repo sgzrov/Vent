@@ -1,32 +1,8 @@
 import type { FastifyInstance } from "fastify";
-import { eq } from "drizzle-orm";
+import { eq, and, isNull } from "drizzle-orm";
 import { schema } from "@voiceci/db";
 import { RunnerCallbackV2Schema, RUNNER_CALLBACK_HEADER } from "@voiceci/shared";
-import { runToSession, runToProgress, mcpServers } from "./mcp/session.js";
 import { broadcast } from "../lib/run-subscribers.js";
-
-/** Push an event to the MCP session for a run (best-effort). */
-function pushToMcp(
-  runId: string,
-  eventType: string,
-  message: string,
-): void {
-  const sessionId = runToSession.get(runId);
-  if (!sessionId) return;
-
-  const mcpServer = mcpServers.get(sessionId);
-  if (!mcpServer) return;
-
-  try {
-    void mcpServer.sendLoggingMessage({
-      level: eventType === "error" ? "warning" : "info",
-      logger: "voiceci:run-event",
-      data: { run_id: runId, event_type: eventType, message },
-    });
-  } catch {
-    // Best-effort
-  }
-}
 
 export async function callbackRoutes(app: FastifyInstance) {
   // --- Builder dep-image callback ---
@@ -103,9 +79,6 @@ export async function callbackRoutes(app: FastifyInstance) {
       created_at: inserted!.created_at.toISOString(),
     });
 
-    // Push to MCP session (Claude Code / Cursor)
-    pushToMcp(body.run_id, body.event_type, body.message);
-
     return reply.send({ ok: true });
   });
 
@@ -126,7 +99,30 @@ export async function callbackRoutes(app: FastifyInstance) {
       test_name: string;
       status: "pass" | "fail";
       duration_ms: number;
+      result?: Record<string, unknown>;
     };
+
+    // Insert partial result into DB for incremental visibility via voiceci_get_status
+    if (body.result) {
+      try {
+        const isConversation = body.test_type === "conversation";
+        await app.db.insert(schema.scenarioResults).values({
+          run_id: body.run_id,
+          name: body.test_name,
+          status: body.status,
+          test_type: body.test_type,
+          metrics_json: body.result,
+          trace_json: isConversation
+            ? (body.result as { transcript?: unknown }).transcript ?? []
+            : [],
+        });
+      } catch (err) {
+        app.log.warn(
+          { run_id: body.run_id, test_name: body.test_name, error: err instanceof Error ? err.message : String(err) },
+          "Failed to insert incremental scenario result"
+        );
+      }
+    }
 
     // Broadcast to SSE subscribers (dashboard)
     broadcast(body.run_id, {
@@ -144,40 +140,69 @@ export async function callbackRoutes(app: FastifyInstance) {
       created_at: new Date().toISOString(),
     });
 
-    // Forward as progress notification to MCP client
-    const sessionId = runToSession.get(body.run_id);
-    if (sessionId) {
-      const mcpServer = mcpServers.get(sessionId);
-      const progressToken = runToProgress.get(body.run_id);
+    return reply.send({ ok: true });
+  });
 
-      if (mcpServer && progressToken !== undefined) {
-        try {
-          await mcpServer.server.notification({
-            method: "notifications/progress",
-            params: {
-              progressToken,
-              progress: body.completed,
-              total: body.total,
-              message: `${body.test_name}: ${body.status} (${body.duration_ms}ms)`,
-            },
-          });
-        } catch {
-          // Best-effort
-        }
-      } else if (mcpServer) {
-        try {
-          await mcpServer.sendLoggingMessage({
-            level: body.status === "pass" ? "info" : "warning",
-            logger: "voiceci:test-progress",
-            data: body,
-          });
-        } catch {
-          // Best-effort
-        }
-      }
+  // --- Run activation (called by bash upload command for bundled agents) ---
+  // Config is always pre-stored by voiceci_run_suite — this just receives bundle hashes.
+  app.post<{ Params: { id: string } }>("/internal/runs/:id/activate", async (request, reply) => {
+    const runId = request.params.id;
+    const body = request.body as Record<string, unknown>;
+
+    // Fetch run — must exist and not yet be activated
+    const [run] = await app.db
+      .select()
+      .from(schema.runs)
+      .where(
+        and(
+          eq(schema.runs.id, runId),
+          isNull(schema.runs.bundle_hash),
+        )
+      )
+      .limit(1);
+
+    if (!run) {
+      return reply.status(404).send({ error: "Run not found or already activated" });
     }
 
-    return reply.send({ ok: true });
+    if (!run.test_spec_json) {
+      return reply.status(400).send({ error: "Run has no stored config — voiceci_run_suite must be called first" });
+    }
+
+    const bundleHash = body.bundle_hash as string | undefined;
+    const lockfileHash = body.lockfile_hash as string | undefined;
+
+    if (!bundleHash || !lockfileHash) {
+      return reply.status(400).send({ error: "bundle_hash and lockfile_hash are required" });
+    }
+
+    await app.db
+      .update(schema.runs)
+      .set({ bundle_hash: bundleHash })
+      .where(eq(schema.runs.id, runId));
+
+    const spec = run.test_spec_json as Record<string, unknown>;
+
+    await app.getRunQueue(run.user_id).add("execute-run", {
+      run_id: runId,
+      bundle_key: run.bundle_key,
+      bundle_hash: bundleHash,
+      lockfile_hash: lockfileHash,
+      adapter: spec.adapter as string,
+      test_spec: {
+        audio_tests: spec.audio_tests ?? null,
+        conversation_tests: spec.conversation_tests ?? null,
+      },
+      target_phone_number: spec.target_phone_number as string | undefined,
+      voice_config: spec.voice_config ?? { adapter: spec.adapter },
+      audio_test_thresholds: spec.audio_test_thresholds ?? null,
+      start_command: spec.start_command as string | undefined,
+      health_endpoint: spec.health_endpoint as string | undefined,
+      agent_url: spec.agent_url as string | undefined,
+      platform: spec.platform ?? null,
+    });
+
+    return reply.send({ status: "queued", run_id: runId });
   });
 
   // --- Runner results callback ---
@@ -201,6 +226,11 @@ export async function callbackRoutes(app: FastifyInstance) {
         error_text: body.error_text ?? null,
       })
       .where(eq(schema.runs.id, body.run_id));
+
+    // Clear any partial results inserted during test-progress — final batch is authoritative
+    await app.db
+      .delete(schema.scenarioResults)
+      .where(eq(schema.scenarioResults.run_id, body.run_id));
 
     // Store audio test results
     for (const result of body.audio_results) {
@@ -239,47 +269,6 @@ export async function callbackRoutes(app: FastifyInstance) {
       },
       created_at: new Date().toISOString(),
     });
-
-    // Push result to MCP client if session exists
-    const sessionId = runToSession.get(body.run_id);
-    if (sessionId) {
-      const mcpServer = mcpServers.get(sessionId);
-      const progressToken = runToProgress.get(body.run_id);
-      try {
-        if (mcpServer && progressToken !== undefined) {
-          await mcpServer.server.notification({
-            method: "notifications/progress",
-            params: {
-              progressToken,
-              progress: totalTests,
-              total: totalTests,
-              message: `${body.status}: ${body.aggregate.audio_tests.passed}/${body.aggregate.audio_tests.total} audio, ${body.aggregate.conversation_tests.passed}/${body.aggregate.conversation_tests.total} conversation — call voiceci_get_status for full results`,
-            },
-          });
-        } else if (mcpServer) {
-          await mcpServer.sendLoggingMessage({
-            level: body.status === "pass" ? "info" : "warning",
-            logger: "voiceci:test-result",
-            data: {
-              run_id: body.run_id,
-              status: body.status,
-              aggregate: body.aggregate,
-              audio_results: body.audio_results,
-              conversation_results: body.conversation_results,
-              error_text: body.error_text ?? null,
-            },
-          });
-        }
-      } catch (err) {
-        app.log.warn(
-          { run_id: body.run_id, error: err instanceof Error ? err.message : String(err) },
-          "Failed to push SSE test result to MCP client"
-        );
-      } finally {
-        runToSession.delete(body.run_id);
-        runToProgress.delete(body.run_id);
-      }
-    }
 
     return reply.send({ ok: true });
   });

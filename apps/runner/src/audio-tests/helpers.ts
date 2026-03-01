@@ -51,11 +51,6 @@ export async function collectUntilEndOfTurn(
 
   try {
     await new Promise<void>((resolve) => {
-      const timeout = setTimeout(() => {
-        timedOut = true;
-        resolve();
-      }, timeoutMs);
-
       const onAudio = (chunk: Buffer) => {
         chunks.push(chunk);
         const state = vad.process(chunk);
@@ -90,6 +85,12 @@ export async function collectUntilEndOfTurn(
           resolve();
         }
       };
+
+      const timeout = setTimeout(() => {
+        timedOut = true;
+        channel.off("audio", onAudio);
+        resolve();
+      }, timeoutMs);
 
       channel.on("audio", onAudio);
     });
@@ -149,11 +150,6 @@ export async function waitForSpeech(
 
   try {
     await new Promise<void>((resolve) => {
-      const timeout = setTimeout(() => {
-        timedOut = true;
-        resolve();
-      }, timeoutMs);
-
       const onAudio = (chunk: Buffer) => {
         const state = vad.process(chunk);
         if (state === "speech") {
@@ -163,6 +159,12 @@ export async function waitForSpeech(
           resolve();
         }
       };
+
+      const timeout = setTimeout(() => {
+        timedOut = true;
+        channel.off("audio", onAudio);
+        resolve();
+      }, timeoutMs);
 
       channel.on("audio", onAudio);
     });

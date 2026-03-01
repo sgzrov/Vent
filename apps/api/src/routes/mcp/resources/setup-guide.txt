@@ -1,0 +1,80 @@
+# VoiceCI Setup Guide
+
+VoiceCI is a remote MCP server — no installation or npm packages needed. Connect your editor directly via HTTP transport.
+
+## Claude Code
+
+```bash
+# Project-level (default)
+claude mcp add --transport http \
+  --header "Authorization: Bearer voiceci_YOUR_KEY" \
+  voiceci "https://voiceci-api.fly.dev/mcp"
+
+# Global (all projects)
+claude mcp add --transport http --scope user \
+  --header "Authorization: Bearer voiceci_YOUR_KEY" \
+  voiceci "https://voiceci-api.fly.dev/mcp"
+```
+
+## Cursor
+
+Add to `.cursor/mcp.json` (or `~/.cursor/mcp.json` for global):
+
+```json
+{
+  "mcpServers": {
+    "voiceci": {
+      "type": "http",
+      "url": "https://voiceci-api.fly.dev/mcp",
+      "headers": {
+        "Authorization": "Bearer voiceci_YOUR_KEY"
+      }
+    }
+  }
+}
+```
+
+> **Important**: The `"type": "http"` field is required. Without it, Cursor falls back to OAuth authentication which will fail. Do NOT use `"type": "streamable-http"` — Cursor uses `"http"` for remote streamable HTTP servers.
+
+## Windsurf
+
+Add to `~/.codeium/windsurf/mcp_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "voiceci": {
+      "serverUrl": "https://voiceci-api.fly.dev/mcp",
+      "headers": {
+        "Authorization": "Bearer ${env:VOICECI_API_KEY}"
+      }
+    }
+  }
+}
+```
+
+## Team Sharing
+
+Add `.mcp.json` to your project root (check into git):
+
+```json
+{
+  "mcpServers": {
+    "voiceci": {
+      "type": "http",
+      "url": "https://voiceci-api.fly.dev/mcp",
+      "headers": {
+        "Authorization": "Bearer ${VOICECI_API_KEY}"
+      }
+    }
+  }
+}
+```
+
+Teammates just set `export VOICECI_API_KEY=voiceci_their_key` — zero setup.
+
+## Test Configuration
+
+Tests are stored in `voiceci.json` in your project root. Your coding agent creates this file automatically on the first run, or you can create/edit it manually. Commit it to git — it's your test suite.
+
+See `voiceci_get_scenario_guide` for the full file format and field reference.

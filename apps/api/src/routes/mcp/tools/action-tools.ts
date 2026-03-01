@@ -6,280 +6,43 @@ import { schema } from "@voiceci/db";
 import { createStorageClient } from "@voiceci/artifacts";
 import { z } from "zod";
 import {
-  AudioTestNameSchema,
-  ConversationTestSpecSchema,
   AdapterTypeSchema,
-  AudioTestThresholdsSchema,
   LoadPatternSchema,
-  PlatformConfigSchema,
 } from "@voiceci/shared";
 import { runLoadTestInProcess } from "../../../services/test-runner.js";
-import { runToSession, runToProgress, type StoredAdapterConfig } from "../session.js";
 
 export function registerActionTools(
   server: McpServer,
   app: FastifyInstance,
   apiKeyId: string,
   userId: string,
-  adapterConfigs: Map<string, StoredAdapterConfig>,
 ) {
-  // --- Tool: voiceci_configure_adapter ---
-  server.registerTool("voiceci_configure_adapter", {
-    title: "Configure Adapter",
-    description: "Configure voice/platform/telephony settings for an adapter and get back a reusable adapter_config_id. Pass this ID to voiceci_run_suite or voiceci_load_test instead of repeating the full voice/platform config each time. Config is stored per-session.",
-    inputSchema: {
-      adapter: AdapterTypeSchema.describe(
-        "Transport: ws-voice (WebSocket), sip (phone via Plivo), webrtc (LiveKit), vapi (Vapi platform), retell (Retell platform via SIP + API), elevenlabs (ElevenLabs platform), bland (Bland platform via SIP + API)"
-      ),
-      target_phone_number: z
-        .string()
-        .optional()
-        .describe("Phone number to call. Required for sip, retell, and bland adapters."),
-      agent_url: z
-        .string()
-        .optional()
-        .describe("Agent base URL. Required for ws-voice with already-deployed agent, or for load tests."),
-      platform: PlatformConfigSchema.optional().describe(
-        "Platform config for vapi/retell/elevenlabs/bland adapters. Required for platform adapters."
-      ),
-      voice: z
-        .object({
-          tts: z.object({ voice_id: z.string().optional() }).optional(),
-          stt: z.object({ api_key_env: z.string().optional() }).optional(),
-          silence_threshold_ms: z.number().optional(),
-          webrtc: z.object({
-            livekit_url_env: z.string().optional(),
-            api_key_env: z.string().optional(),
-            api_secret_env: z.string().optional(),
-            room: z.string().optional(),
-          }).optional(),
-          telephony: z.object({
-            auth_id_env: z.string().optional(),
-            auth_token_env: z.string().optional(),
-            from_number: z.string().optional(),
-          }).optional(),
-        })
-        .optional()
-        .describe("Voice configuration overrides (TTS, STT, telephony, WebRTC)."),
-    },
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
-  }, async ({ adapter, target_phone_number, agent_url, platform, voice }) => {
-    const configId = randomUUID();
-    adapterConfigs.set(configId, {
-      adapter,
-      target_phone_number,
-      agent_url,
-      voice: voice as Record<string, unknown> | undefined,
-      platform: platform as Record<string, unknown> | undefined,
-    });
-
-    return {
-      content: [
-        {
-          type: "text" as const,
-          text: JSON.stringify({
-            adapter_config_id: configId,
-            adapter,
-            message: "Adapter configured. Pass adapter_config_id to voiceci_run_suite or voiceci_load_test.",
-          }, null, 2),
-        },
-      ],
-    };
-  });
-
-  // --- Tool: voiceci_prepare_upload ---
-  server.registerTool("voiceci_prepare_upload", {
-    title: "Prepare Agent Upload",
-    description: "Get a presigned URL and bash command to bundle and upload a voice agent for testing. Only needed for ws-voice adapter — sip/webrtc agents don't need uploads. Run the returned command, then pass bundle_key, bundle_hash, and lockfile_hash to voiceci_run_suite.",
-    inputSchema: {
-      project_root: z
-        .string()
-        .optional()
-        .describe("Absolute path to agent project root. Used to generate the upload command."),
-    },
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
-  }, async ({ project_root }) => {
-    const storage = createStorageClient();
-    const bundleKey = `bundles/${randomUUID()}.tar.gz`;
-    const uploadUrl = await storage.presignUpload(bundleKey);
-
-    const excludes = "--exclude=node_modules --exclude=.git --exclude=dist --exclude=.next --exclude=.turbo --exclude=coverage";
-    const root = project_root ?? ".";
-    const tarTarget = project_root
-      ? `-C "${project_root}" .`
-      : ".";
-
-    // Compute lockfile hash from whichever lockfile exists
-    const lockfileHashCmd = `(cat "${root}/package-lock.json" "${root}/yarn.lock" "${root}/pnpm-lock.yaml" 2>/dev/null || true) | shasum -a 256 | awk '{print $1}'`;
-
-    const uploadCommand = [
-      `tar czf /tmp/vci-bundle.tar.gz ${excludes} ${tarTarget}`,
-      `BUNDLE_HASH=$(shasum -a 256 /tmp/vci-bundle.tar.gz | awk '{print $1}')`,
-      `LOCKFILE_HASH=$(${lockfileHashCmd})`,
-      `curl -sf -X PUT -T /tmp/vci-bundle.tar.gz -H 'Content-Type: application/gzip' '${uploadUrl}'`,
-      `echo "BUNDLE_HASH=$BUNDLE_HASH"`,
-      `echo "LOCKFILE_HASH=$LOCKFILE_HASH"`,
-    ].join(" && ");
-
-    return {
-      content: [
-        {
-          type: "text" as const,
-          text: JSON.stringify(
-            {
-              bundle_key: bundleKey,
-              upload_command: uploadCommand,
-              instructions: "Run the command. Parse BUNDLE_HASH and LOCKFILE_HASH from the output. Pass all three (bundle_key, bundle_hash, lockfile_hash) to voiceci_run_suite.",
-            },
-            null,
-            2
-          ),
-        },
-      ],
-    };
-  });
-
   // --- Tool: voiceci_run_suite ---
   server.registerTool("voiceci_run_suite", {
     title: "Run Test Suite",
-    description: "Run a test suite against a voice agent. All tests run in parallel with independent connections. For already-deployed agents (SIP/WebRTC, or ws-voice with agent_url), tests run directly in a worker process. For bundled ws-voice agents, a Fly Machine is provisioned. Results are pushed via SSE as each test completes. bundle_key is reusable across runs. Use audio_test_thresholds to override default pass/fail criteria. Call voiceci_get_scenario_guide before designing tests.",
+    description: "Run a test suite against a voice agent. Requires voiceci.json in the project root.\n\nRead voiceci.json, then pass its parsed JSON as the `config` parameter. For already-deployed agents (SIP, WebRTC, platform adapters, or agent_url), this queues immediately — no bash step. For bundled websocket agents, a short upload command is returned.\n\nThen poll voiceci_get_status with the run_id.",
     inputSchema: {
+      config: z
+        .any()
+        .describe("Parsed contents of voiceci.json. Read the file, then pass the parsed JSON object here."),
+      project_root: z
+        .string()
+        .optional()
+        .describe("Absolute path to agent project root containing voiceci.json. Defaults to current working directory."),
       idempotency_key: z
         .string()
         .uuid()
         .optional()
-        .describe("Optional UUID to prevent duplicate runs on retries. If a run with this key exists, its run_id is returned instead of creating a new run."),
-      adapter_config_id: z
-        .string()
-        .uuid()
-        .optional()
-        .describe("Reusable adapter config ID from voiceci_configure_adapter. When provided, adapter/voice/platform/target_phone_number/agent_url are resolved from the stored config."),
-      bundle_key: z
-        .string()
-        .optional()
-        .describe("Bundle key from voiceci_prepare_upload. Required for ws-voice, omit for sip/webrtc."),
-      bundle_hash: z
-        .string()
-        .optional()
-        .describe("SHA-256 hash of uploaded bundle. Required for ws-voice, omit for sip/webrtc."),
-      lockfile_hash: z
-        .string()
-        .optional()
-        .describe("SHA-256 hash of lockfile from voiceci_prepare_upload output. Enables dependency prebaking for instant subsequent runs."),
-      adapter: AdapterTypeSchema.describe(
-        "Transport: ws-voice (WebSocket), sip (phone via Plivo), webrtc (LiveKit), vapi (Vapi platform), retell (Retell platform via SIP + API), elevenlabs (ElevenLabs platform), bland (Bland platform via SIP + API)"
-      ),
-      platform: PlatformConfigSchema.optional().describe(
-        "Platform config for vapi/retell/elevenlabs/bland adapters. Required for platform adapters."
-      ),
-      audio_tests: z
-        .array(AudioTestNameSchema)
-        .optional()
-        .describe("Audio infrastructure tests to run."),
-      conversation_tests: z
-        .array(ConversationTestSpecSchema)
-        .optional()
-        .describe("Conversation behavioral tests to run."),
-      start_command: z
-        .string()
-        .optional()
-        .describe("Command to start the agent (default: npm run start). ws-voice only."),
-      health_endpoint: z
-        .string()
-        .optional()
-        .describe("Health check path (default: /health). ws-voice only."),
-      agent_url: z
-        .string()
-        .optional()
-        .describe("Agent base URL (default: http://localhost:3001). ws-voice only."),
-      target_phone_number: z
-        .string()
-        .optional()
-        .describe("Phone number to call. Required for sip, retell, and bland adapters."),
-      voice: z
-        .object({
-          tts: z.object({ voice_id: z.string().optional() }).optional(),
-          stt: z.object({ api_key_env: z.string().optional() }).optional(),
-          silence_threshold_ms: z.number().optional(),
-          webrtc: z.object({
-            livekit_url_env: z.string().optional(),
-            api_key_env: z.string().optional(),
-            api_secret_env: z.string().optional(),
-            room: z.string().optional(),
-          }).optional(),
-          telephony: z.object({
-            auth_id_env: z.string().optional(),
-            auth_token_env: z.string().optional(),
-            from_number: z.string().optional(),
-          }).optional(),
-        })
-        .optional()
-        .describe("Voice configuration overrides."),
-      audio_test_thresholds: AudioTestThresholdsSchema
-        .describe("Override default pass/fail thresholds for audio tests. Omit to use defaults. Call voiceci_get_audio_test_reference for default values."),
+        .describe("Optional UUID to prevent duplicate runs on retries."),
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
   }, async (
     {
+      config,
+      project_root,
       idempotency_key,
-      adapter_config_id,
-      bundle_key,
-      bundle_hash,
-      lockfile_hash,
-      adapter: adapterParam,
-      platform: platformParam,
-      audio_tests,
-      conversation_tests,
-      start_command,
-      health_endpoint,
-      agent_url: agentUrlParam,
-      target_phone_number: targetPhoneParam,
-      voice: voiceParam,
-      audio_test_thresholds,
     },
-    extra,
   ) => {
-    // Resolve adapter config if adapter_config_id is provided
-    let adapter = adapterParam;
-    let platform = platformParam;
-    let agent_url = agentUrlParam;
-    let target_phone_number = targetPhoneParam;
-    let voice = voiceParam;
-
-    if (adapter_config_id) {
-      const stored = adapterConfigs.get(adapter_config_id);
-      if (!stored) {
-        return {
-          content: [{
-            type: "text" as const,
-            text: `Error: adapter_config_id "${adapter_config_id}" not found. It may have expired (configs are per-session). Call voiceci_configure_adapter again.`,
-          }],
-          isError: true,
-        };
-      }
-      if (!adapter) adapter = stored.adapter as typeof adapter;
-      if (!platform) platform = stored.platform as typeof platform;
-      agent_url = agent_url ?? stored.agent_url;
-      target_phone_number = target_phone_number ?? stored.target_phone_number;
-      if (!voice) voice = stored.voice as typeof voice;
-    }
-
-    // Validate at least one test
-    if (
-      (!audio_tests || audio_tests.length === 0) &&
-      (!conversation_tests || conversation_tests.length === 0)
-    ) {
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: "Error: At least one audio_test or conversation_test is required.",
-          },
-        ],
-        isError: true,
-      };
-    }
-
     // Idempotency check — return existing run if key matches
     if (idempotency_key) {
       const [existing] = await app.db
@@ -300,191 +63,153 @@ export function registerActionTools(
       }
     }
 
-    // Platform adapters are already deployed (the platform hosts the agent)
-    const isPlatformAdapter = adapter === "vapi" || adapter === "retell" || adapter === "elevenlabs" || adapter === "bland";
+    const apiUrl = process.env["API_URL"] ?? "https://voiceci-api.fly.dev";
 
-    // Validate platform config for platform adapters
-    if (isPlatformAdapter && !platform) {
+    // Helper to build test spec from config object
+    const buildTestSpec = (cfg: Record<string, unknown>) => {
+      const adapter = (cfg.adapter as string) ?? "websocket";
+      const agentUrl = cfg.agent_url as string | undefined;
+      const voice = cfg.voice as Record<string, unknown> | undefined;
+      const targetPhoneNumber = cfg.target_phone_number as string | undefined;
+      const voiceConfig = voice
+        ? { adapter, target_phone_number: targetPhoneNumber, voice }
+        : { adapter, target_phone_number: targetPhoneNumber };
+
       return {
-        content: [
-          {
-            type: "text" as const,
-            text: `Error: platform config is required for ${adapter} adapter. Provide {provider, api_key_env, agent_id}.`,
-          },
-        ],
-        isError: true,
+        testSpecJson: {
+          audio_tests: cfg.audio_tests ?? null,
+          conversation_tests: cfg.conversation_tests ?? null,
+          adapter,
+          voice_config: voiceConfig,
+          audio_test_thresholds: cfg.audio_test_thresholds ?? null,
+          start_command: cfg.start_command ?? null,
+          health_endpoint: cfg.health_endpoint ?? null,
+          agent_url: agentUrl ?? null,
+          target_phone_number: targetPhoneNumber ?? null,
+          platform: cfg.platform ?? null,
+        },
+        adapter,
+        agentUrl,
+        voiceConfig,
+        targetPhoneNumber,
+        isRemote: ["vapi", "retell", "elevenlabs", "bland"].includes(adapter)
+          || adapter === "sip" || adapter === "webrtc" || !!agentUrl,
       };
-    }
-    if (isPlatformAdapter && platform?.provider !== adapter) {
+    };
+
+    if (!config) {
       return {
-        content: [
-          {
-            type: "text" as const,
-            text: `Error: platform.provider must match adapter. Received adapter=${adapter}, provider=${platform?.provider ?? "undefined"}.`,
-          },
-        ],
-        isError: true,
-      };
-    }
-    if (!isPlatformAdapter && platform) {
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: `Error: platform config is only valid for platform adapters (vapi, retell, elevenlabs, bland). Received adapter=${adapter}.`,
-          },
-        ],
-        isError: true,
-      };
-    }
-    // Retell and Bland use SIP under the hood — require phone number + telephony config
-    if ((adapter === "retell" || adapter === "bland") && !target_phone_number) {
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: `Error: ${adapter} adapter requires target_phone_number (the agent's phone number to dial via SIP).`,
-          },
-        ],
-        isError: true,
-      };
-    }
-    if ((adapter === "retell" || adapter === "bland") && !voice?.telephony?.from_number) {
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: `Error: ${adapter} adapter requires voice.telephony.from_number (the Plivo number to call from).`,
-          },
-        ],
+        content: [{
+          type: "text" as const,
+          text: "Error: config parameter is required. Read voiceci.json from the project root and pass its parsed JSON contents as the config parameter.",
+        }],
         isError: true,
       };
     }
 
-    // Validate env var references exist
-    const missingEnvVars: string[] = [];
-    if (voice?.stt?.api_key_env && !process.env[voice.stt.api_key_env]) {
-      missingEnvVars.push(`voice.stt.api_key_env="${voice.stt.api_key_env}"`);
-    }
-    if (voice?.telephony?.auth_id_env && !process.env[voice.telephony.auth_id_env]) {
-      missingEnvVars.push(`voice.telephony.auth_id_env="${voice.telephony.auth_id_env}"`);
-    }
-    if (voice?.telephony?.auth_token_env && !process.env[voice.telephony.auth_token_env]) {
-      missingEnvVars.push(`voice.telephony.auth_token_env="${voice.telephony.auth_token_env}"`);
-    }
-    if (voice?.webrtc?.api_key_env && !process.env[voice.webrtc.api_key_env]) {
-      missingEnvVars.push(`voice.webrtc.api_key_env="${voice.webrtc.api_key_env}"`);
-    }
-    if (voice?.webrtc?.api_secret_env && !process.env[voice.webrtc.api_secret_env]) {
-      missingEnvVars.push(`voice.webrtc.api_secret_env="${voice.webrtc.api_secret_env}"`);
-    }
-    if (voice?.webrtc?.livekit_url_env && !process.env[voice.webrtc.livekit_url_env]) {
-      missingEnvVars.push(`voice.webrtc.livekit_url_env="${voice.webrtc.livekit_url_env}"`);
-    }
-    if (platform?.api_key_env && !process.env[platform.api_key_env]) {
-      missingEnvVars.push(`platform.api_key_env="${platform.api_key_env}"`);
-    }
-    if (missingEnvVars.length > 0) {
+    const cfg = (typeof config === "string" ? JSON.parse(config) : config) as Record<string, unknown>;
+    const { testSpecJson, adapter, agentUrl, voiceConfig, targetPhoneNumber, isRemote } = buildTestSpec(cfg);
+
+    if (isRemote) {
+      // Remote/deployed agent — queue immediately, no bash needed
+      const [run] = await app.db
+        .insert(schema.runs)
+        .values({
+          api_key_id: apiKeyId,
+          user_id: userId,
+          source_type: "remote",
+          bundle_key: null,
+          bundle_hash: "remote",
+          status: "queued",
+          test_spec_json: testSpecJson,
+          idempotency_key: idempotency_key ?? null,
+        })
+        .returning();
+
+      const runId = run!.id;
+
+      await app.getRunQueue(userId).add("execute-run", {
+        run_id: runId,
+        bundle_key: null,
+        bundle_hash: null,
+        lockfile_hash: null,
+        adapter,
+        test_spec: {
+          audio_tests: cfg.audio_tests ?? null,
+          conversation_tests: cfg.conversation_tests ?? null,
+        },
+        target_phone_number: targetPhoneNumber,
+        voice_config: voiceConfig,
+        audio_test_thresholds: cfg.audio_test_thresholds ?? null,
+        start_command: cfg.start_command as string | undefined,
+        health_endpoint: cfg.health_endpoint as string | undefined,
+        agent_url: agentUrl,
+        platform: cfg.platform ?? null,
+      });
+
       return {
-        content: [
-          {
-            type: "text" as const,
-            text: `Error: The following environment variables are referenced but not set on the server:\n${missingEnvVars.map(v => `  - ${v}`).join("\n")}\n\nCheck that the env var names are correct and that they are configured in the deployment environment.`,
-          },
-        ],
-        isError: true,
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({
+            run_id: runId,
+            status: "queued",
+            message: "Run queued. Poll voiceci_get_status with the run_id.",
+          }, null, 2),
+        }],
       };
     }
 
-    // Validate bundle for ws-voice (unless agent_url provided)
-    const isAlreadyDeployed = isPlatformAdapter || adapter === "sip" || adapter === "webrtc" || !!agent_url;
-    if (!isAlreadyDeployed && (!bundle_key || !bundle_hash)) {
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: "Error: bundle_key and bundle_hash are required for ws-voice adapter (unless agent_url is provided). Call voiceci_prepare_upload first.",
-          },
-        ],
-        isError: true,
-      };
-    }
+    // Bundled agent — store config in DB, return bash for tar+upload+hashes
+    const storage = createStorageClient();
+    const bundleKey = `bundles/${randomUUID()}.tar.gz`;
+    const uploadUrl = await storage.presignUpload(bundleKey);
 
-    const sourceType = isAlreadyDeployed ? "remote" : "bundle";
-    const testSpec = { audio_tests, conversation_tests };
-
-    // Single run for ALL tests
     const [run] = await app.db
       .insert(schema.runs)
       .values({
         api_key_id: apiKeyId,
         user_id: userId,
-        source_type: sourceType,
-        bundle_key: bundle_key ?? null,
-        bundle_hash: bundle_hash ?? null,
+        source_type: "bundle",
+        bundle_key: bundleKey,
+        bundle_hash: null,
         status: "queued",
-        test_spec_json: testSpec,
+        test_spec_json: testSpecJson,
         idempotency_key: idempotency_key ?? null,
       })
       .returning();
 
     const runId = run!.id;
 
-    // All runs go through per-user queue — worker handles both
-    // remote (direct execution) and bundled (Fly Machine) paths
-    const queuedVoiceConfig = voice
-      ? { adapter, target_phone_number, voice }
-      : { adapter, target_phone_number };
+    const root = project_root ?? ".";
+    const tarTarget = project_root ? `-C "${project_root}" .` : ".";
+    const excludes = "--exclude=node_modules --exclude=.git --exclude=dist --exclude=.next --exclude=.turbo --exclude=coverage --exclude=voiceci.json";
+    const lockfileHashCmd = `(cat "${root}/package-lock.json" "${root}/yarn.lock" "${root}/pnpm-lock.yaml" 2>/dev/null || true) | shasum -a 256 | awk '{print $1}'`;
+    const activateUrl = `${apiUrl}/internal/runs/${runId}/activate`;
 
-    await app.getRunQueue(userId).add("execute-run", {
-      run_id: runId,
-      bundle_key: bundle_key ?? null,
-      bundle_hash: bundle_hash ?? null,
-      lockfile_hash: lockfile_hash ?? null,
-      adapter,
-      test_spec: testSpec,
-      target_phone_number,
-      voice_config: queuedVoiceConfig,
-      audio_test_thresholds: audio_test_thresholds ?? null,
-      start_command,
-      health_endpoint,
-      agent_url,
-      platform: platform ?? null,
-    });
-
-    // Map run to this MCP session for push notifications
-    if (extra.sessionId) {
-      runToSession.set(runId, extra.sessionId);
-    }
-
-    // Store progressToken for notifications/progress delivery
-    const progressToken = extra._meta?.progressToken;
-    if (progressToken !== undefined) {
-      runToProgress.set(runId, progressToken);
-    }
+    const uploadCommand = [
+      `tar czf /tmp/vci-bundle.tar.gz ${excludes} ${tarTarget}`,
+      `BUNDLE_HASH=$(shasum -a 256 /tmp/vci-bundle.tar.gz | awk '{print $1}')`,
+      `LOCKFILE_HASH=$(${lockfileHashCmd})`,
+      `curl -sf -X PUT -T /tmp/vci-bundle.tar.gz -H 'Content-Type: application/gzip' '${uploadUrl}'`,
+      `curl -sf -X POST '${activateUrl}' -H 'Content-Type: application/json' -d "{\\"bundle_hash\\":\\"$BUNDLE_HASH\\",\\"lockfile_hash\\":\\"$LOCKFILE_HASH\\"}"`,
+      `echo "Upload complete. Run activated."`,
+    ].join(" && ");
 
     return {
-      content: [
-        {
-          type: "text" as const,
-          text: JSON.stringify({ run_id: runId }, null, 2),
-        },
-      ],
+      content: [{
+        type: "text" as const,
+        text: `ACTION REQUIRED: Run this command in the project root to upload the bundle and start the test. The run will NOT proceed until you execute this command.\n\n${uploadCommand}\n\nAfter the command prints "Upload complete. Run activated.", poll voiceci_get_status with run_id: ${runId}`,
+      }],
     };
   });
 
   // --- Tool: voiceci_load_test ---
   server.registerTool("voiceci_load_test", {
     title: "Run Load Test",
-    description: "Run a load/stress test against an already-deployed voice agent. Sends N concurrent calls with a traffic pattern (ramp, spike, sustained, soak). Measures TTFB percentiles, error rates, and auto-detects breaking point. Results pushed via SSE as timeline snapshots every second. Only works with already-deployed agents (SIP, WebRTC, or ws-voice with agent_url).",
+    description: "Run a load/stress test against an already-deployed voice agent. Sends N concurrent calls with a traffic pattern (ramp, spike, sustained, soak). Measures TTFB percentiles, error rates, and auto-detects breaking point. Results pushed via SSE as timeline snapshots every second. Only works with already-deployed agents (SIP, WebRTC, or websocket with agent_url).",
     inputSchema: {
-      adapter_config_id: z
-        .string()
-        .uuid()
-        .optional()
-        .describe("Reusable adapter config ID from voiceci_configure_adapter. When provided, adapter/voice/target_phone_number/agent_url are resolved from the stored config."),
-      adapter: AdapterTypeSchema.optional().describe("Transport: ws-voice, sip, or webrtc. Can be omitted if adapter_config_id is provided."),
-      agent_url: z.string().optional().describe("URL of the already-deployed agent to test. Can be omitted if adapter_config_id is provided."),
+      adapter: AdapterTypeSchema.describe("Transport: websocket, sip, or webrtc."),
+      agent_url: z.string().describe("URL of the already-deployed agent to test."),
       pattern: LoadPatternSchema.describe(
         "Traffic pattern: ramp (linear 0→target), spike (1→target instantly), sustained (full immediately), soak (slow ramp, long hold)"
       ),
@@ -537,61 +262,17 @@ export function registerActionTools(
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
   }, async (
     {
-      adapter_config_id,
-      adapter: adapterParam,
-      agent_url: agentUrlParam,
+      adapter,
+      agent_url,
       pattern,
       target_concurrency,
       total_duration_s,
       ramp_duration_s,
       caller_prompt,
-      target_phone_number: targetPhoneParam,
-      voice: voiceParam,
+      target_phone_number,
+      voice,
     },
-    extra,
   ) => {
-    // Resolve adapter config if adapter_config_id is provided
-    let adapter = adapterParam;
-    let agent_url = agentUrlParam;
-    let target_phone_number = targetPhoneParam;
-    let voice = voiceParam;
-
-    if (adapter_config_id) {
-      const stored = adapterConfigs.get(adapter_config_id);
-      if (!stored) {
-        return {
-          content: [{
-            type: "text" as const,
-            text: `Error: adapter_config_id "${adapter_config_id}" not found. It may have expired (configs are per-session). Call voiceci_configure_adapter again.`,
-          }],
-          isError: true,
-        };
-      }
-      if (!adapter) adapter = stored.adapter as NonNullable<typeof adapter>;
-      agent_url = agent_url ?? stored.agent_url;
-      target_phone_number = target_phone_number ?? stored.target_phone_number;
-      if (!voice) voice = stored.voice as typeof voice;
-    }
-
-    if (!adapter) {
-      return {
-        content: [{
-          type: "text" as const,
-          text: "Error: adapter is required. Provide it directly or via adapter_config_id.",
-        }],
-        isError: true,
-      };
-    }
-
-    if (!agent_url) {
-      return {
-        content: [{
-          type: "text" as const,
-          text: "Error: agent_url is required for load tests. Provide it directly or via adapter_config_id.",
-        }],
-        isError: true,
-      };
-    }
     runLoadTestInProcess({
       channelConfig: {
         adapter,
@@ -604,8 +285,6 @@ export function registerActionTools(
       totalDurationS: total_duration_s,
       rampDurationS: ramp_duration_s,
       callerPrompt: caller_prompt,
-      sessionId: extra.sessionId,
-      progressToken: extra._meta?.progressToken,
     });
 
     return {
@@ -627,7 +306,7 @@ export function registerActionTools(
   // --- Tool: voiceci_get_status ---
   server.registerTool("voiceci_get_status", {
     title: "Get Run Status",
-    description: "Get the current status and results of a test run by ID. Use this to poll for results if SSE notifications are delayed or interrupted. Returns the run status, aggregate summary, and all individual test results once complete.",
+    description: "Get the current status and results of a test run by ID. Poll this to track progress — it returns partial results as individual tests complete, so you can reason about early failures while other tests are still running. Once the run finishes, returns the full aggregate summary and all results.",
     inputSchema: {
       run_id: z.string().uuid().describe("The run ID returned by voiceci_run_suite."),
     },
@@ -646,18 +325,57 @@ export function registerActionTools(
       };
     }
 
-    // Still in progress — return status only
+    // Still in progress — return partial results if available
     if (run.status === "queued" || run.status === "running") {
+      const partialResults = await app.db
+        .select()
+        .from(schema.scenarioResults)
+        .where(eq(schema.scenarioResults.run_id, run_id));
+
+      // Derive total test count from stored config
+      const spec = run.test_spec_json as { audio_tests?: unknown[]; conversation_tests?: unknown[] } | null;
+      const totalTests = spec
+        ? (spec.audio_tests?.length ?? 0) + (spec.conversation_tests?.length ?? 0)
+        : undefined;
+
+      if (partialResults.length === 0) {
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              run_id: run.id,
+              status: run.status,
+              completed: 0,
+              total: totalTests ?? "unknown",
+              started_at: run.started_at,
+              message: run.status === "queued"
+                ? "Run is queued, waiting for execution."
+                : "Run is in progress. No test results yet. Poll again in a few seconds.",
+            }, null, 2),
+          }],
+        };
+      }
+
+      // Return completed tests so far
+      const audioResults = partialResults
+        .filter((s) => s.test_type === "audio")
+        .map((s) => s.metrics_json);
+      const conversationResults = partialResults
+        .filter((s) => s.test_type === "conversation")
+        .map((s) => s.metrics_json);
+
       return {
         content: [{
           type: "text" as const,
           text: JSON.stringify({
             run_id: run.id,
             status: run.status,
+            completed: partialResults.length,
+            total: totalTests ?? "unknown",
             started_at: run.started_at,
-            message: run.status === "queued"
-              ? "Run is queued, waiting for execution."
-              : "Run is in progress. Poll again in a few seconds.",
+            audio_results: audioResults,
+            conversation_results: conversationResults,
+            message: `Run in progress: ${partialResults.length}${totalTests ? `/${totalTests}` : ""} tests completed. Poll again for more results.`,
           }, null, 2),
         }],
       };

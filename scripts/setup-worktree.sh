@@ -16,39 +16,31 @@ copy_env_file() {
   local filename="$1"
   local fallback="$2"
 
-  if [ -f "$filename" ]; then
-    echo "    $filename already exists, skipping"
+  # Always copy from centralized config if it exists (source of truth)
+  if [ -f "$fallback" ]; then
+    cp "$fallback" "$filename"
+    echo "    Copied $filename from $fallback"
     return
   fi
 
-  # Try to copy from another worktree first
-  local copied=false
-  while IFS= read -r line; do
-    local wt_path
-    wt_path="$(echo "$line" | awk '{print $1}')"
-    if [ "$wt_path" != "$PROJECT_ROOT" ] && [ -f "$wt_path/$filename" ]; then
-      cp "$wt_path/$filename" "$filename"
-      echo "    Copied $filename from $wt_path"
-      copied=true
-      break
-    fi
-  done < <(git worktree list 2>/dev/null || true)
+  # If no centralized config, try to copy from another worktree
+  if [ ! -f "$filename" ]; then
+    while IFS= read -r line; do
+      local wt_path
+      wt_path="$(echo "$line" | awk '{print $1}')"
+      if [ "$wt_path" != "$PROJECT_ROOT" ] && [ -f "$wt_path/$filename" ]; then
+        cp "$wt_path/$filename" "$filename"
+        echo "    Copied $filename from $wt_path"
+        # Persist to centralized config for future worktrees
+        mkdir -p "$VOICECI_CONFIG_DIR"
+        cp "$filename" "$fallback"
+        return
+      fi
+    done < <(git worktree list 2>/dev/null || true)
 
-  # Fall back to centralized env file
-  if [ "$copied" = false ]; then
-    if [ -f "$fallback" ]; then
-      cp "$fallback" "$filename"
-      echo "    Copied $filename from $fallback"
-    else
-      cp .env.example "$filename"
-      echo "    Created $filename from .env.example (fill in your secrets)"
-    fi
-  fi
-
-  # Persist to centralized config so future workspaces get real values
-  if [ -f "$filename" ]; then
-    mkdir -p "$VOICECI_CONFIG_DIR"
-    cp "$filename" "$fallback"
+    # Last resort: create from example
+    cp .env.example "$filename"
+    echo "    Created $filename from .env.example (fill in your secrets)"
   fi
 }
 

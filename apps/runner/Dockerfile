@@ -1,8 +1,8 @@
 FROM node:20-slim AS base
-RUN corepack enable && apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+RUN corepack enable && apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && rm -rf /var/lib/apt/lists/*
 # crane for OCI image manipulation (builder mode appends node_modules layer without Docker daemon)
-RUN curl -sL "https://github.com/google/go-containerregistry/releases/download/v0.20.2/go-containerregistry_Linux_x86_64.tar.gz" \
-    | tar xz -C /usr/local/bin crane
+RUN curl -fsSL "https://github.com/google/go-containerregistry/releases/download/v0.21.1/go-containerregistry_Linux_x86_64.tar.gz" \
+    -o /tmp/crane.tar.gz && tar xzf /tmp/crane.tar.gz -C /usr/local/bin crane && rm /tmp/crane.tar.gz
 
 FROM base AS build
 WORKDIR /app
