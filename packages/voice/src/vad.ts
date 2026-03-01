@@ -45,7 +45,8 @@ export class VoiceActivityDetector {
   private handle = 0;
   private readonly hopSize: number;
   private readonly vadThreshold: number;
-  private readonly silenceThresholdMs: number;
+  /** Silence duration (ms) after speech before returning "end_of_turn". Mutable for adaptive thresholds. */
+  silenceThresholdMs: number;
 
   private silenceStartMs: number | null = null;
   private hasSpeech = false;

@@ -19,7 +19,7 @@ import type {
   ObservedToolCall,
   ToolCallMetrics,
 } from "@voiceci/shared";
-import { synthesize, transcribe, BatchVAD } from "@voiceci/voice";
+import { synthesize, BatchVAD, VoiceActivityDetector, StreamingTranscriber } from "@voiceci/voice";
 import { CallerLLM } from "./caller-llm.js";
 import { JudgeLLM } from "./judge-llm.js";
 import { collectUntilEndOfTurn } from "../audio-tests/helpers.js";
@@ -37,26 +37,56 @@ export async function runConversationTest(
 
   const caller = new CallerLLM(spec.caller_prompt);
   const adaptiveThreshold = new AdaptiveThreshold({
-    baseMs: spec.silence_threshold_ms ?? 1500,
+    baseMs: spec.silence_threshold_ms ?? 800,
   });
+
+  // Initialize VAD, batch VAD, streaming STT, and pre-generate first turn in parallel
+  const turnVAD = new VoiceActivityDetector({ silenceThresholdMs: adaptiveThreshold.thresholdMs });
   const batchVAD = new BatchVAD();
-  await batchVAD.init();
+  const transcriber = new StreamingTranscriber();
+
+  const [, , , firstUtterance] = await Promise.all([
+    turnVAD.init(),
+    batchVAD.init(),
+    transcriber.connect(),
+    caller.nextUtterance(null, []),
+  ]);
+
+  // Pre-synthesize first turn TTS
+  let prefetchedAudio: Buffer | null = null;
+  let prefetchedText: string | null = firstUtterance;
+  let prefetchedTtsMs = 0;
+  if (firstUtterance) {
+    const ttsStart = performance.now();
+    prefetchedAudio = await synthesize(firstUtterance);
+    prefetchedTtsMs = Math.round(performance.now() - ttsStart);
+  }
+
   const turnAudioData: TurnAudioData[] = [];
   let agentText: string | null = null;
 
   try {
     for (let turn = 0; turn < spec.max_turns; turn++) {
-      // Step 1: Caller LLM generates next utterance
-      const callerText = await caller.nextUtterance(agentText, transcript);
-      if (callerText === null) {
-        // Caller decided to end conversation
-        break;
+      // Step 1: Caller LLM generates next utterance (skip on turn 0 — pre-generated)
+      let callerText: string | null;
+      let callerAudio: Buffer;
+      let ttsMs: number;
+
+      if (turn === 0 && prefetchedText !== null && prefetchedAudio !== null) {
+        callerText = prefetchedText;
+        callerAudio = prefetchedAudio;
+        ttsMs = prefetchedTtsMs;
+        prefetchedText = null;
+        prefetchedAudio = null;
+      } else {
+        callerText = await caller.nextUtterance(agentText, transcript);
+        if (callerText === null) break;
+
+        const ttsStart = performance.now();
+        callerAudio = await synthesize(callerText);
+        ttsMs = Math.round(performance.now() - ttsStart);
       }
 
-      // Step 2: TTS and send (with timing)
-      const ttsStart = performance.now();
-      const callerAudio = await synthesize(callerText);
-      const ttsMs = Math.round(performance.now() - ttsStart);
       const callerTimestamp = performance.now() - startTime;
       const audioDurationMs = Math.round((callerAudio.length / 2 / 24000) * 1000);
 
@@ -69,14 +99,24 @@ export async function runConversationTest(
       });
       turnAudioData.push({ role: "caller", audioDurationMs });
 
+      // Update VAD silence threshold for this turn (adaptive)
+      turnVAD.silenceThresholdMs = adaptiveThreshold.thresholdMs;
+
+      // Pipe agent audio to streaming STT during collection
+      transcriber.resetForNextTurn();
+      const feedSTT = (chunk: Buffer) => transcriber.feedAudio(chunk);
+      channel.on("audio", feedSTT);
+
       const sendTime = Date.now();
       channel.sendAudio(callerAudio);
 
-      // Step 3: Collect agent response via VAD (adaptive threshold)
+      // Step 3: Collect agent response via VAD (reused instance)
       const { audio: agentAudio, stats } = await collectUntilEndOfTurn(
         channel,
-        { timeoutMs: 15000, silenceThresholdMs: adaptiveThreshold.thresholdMs }
+        { timeoutMs: 15000, vad: turnVAD }
       );
+
+      channel.off("audio", feedSTT);
 
       // Adapt threshold for next turn based on this turn's response cadence
       adaptiveThreshold.update(stats);
@@ -90,10 +130,10 @@ export async function runConversationTest(
         ttfbValues.push(turnTtfb);
       }
 
-      // Step 4: STT to get agent text + batch VAD analysis
+      // Step 4: Get streaming STT result + batch VAD analysis
       if (agentAudio.length > 0) {
         const sttStart = performance.now();
-        const { text, confidence } = await transcribe(agentAudio);
+        const { text, confidence } = await transcriber.finalize();
         const sttMs = Math.round(performance.now() - sttStart);
         agentText = text;
         const agentAudioDurationMs = Math.round(
@@ -230,6 +270,8 @@ export async function runConversationTest(
       metrics,
     };
   } finally {
+    transcriber.close();
+    turnVAD.destroy();
     batchVAD.destroy();
   }
 }

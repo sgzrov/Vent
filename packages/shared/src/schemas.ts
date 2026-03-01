@@ -10,7 +10,7 @@ export const AudioTestNameSchema = z.enum(AUDIO_TEST_NAMES);
 export const ConversationTestSpecSchema = z.object({
   name: z.string().optional(),
   caller_prompt: z.string().min(1),
-  max_turns: z.number().int().min(1).max(50).default(10),
+  max_turns: z.number().int().min(1).max(50).default(6),
   eval: z.array(z.string().min(1)).min(1),
   tool_call_eval: z.array(z.string().min(1)).optional(),
   silence_threshold_ms: z.number().int().min(200).max(10000).optional(),

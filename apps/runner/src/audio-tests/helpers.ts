@@ -29,13 +29,17 @@ export async function collectUntilEndOfTurn(
   opts: {
     timeoutMs?: number;
     silenceThresholdMs?: number;
+    /** Pre-initialized VAD instance — reused across turns to avoid WASM reload. */
+    vad?: VoiceActivityDetector;
   } = {}
 ): Promise<{ audio: Buffer; timedOut: boolean; stats: CollectionStats }> {
   const timeoutMs = opts.timeoutMs ?? 15000;
-  const silenceThresholdMs = opts.silenceThresholdMs ?? 1500;
+  const silenceThresholdMs = opts.silenceThresholdMs ?? 800;
 
-  const vad = new VoiceActivityDetector({ silenceThresholdMs });
-  await vad.init();
+  const ownsVAD = !opts.vad;
+  const vad = opts.vad ?? new VoiceActivityDetector({ silenceThresholdMs });
+  if (ownsVAD) await vad.init();
+  else vad.reset();
 
   const chunks: Buffer[] = [];
   let timedOut = false;
@@ -110,7 +114,7 @@ export async function collectUntilEndOfTurn(
     if (speechStartedAt !== null) {
       totalSpeechMs += Date.now() - speechStartedAt;
     }
-    vad.destroy();
+    if (ownsVAD) vad.destroy();
   }
 
   return {
