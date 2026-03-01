@@ -82,17 +82,28 @@ export async function collectUntilEndOfTurn(
         if (state === "end_of_turn") {
           clearTimeout(timeout);
           channel.off("audio", onAudio);
+          channel.off("error", onError);
           resolve();
         }
+      };
+
+      const onError = (err: Error) => {
+        timedOut = true;
+        clearTimeout(timeout);
+        channel.off("audio", onAudio);
+        channel.off("error", onError);
+        resolve();
       };
 
       const timeout = setTimeout(() => {
         timedOut = true;
         channel.off("audio", onAudio);
+        channel.off("error", onError);
         resolve();
       }, timeoutMs);
 
       channel.on("audio", onAudio);
+      channel.on("error", onError);
     });
   } finally {
     // Account for speech that was still ongoing at end
@@ -119,16 +130,25 @@ export async function collectForDuration(
   const chunks: Buffer[] = [];
 
   await new Promise<void>((resolve) => {
-    const timeout = setTimeout(() => {
-      channel.off("audio", onAudio);
-      resolve();
-    }, durationMs);
-
     const onAudio = (chunk: Buffer) => {
       chunks.push(chunk);
     };
 
+    const onError = () => {
+      clearTimeout(timeout);
+      channel.off("audio", onAudio);
+      channel.off("error", onError);
+      resolve();
+    };
+
+    const timeout = setTimeout(() => {
+      channel.off("audio", onAudio);
+      channel.off("error", onError);
+      resolve();
+    }, durationMs);
+
     channel.on("audio", onAudio);
+    channel.on("error", onError);
   });
 
   return Buffer.concat(chunks);
@@ -156,17 +176,28 @@ export async function waitForSpeech(
           detectedAt = Date.now();
           clearTimeout(timeout);
           channel.off("audio", onAudio);
+          channel.off("error", onError);
           resolve();
         }
+      };
+
+      const onError = () => {
+        timedOut = true;
+        clearTimeout(timeout);
+        channel.off("audio", onAudio);
+        channel.off("error", onError);
+        resolve();
       };
 
       const timeout = setTimeout(() => {
         timedOut = true;
         channel.off("audio", onAudio);
+        channel.off("error", onError);
         resolve();
       }, timeoutMs);
 
       channel.on("audio", onAudio);
+      channel.on("error", onError);
     });
   } finally {
     vad.destroy();

@@ -123,12 +123,39 @@ export interface TestSpec {
   conversation_tests?: ConversationTestSpec[];
 }
 
+export interface TestDiagnostics {
+  /** "platform" = VoiceCI infra issue, "agent" = user's agent issue, null = test passed */
+  error_origin: "platform" | "agent" | null;
+  error_detail: string | null;
+  timing: {
+    channel_connect_ms: number;
+    tts_synthesis_ms?: number;
+    audio_send_ms?: number;
+    agent_response_wait_ms?: number;
+    stt_transcription_ms?: number;
+  };
+  channel: {
+    connected: boolean;
+    error_events: string[];
+    audio_bytes_sent: number;
+    audio_bytes_received: number;
+  };
+}
+
+export interface ChannelStats {
+  bytesSent: number;
+  bytesReceived: number;
+  errorEvents: string[];
+  connectLatencyMs: number;
+}
+
 export interface AudioTestResult {
   test_name: AudioTestName;
   status: "pass" | "fail";
   metrics: Record<string, number | boolean>;
   duration_ms: number;
   error?: string;
+  diagnostics?: TestDiagnostics;
 }
 
 export interface ConversationTurn {
@@ -252,6 +279,7 @@ export interface ConversationTestResult {
   duration_ms: number;
   metrics: ConversationMetrics;
   error?: string;
+  diagnostics?: TestDiagnostics;
 }
 
 export interface RunAggregateV2 {

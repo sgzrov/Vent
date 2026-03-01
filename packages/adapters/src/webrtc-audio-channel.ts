@@ -72,6 +72,7 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
   }
 
   async connect(): Promise<void> {
+    const connectStart = Date.now();
     const token = new AccessToken(
       this.config.apiKey,
       this.config.apiSecret,
@@ -137,6 +138,8 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
         }
       }
     );
+
+    this._stats.connectLatencyMs = Date.now() - connectStart;
   }
 
   sendAudio(pcm: Buffer): void {
@@ -144,6 +147,7 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
       throw new Error("WebRTC not connected");
     }
 
+    this._stats.bytesSent += pcm.length;
     // Resample 24kHz → LiveKit sample rate
     const resampled = resample(pcm, 24000, this.livekitSampleRate);
     const samples = new Int16Array(
@@ -226,12 +230,16 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
             frame.data.byteOffset,
             frame.data.byteLength
           );
+          this._stats.bytesReceived += frameBuffer.length;
           // Resample from LiveKit rate → 24kHz for consumers
           const pcm24k = resample(frameBuffer, this.livekitSampleRate, 24000);
           this.emit("audio", pcm24k);
         }
-      } catch {
+      } catch (err) {
         // Stream closed
+        if (err instanceof Error) {
+          this._stats.errorEvents.push(err.message);
+        }
       }
     };
 

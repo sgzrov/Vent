@@ -10,7 +10,7 @@
  */
 
 import { EventEmitter } from "node:events";
-import type { ObservedToolCall } from "@voiceci/shared";
+import type { ObservedToolCall, ChannelStats } from "@voiceci/shared";
 
 export interface AudioChannelEvents {
   audio: (chunk: Buffer) => void;
@@ -24,6 +24,7 @@ export interface AudioChannel {
   sendAudio(pcm: Buffer): void;
   disconnect(): Promise<void>;
   readonly connected: boolean;
+  readonly stats: ChannelStats;
 
   /** Get tool call data after call ends. Platform adapters pull from API, websocket returns collected events. */
   getCallData?(): Promise<ObservedToolCall[]>;
@@ -35,6 +36,17 @@ export interface AudioChannel {
 }
 
 export abstract class BaseAudioChannel extends EventEmitter implements AudioChannel {
+  protected _stats: ChannelStats = {
+    bytesSent: 0,
+    bytesReceived: 0,
+    errorEvents: [],
+    connectLatencyMs: 0,
+  };
+
+  get stats(): ChannelStats {
+    return this._stats;
+  }
+
   abstract connect(): Promise<void>;
   abstract sendAudio(pcm: Buffer): void;
   abstract disconnect(): Promise<void>;

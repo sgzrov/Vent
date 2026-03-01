@@ -60,6 +60,7 @@ export class SipAudioChannel extends BaseAudioChannel {
   }
 
   async connect(): Promise<void> {
+    const connectStart = Date.now();
     this.connectTimestamp = Date.now();
     this.toolCalls = [];
     await this.startServer();
@@ -73,6 +74,7 @@ export class SipAudioChannel extends BaseAudioChannel {
     }
 
     await this.waitForMediaConnection();
+    this._stats.connectLatencyMs = Date.now() - connectStart;
   }
 
   sendAudio(pcm: Buffer): void {
@@ -80,6 +82,7 @@ export class SipAudioChannel extends BaseAudioChannel {
       throw new Error("SIP media stream not connected");
     }
 
+    this._stats.bytesSent += pcm.length;
     // PCM 24kHz → 8kHz → mulaw → base64 JSON events
     const pcm8k = resample(pcm, 24000, 8000);
     const mulaw = pcmToMulaw(pcm8k);
@@ -308,6 +311,7 @@ export class SipAudioChannel extends BaseAudioChannel {
           }
 
           // Raw mulaw audio → PCM 24kHz
+          this._stats.bytesReceived += buf.length;
           const pcm8k = mulawToPcm(buf);
           const pcm24k = resample(pcm8k, 8000, 24000);
           this.emit("audio", pcm24k);
@@ -319,6 +323,7 @@ export class SipAudioChannel extends BaseAudioChannel {
         });
 
         ws.on("error", (err) => {
+          this._stats.errorEvents.push(err.message);
           this.emit("error", err);
         });
       });

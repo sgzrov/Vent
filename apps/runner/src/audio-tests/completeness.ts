@@ -73,9 +73,10 @@ export async function runCompletenessTest(
   const endsComplete = COMPLETE_SENTENCE_RE.test(trimmed);
   const wordCount = trimmed.split(/\s+/).length;
 
-  // A complete response to "explain three benefits" should have reasonable length
+  // Pass/fail based on word count only — punctuation is a soft metric
+  // because STT providers often omit trailing punctuation
   const hasSubstance = wordCount >= MIN_WORD_COUNT;
-  const passed = endsComplete && hasSubstance;
+  const passed = hasSubstance;
 
   const durationMs = Math.round(performance.now() - startTime);
 
@@ -93,9 +94,7 @@ export async function runCompletenessTest(
     },
     duration_ms: durationMs,
     ...(!passed && {
-      error: !endsComplete
-        ? "Response appears truncated (does not end with complete sentence)"
-        : `Response too short (${wordCount} words)`,
+      error: `Response too short (${wordCount} words, minimum ${MIN_WORD_COUNT})`,
     }),
   };
 }

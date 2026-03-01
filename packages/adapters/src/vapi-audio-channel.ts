@@ -65,6 +65,7 @@ export class VapiAudioChannel extends BaseAudioChannel {
   }
 
   async connect(): Promise<void> {
+    const connectStart = Date.now();
     // Create call via Vapi API with WebSocket transport
     const res = await fetch("https://api.vapi.ai/call", {
       method: "POST",
@@ -100,12 +101,14 @@ export class VapiAudioChannel extends BaseAudioChannel {
 
     // Connect to WebSocket for audio exchange
     await this.connectWebSocket(wsUrl);
+    this._stats.connectLatencyMs = Date.now() - connectStart;
   }
 
   sendAudio(pcm: Buffer): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       throw new Error("Vapi WebSocket not connected");
     }
+    this._stats.bytesSent += pcm.length;
     // Resample 24kHz → 16kHz before sending
     const resampled = resample(pcm, 24000, 16000);
     this.ws.send(resampled);
@@ -145,6 +148,7 @@ export class VapiAudioChannel extends BaseAudioChannel {
         ws.on("message", (data: WebSocket.RawData, isBinary: boolean) => {
           if (isBinary) {
             const chunk = data instanceof Buffer ? data : Buffer.from(data as ArrayBuffer);
+            this._stats.bytesReceived += chunk.length;
             // Resample 16kHz → 24kHz before emitting
             const resampled = resample(chunk, 16000, 24000);
             this.emit("audio", resampled);
@@ -152,7 +156,10 @@ export class VapiAudioChannel extends BaseAudioChannel {
           // Ignore text frames (control messages)
         });
 
-        ws.on("error", (err) => this.emit("error", err));
+        ws.on("error", (err) => {
+          this._stats.errorEvents.push(err.message);
+          this.emit("error", err);
+        });
         ws.on("close", () => {
           this.ws = null;
           this.emit("disconnected");

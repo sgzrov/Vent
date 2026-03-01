@@ -41,6 +41,7 @@ export class WsAudioChannel extends BaseAudioChannel {
   }
 
   async connect(): Promise<void> {
+    const connectStart = Date.now();
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(this.config.wsUrl);
       ws.binaryType = "nodebuffer";
@@ -48,12 +49,14 @@ export class WsAudioChannel extends BaseAudioChannel {
       ws.on("open", () => {
         this.ws = ws;
         this.connectTimestamp = Date.now();
+        this._stats.connectLatencyMs = Date.now() - connectStart;
         this.toolCalls = [];
 
         ws.on("message", (data: WebSocket.RawData, isBinary: boolean) => {
           if (isBinary) {
             const chunk =
               data instanceof Buffer ? data : Buffer.from(data as ArrayBuffer);
+            this._stats.bytesReceived += chunk.length;
             this.emit("audio", chunk);
           } else {
             this.handleTextFrame(data.toString());
@@ -61,6 +64,7 @@ export class WsAudioChannel extends BaseAudioChannel {
         });
 
         ws.on("error", (err) => {
+          this._stats.errorEvents.push(err.message);
           this.emit("error", err);
         });
 
@@ -82,6 +86,7 @@ export class WsAudioChannel extends BaseAudioChannel {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       throw new Error("WebSocket not connected");
     }
+    this._stats.bytesSent += pcm.length;
     this.ws.send(pcm);
   }
 

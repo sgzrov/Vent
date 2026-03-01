@@ -24,8 +24,9 @@ const WINDOW_MS = 100;
 const WINDOW_SAMPLES = Math.floor((SAMPLE_RATE * WINDOW_MS) / 1000);
 const SILENCE_RMS_THRESHOLD = 100;
 const CLICK_THRESHOLD = 20000;
-const DROP_FACTOR = 0.2;
+const DROP_FACTOR = 0.05; // 95% drop = actual dropout, not natural inter-word pauses
 const SPIKE_FACTOR = 3.0;
+const DROP_CONSECUTIVE_MIN = 2; // Require 2+ consecutive low windows to count as a drop
 
 const PROMPT = "Please describe the process of making a cup of coffee in detail.";
 
@@ -97,7 +98,8 @@ export async function runAudioQualityTest(
     const stddev = Math.sqrt(variance);
     energyConsistency = meanSpeechRms > 0 ? Math.max(0, 1 - stddev / meanSpeechRms) : 0;
 
-    // Detect sudden drops/spikes within speech region
+    // Detect sudden drops/spikes within speech region (debounced)
+    let consecutiveDrops = 0;
     for (let i = 1; i < windowRms.length - 1; i++) {
       const prev = windowRms[i - 1]!;
       const curr = windowRms[i]!;
@@ -105,8 +107,15 @@ export async function runAudioQualityTest(
 
       const isSpeechRegion = prev >= SILENCE_RMS_THRESHOLD && next >= SILENCE_RMS_THRESHOLD;
       if (isSpeechRegion) {
-        if (curr < meanSpeechRms * DROP_FACTOR) suddenDrops++;
+        if (curr < meanSpeechRms * DROP_FACTOR) {
+          consecutiveDrops++;
+          if (consecutiveDrops >= DROP_CONSECUTIVE_MIN) suddenDrops++;
+        } else {
+          consecutiveDrops = 0;
+        }
         if (curr > meanSpeechRms * SPIKE_FACTOR) suddenSpikes++;
+      } else {
+        consecutiveDrops = 0;
       }
     }
   }
