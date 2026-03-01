@@ -16,6 +16,10 @@ export async function synthesize(
   text: string,
   config?: TTSConfig
 ): Promise<Buffer> {
+  if (!text.trim()) {
+    return Buffer.alloc(0);
+  }
+
   const apiKey = process.env[config?.apiKeyEnv ?? "DEEPGRAM_API_KEY"];
   if (!apiKey) {
     throw new Error(
