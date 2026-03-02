@@ -506,16 +506,16 @@ export async function executeRun(job: RunJob): Promise<void> {
 
     let cpuKind = "shared";
     let cpus = 1;
-    let memoryMb = 4096;
+    let memoryMb = 2048;
 
     if (testCount > 12) {
       cpuKind = "performance";
       cpus = 4;
-      memoryMb = 8192;
-    } else if (testCount > 6) {
-      cpuKind = "performance";
-      cpus = 2;
       memoryMb = 4096;
+    } else if (testCount > 6) {
+      cpuKind = "shared";
+      cpus = 2;
+      memoryMb = 2048;
     }
 
     await emitEvent(db, job.run_id, "provisioning", "Provisioning runner machine...");
