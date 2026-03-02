@@ -75,6 +75,6 @@ Teammates just set `export VOICECI_API_KEY=voiceci_their_key` — zero setup.
 
 ## Test Configuration
 
-Tests are stored in `voiceci.json` in your project root. Your coding agent creates this file automatically on the first run, or you can create/edit it manually. Commit it to git — it's your test suite.
+Tests live in a `voiceci/` folder in your project root, with separate JSON files for each test type (`audio.json`, `conversations.json`). Your coding agent creates these automatically on first run, or you can create/edit them manually. Commit the folder to git — it's your test suite.
 
-See `voiceci_get_scenario_guide` for the full file format and field reference.
+See `voiceci_guide_test_authoring` for the full file format and field reference.

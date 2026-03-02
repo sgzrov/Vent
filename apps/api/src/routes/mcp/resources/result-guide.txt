@@ -13,6 +13,28 @@
 - **endpointing fail**: Agent interrupts during mid-sentence pauses. Check VAD silence threshold — it's too aggressive. Increase endpointing timeout or add pause detection logic.
 - **audio_quality fail**: Issues with agent's output audio — check `metrics` for specific failures (clipping, energy drops, clicks, truncation). Clipping = gain too high; sudden drops = TTS streaming issues; clicks = buffer boundary problems.
 
+### Audio Analysis Metrics (VAD-Derived)
+
+Every conversation test includes `metrics.audio_analysis` — VAD-based speech/silence analysis of the agent's audio. Computed from actual audio waveforms, not turn-level approximations.
+
+| Metric | What it means | Healthy range | Flag when |
+|--------|--------------|---------------|-----------|
+| `agent_speech_ratio` | % of agent's air time that is actual speech (vs silence/pauses) | 0.6-0.9 | <0.5 (agent mostly silent — possible audio issue or very long thinking pauses) |
+| `talk_ratio_vad` | VAD-corrected ratio: caller time / (caller + agent speech). More accurate than `talk_ratio` | 0.3-0.7 | >0.7 (caller dominates — agent not saying enough) or <0.3 (agent monologuing) |
+| `longest_monologue_ms` | Longest continuous agent speech segment | <15,000ms | >30,000ms (agent talked 30+ seconds without pause — poor conversational style) |
+| `silence_gaps_over_2s` | Count of >2s silences within agent responses | 0-1 per call | >=3 (frequent long pauses — agent is slow or struggling) |
+| `total_internal_silence_ms` | Total silence within agent turns (not between-turn gaps) | Varies | High relative to total agent audio = agent has processing issues |
+| `per_turn_speech_segments` | Speech bursts per agent turn [array] | 1-3 per turn | Many segments (>5) = agent speech is very choppy/fragmented |
+| `mean_agent_speech_segment_ms` | Average speech burst duration | 2000-8000ms | <500ms (extremely choppy) or >20,000ms (long monologue) |
+
+**Automatic Warnings:** If a metric exceeds its threshold, a warning appears in `metrics.audio_analysis_warnings` with severity ("warning" or "critical") and a human-readable message. These are informational — they do NOT affect pass/fail status.
+
+**How to use:**
+- Low `agent_speech_ratio` but passing evals → agent works but has latency/audio issues worth investigating
+- High `silence_gaps_over_2s` → likely slow tool calls or LLM inference mid-response. Check `silence_threshold_ms` tuning
+- High `longest_monologue_ms` → agent gives excessively long responses without pausing. Prompt/conversation design issue
+- Compare `talk_ratio_vad` (VAD-corrected) with `talk_ratio` (buffer-based) — big gap means significant silence in agent audio
+
 ### Conversation Test Failures
 - Read the judge's `reasoning` field — it explains WHY.
 - `relevant: false` means the conversation didn't cover that eval topic — NOT a failure.
@@ -73,11 +95,11 @@ Every conversation test includes `metrics.harness_overhead` — timing of VoiceC
 
 ## Iterative Testing Strategy
 
-Testing is NOT single-shot. You should iterate based on results. Update `voiceci.json` between runs — it's your persistent test config.
+Testing is NOT single-shot. You should iterate based on results. Update the test files in `voiceci/` between runs — it's your persistent test config.
 
 ### Workflow: Smoke → Analyze → Follow-up → Confirm
 
-**1. Smoke test** (first voiceci_run_suite call):
+**1. Smoke test** (first voiceci_run_tests call):
 - Include all 6 audio tests + 2-3 happy-path conversation tests (5 turns each)
 - This gives a broad baseline in ~60 seconds
 
@@ -86,10 +108,10 @@ Testing is NOT single-shot. You should iterate based on results. Update `voiceci
 - Borderline metrics (e.g., p95 TTFB of 2800ms passes at 3000ms threshold but is concerning) → re-run with tighter `audio_test_thresholds`
 - Conversation eval failures → read the judge's reasoning, then design a targeted follow-up scenario
 
-**3. Targeted follow-up** (update voiceci.json, then re-run):
-- Update `voiceci.json` to include ONLY the failing or borderline tests, not the whole suite
-- For borderline audio: add `audio_test_thresholds` to voiceci.json (e.g., `{ "ttfb": { "p95_threshold_ms": 1500 } }`)
-- For conversation failures: update the failing test in voiceci.json — increase `max_turns` to 15-20, write a more specific persona that reproduces the failure
+**3. Targeted follow-up** (update test files in `voiceci/`, then re-run):
+- Update the relevant file in `voiceci/` to include ONLY the failing or borderline tests, not the whole suite
+- For borderline audio: add `audio_test_thresholds` to `voiceci/audio.json` (e.g., `{ "ttfb": { "p95_threshold_ms": 1500 } }`)
+- For conversation failures: update the failing test in the relevant `voiceci/` file — increase `max_turns` to 15-20, write a more specific persona that reproduces the failure
 - For flaky results: re-run the same test 2-3x to distinguish real failures from flakiness
 
 **4. Confirm** — stop iterating when:
@@ -114,7 +136,7 @@ When the user changes their agent's code, don't re-run the entire suite blindly.
 
 **Step 2: Run the targeted tests.** Use smoke depth (5 turns) first. If anything fails, follow up with standard depth.
 
-**Step 3: Add a regression scenario to voiceci.json.** For any non-trivial code change, add at least one NEW scenario to `voiceci.json` that specifically tests the changed behavior. This scenario becomes part of the ongoing suite — it prevents the same issue from recurring.
+**Step 3: Add a regression scenario.** For any non-trivial code change, add at least one NEW scenario to `voiceci/conversations.json` that specifically tests the changed behavior. This scenario becomes part of the ongoing suite — it prevents the same issue from recurring.
 
 **Example:** User changes their booking agent to require email confirmation before finalizing:
 - Re-test: existing booking happy path (should now include email step), existing interruption scenario (does mid-flow cancel still work?)
@@ -130,7 +152,7 @@ When a test **fails**, don't just report the failure — **auto-generate a pinni
 - What did the agent do (or fail to do)?
 - Was it a specific turn, or a gradual drift?
 
-**Step 2: Create a pinning scenario.** Add a new conversation test to `voiceci.json` that:
+**Step 2: Create a pinning scenario.** Add a new conversation test to `voiceci/conversations.json` that:
 - Uses a `caller_prompt` that reproduces the exact conditions that caused the failure
 - Has `eval` questions targeting the specific behavior that failed
 - Uses enough `max_turns` to reach the failure point (check what turn it happened on)
@@ -150,7 +172,7 @@ When a test **fails**, don't just report the failure — **auto-generate a pinni
 }
 ```
 
-**When to add pinning scenarios to voiceci.json:**
+**When to add pinning scenarios to `voiceci/conversations.json`:**
 - Any `relevant: true, passed: false` eval result → always add a pinning scenario
 - Unexpected behavioral metrics (hallucination detected, low safety compliance) → add a targeted scenario
 - Flaky results that sometimes pass, sometimes fail → add a stricter scenario that forces the edge case

@@ -18,7 +18,7 @@ Tests run in parallel with independent connections. For already-deployed agents 
 
 ## Audio Test Thresholds (Defaults)
 
-You can override any threshold via `audio_test_thresholds` in voiceci_run_suite:
+You can override any threshold via `audio_test_thresholds` in voiceci_run_tests:
 
 | Test | Threshold | Default | Override Key |
 |------|-----------|---------|-------------|
@@ -37,27 +37,3 @@ You can override any threshold via `audio_test_thresholds` in voiceci_run_suite:
 | audio_quality | Min audio duration | 1000ms | `audio_quality.min_duration_ms` |
 | audio_quality | Min energy consistency | 0.4 | `audio_quality.min_energy_consistency` |
 
----
-
-## Audio Analysis Metrics (VAD-Derived)
-
-Every conversation test includes `metrics.audio_analysis` — VAD-based speech/silence analysis of the agent's audio. These are computed from actual audio waveforms, not turn-level approximations.
-
-| Metric | What it means | Healthy range | Flag when |
-|--------|--------------|---------------|-----------|
-| `agent_speech_ratio` | % of agent's air time that is actual speech (vs silence/pauses) | 0.6-0.9 | <0.5 (agent mostly silent — possible audio issue or very long thinking pauses) |
-| `talk_ratio_vad` | VAD-corrected ratio: caller time / (caller + agent speech). More accurate than `talk_ratio` | 0.3-0.7 | >0.7 (caller dominates — agent not saying enough) or <0.3 (agent monologuing) |
-| `longest_monologue_ms` | Longest continuous agent speech segment | <15,000ms | >30,000ms (agent talked 30+ seconds without pause — poor conversational style) |
-| `silence_gaps_over_2s` | Count of >2s silences within agent responses | 0-1 per call | ≥3 (frequent long pauses — agent is slow or struggling) |
-| `total_internal_silence_ms` | Total silence within agent turns (not between-turn gaps) | Varies | High relative to total agent audio = agent has processing issues |
-| `per_turn_speech_segments` | Speech bursts per agent turn [array] | 1-3 per turn | Many segments (>5) = agent speech is very choppy/fragmented |
-| `mean_agent_speech_segment_ms` | Average speech burst duration | 2000-8000ms | <500ms (extremely choppy) or >20,000ms (long monologue) |
-
-**Automatic Warnings:**
-Audio analysis metrics are now graded against configurable thresholds. If a metric exceeds its threshold, a warning appears in `metrics.audio_analysis_warnings` with severity ("warning" or "critical") and a human-readable message. These warnings are informational — they do NOT affect the conversation test's pass/fail status.
-
-**How to use these in analysis:**
-- If `agent_speech_ratio` is low but conversation passed evals → the agent works but has latency/audio issues worth investigating
-- If `silence_gaps_over_2s` is high → the agent is likely doing slow tool calls or LLM inference mid-response. Check `silence_threshold_ms` tuning
-- If `longest_monologue_ms` is very high → the agent gives excessively long responses without pausing for feedback. This is a prompt/conversation design issue
-- Compare `talk_ratio_vad` (VAD-corrected) with `talk_ratio` (buffer-based) — a big gap means agent audio contains significant silence that buffer-based ratio misses

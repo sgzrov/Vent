@@ -4,7 +4,7 @@
   "private": true,
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && cp ../../packages/relay-client/dist/relay-client.mjs dist/relay-client.mjs",
     "dev": "tsx watch src/index.ts",
     "start": "node dist/index.js",
     "clean": "rm -rf dist"
@@ -12,9 +12,9 @@
   "dependencies": {
     "@fastify/cookie": "^11.0.2",
     "@fastify/cors": "^10.0.0",
+    "@fastify/websocket": "^11.0.0",
     "@modelcontextprotocol/sdk": "^1.10.0",
     "@voiceci/adapters": "workspace:*",
-    "@voiceci/artifacts": "workspace:*",
     "@voiceci/db": "workspace:*",
     "@voiceci/runner": "workspace:*",
     "@voiceci/shared": "workspace:*",

@@ -14,6 +14,7 @@ import { BaseAudioChannel } from "./audio-channel.js";
 
 export interface WsAudioChannelConfig {
   wsUrl: string;
+  headers?: Record<string, string>;
 }
 
 interface WsToolCallEvent {
@@ -43,7 +44,9 @@ export class WsAudioChannel extends BaseAudioChannel {
   async connect(): Promise<void> {
     const connectStart = Date.now();
     return new Promise((resolve, reject) => {
-      const ws = new WebSocket(this.config.wsUrl);
+      const ws = new WebSocket(this.config.wsUrl, {
+        headers: this.config.headers,
+      });
       ws.binaryType = "nodebuffer";
 
       ws.on("open", () => {

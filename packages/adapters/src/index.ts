@@ -1,4 +1,5 @@
 import type { AdapterType, PlatformConfig, VoiceConfig } from "@voiceci/shared";
+import { RUNNER_CALLBACK_HEADER } from "@voiceci/shared";
 import type { AudioChannel } from "./audio-channel.js";
 import { WsAudioChannel } from "./ws-audio-channel.js";
 import { WebRtcAudioChannel } from "./webrtc-audio-channel.js";
@@ -30,10 +31,21 @@ export function createAudioChannel(config: AudioChannelConfig): AudioChannel {
   const agentUrl = config.agentUrl ?? "http://localhost:3001";
 
   switch (config.adapter) {
-    case "websocket":
-      return new WsAudioChannel({
-        wsUrl: agentUrl.replace(/^http/, "ws"),
-      });
+    case "websocket": {
+      let wsUrl = agentUrl.replace(/^http/, "ws");
+      // When connecting through relay, append a unique conn_id per test connection
+      if (wsUrl.includes("/relay/connect")) {
+        const connId = crypto.randomUUID();
+        wsUrl += (wsUrl.includes("?") ? "&" : "?") + `conn_id=${connId}`;
+      }
+      // Pass runner auth header for relay connections
+      const headers: Record<string, string> = {};
+      if (wsUrl.includes("/relay/connect")) {
+        const secret = process.env["RUNNER_CALLBACK_SECRET"] ?? "";
+        if (secret) headers[RUNNER_CALLBACK_HEADER] = secret;
+      }
+      return new WsAudioChannel({ wsUrl, headers });
+    }
 
     case "webrtc": {
       const webrtc = config.voice?.webrtc;

@@ -1,0 +1,14 @@
+{
+  "name": "@voiceci/relay-client",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Connect your local voice agent to VoiceCI for testing",
+  "scripts": {
+    "build": "node scripts/bundle.mjs",
+    "clean": "rm -rf dist"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0"
+  }
+}

@@ -1,48 +1,10 @@
 import type { FastifyInstance } from "fastify";
-import { eq, and, isNull } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { schema } from "@voiceci/db";
 import { RunnerCallbackV2Schema, RUNNER_CALLBACK_HEADER } from "@voiceci/shared";
 import { broadcast } from "../lib/run-subscribers.js";
 
 export async function callbackRoutes(app: FastifyInstance) {
-  // --- Builder dep-image callback ---
-  app.post("/internal/dep-image-callback", async (request, reply) => {
-    const secret = (request.headers as Record<string, string>)[RUNNER_CALLBACK_HEADER];
-    const expectedSecret = process.env["RUNNER_CALLBACK_SECRET"];
-
-    if (!expectedSecret || secret !== expectedSecret) {
-      return reply.status(401).send({ error: "Unauthorized" });
-    }
-
-    const body = request.body as {
-      lockfile_hash: string;
-      image_ref: string;
-      status: "ready" | "failed";
-      error_text?: string;
-    };
-
-    if (body.status === "ready") {
-      await app.db
-        .update(schema.depImages)
-        .set({
-          status: "ready",
-          image_ref: body.image_ref,
-          ready_at: new Date(),
-        })
-        .where(eq(schema.depImages.lockfile_hash, body.lockfile_hash));
-    } else {
-      await app.db
-        .update(schema.depImages)
-        .set({
-          status: "failed",
-          error_text: body.error_text ?? "Unknown builder error",
-        })
-        .where(eq(schema.depImages.lockfile_hash, body.lockfile_hash));
-    }
-
-    return reply.send({ ok: true });
-  });
-
   // --- Run lifecycle event callback (from runner or worker) ---
   app.post("/internal/run-event", async (request, reply) => {
     const secret = (request.headers as Record<string, string>)[RUNNER_CALLBACK_HEADER];
@@ -102,7 +64,7 @@ export async function callbackRoutes(app: FastifyInstance) {
       result?: Record<string, unknown>;
     };
 
-    // Insert partial result into DB for incremental visibility via voiceci_get_status
+    // Insert partial result into DB for incremental visibility via voiceci_get_run_status
     if (body.result) {
       try {
         const isConversation = body.test_type === "conversation";
@@ -143,55 +105,48 @@ export async function callbackRoutes(app: FastifyInstance) {
     return reply.send({ ok: true });
   });
 
-  // --- Run activation (called by bash upload command for bundled agents) ---
-  // Config is always pre-stored by voiceci_run_suite — this just receives bundle hashes.
+  // --- Run activation (called by relay client for local agents) ---
+  // Config is always pre-stored by voiceci_run_tests — this activates the run and queues the job.
   app.post<{ Params: { id: string } }>("/internal/runs/:id/activate", async (request, reply) => {
     const runId = request.params.id;
     const body = request.body as Record<string, unknown>;
 
-    // Fetch run — must exist and not yet be activated
     const [run] = await app.db
       .select()
       .from(schema.runs)
-      .where(
-        and(
-          eq(schema.runs.id, runId),
-          isNull(schema.runs.bundle_hash),
-        )
-      )
+      .where(eq(schema.runs.id, runId))
       .limit(1);
 
     if (!run) {
-      return reply.status(404).send({ error: "Run not found or already activated" });
+      return reply.status(404).send({ error: "Run not found" });
+    }
+
+    if (run.status !== "queued") {
+      return reply.status(409).send({ error: "Run already activated" });
     }
 
     if (!run.test_spec_json) {
-      return reply.status(400).send({ error: "Run has no stored config — voiceci_run_suite must be called first" });
+      return reply.status(400).send({ error: "Run has no stored config — voiceci_run_tests must be called first" });
     }
 
-    const bundleHash = body.bundle_hash as string | undefined;
-    const lockfileHash = body.lockfile_hash as string | undefined;
-
-    if (!bundleHash || !lockfileHash) {
-      return reply.status(400).send({ error: "bundle_hash and lockfile_hash are required" });
+    // Authenticate via relay token
+    const relayToken = body.relay_token as string | undefined;
+    if (!relayToken || relayToken !== run.relay_token) {
+      return reply.status(401).send({ error: "Invalid relay token" });
     }
-
-    await app.db
-      .update(schema.runs)
-      .set({ bundle_hash: bundleHash })
-      .where(eq(schema.runs.id, runId));
 
     const spec = run.test_spec_json as Record<string, unknown>;
 
     await app.getRunQueue(run.user_id).add("execute-run", {
       run_id: runId,
-      bundle_key: run.bundle_key,
-      bundle_hash: bundleHash,
-      lockfile_hash: lockfileHash,
+      bundle_key: null,
+      bundle_hash: null,
+      lockfile_hash: null,
       adapter: spec.adapter as string,
       test_spec: {
         audio_tests: spec.audio_tests ?? null,
         conversation_tests: spec.conversation_tests ?? null,
+        red_team: spec.red_team ?? null,
       },
       target_phone_number: spec.target_phone_number as string | undefined,
       voice_config: spec.voice_config ?? { adapter: spec.adapter },
@@ -200,9 +155,28 @@ export async function callbackRoutes(app: FastifyInstance) {
       health_endpoint: spec.health_endpoint as string | undefined,
       agent_url: spec.agent_url as string | undefined,
       platform: spec.platform ?? null,
+      relay: true,
     });
 
     return reply.send({ status: "queued", run_id: runId });
+  });
+
+  // --- Relay run complete notification (from worker to signal relay cleanup) ---
+  app.post("/internal/relay-complete", async (request, reply) => {
+    const secret = (request.headers as Record<string, string>)[RUNNER_CALLBACK_HEADER];
+    const expectedSecret = process.env["RUNNER_CALLBACK_SECRET"];
+
+    if (!expectedSecret || secret !== expectedSecret) {
+      return reply.status(401).send({ error: "Unauthorized" });
+    }
+
+    const body = request.body as { run_id: string };
+
+    // Import and call notifyRunComplete to clean up relay session
+    const { notifyRunComplete } = await import("./relay.js");
+    notifyRunComplete(body.run_id);
+
+    return reply.send({ ok: true });
   });
 
   // --- Runner results callback ---
