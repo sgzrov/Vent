@@ -6,6 +6,7 @@ import type {
 } from "@/lib/types";
 import { formatDuration } from "@/lib/format";
 import { TtfbSparkline } from "@/components/ttfb-sparkline";
+import { SentimentChart } from "@/components/sentiment-chart";
 
 interface ConversationMetricsPanelProps {
   metrics: ConversationMetrics;
@@ -230,6 +231,13 @@ export function ConversationMetricsPanel({
       {metrics.behavioral && (
         <BehavioralSection behavioral={metrics.behavioral} />
       )}
+
+      {metrics.behavioral?.sentiment_trajectory &&
+        metrics.behavioral.sentiment_trajectory.length > 1 && (
+          <SentimentChart
+            trajectory={metrics.behavioral.sentiment_trajectory}
+          />
+        )}
 
       {metrics.tool_calls && (
         <div>

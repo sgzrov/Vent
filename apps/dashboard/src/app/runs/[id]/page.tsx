@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { RunDetailView } from "@/components/run-detail-view";
+import { RunsTopChrome } from "@/components/runs-top-chrome";
 import { useRunEvents } from "@/hooks/use-run-events";
 import type { RunDetail } from "@/lib/types";
 
@@ -81,15 +82,51 @@ export default function RunDetailPage() {
     setError(null);
   };
 
-  if (error) return <p className="text-red-600 font-mono text-sm">{error}</p>;
-  if (!run) return <p className="text-muted-foreground">Loading...</p>;
+  if (error) {
+    return (
+      <div>
+        <RunsTopChrome />
+        <p className="text-red-600 font-mono text-sm">{error}</p>
+      </div>
+    );
+  }
+  if (!run) {
+    return (
+      <div>
+        <RunsTopChrome />
+        <div className="space-y-6 animate-pulse">
+          <div className="flex items-center gap-4">
+            <div className="h-8 w-16 rounded-md bg-muted" />
+            <div className="space-y-2">
+              <div className="h-6 w-32 rounded bg-muted" />
+              <div className="h-4 w-48 rounded bg-muted" />
+            </div>
+          </div>
+          <div className="h-32 rounded-lg bg-muted" />
+          <div className="grid grid-cols-4 gap-3">
+            {[1, 2, 3, 4].map((i) => (
+              <div key={i} className="h-20 rounded-lg bg-muted" />
+            ))}
+          </div>
+          <div className="space-y-2">
+            {[1, 2, 3, 4, 5].map((i) => (
+              <div key={i} className="h-14 rounded-lg bg-muted" />
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <RunDetailView
-      run={run}
-      events={events}
-      isStreaming={isStreaming}
-      onSetBaseline={handleSetBaseline}
-    />
+    <div>
+      <RunsTopChrome />
+      <RunDetailView
+        run={run}
+        events={events}
+        isStreaming={isStreaming}
+        onSetBaseline={handleSetBaseline}
+      />
+    </div>
   );
 }

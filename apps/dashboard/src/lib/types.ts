@@ -107,12 +107,31 @@ export interface ScenarioResultRow {
 
 // --- Audio test types ---
 
+export interface TestDiagnostics {
+  error_origin: "platform" | "agent" | null;
+  error_detail: string | null;
+  timing: {
+    channel_connect_ms: number;
+    tts_synthesis_ms?: number;
+    audio_send_ms?: number;
+    agent_response_wait_ms?: number;
+    stt_transcription_ms?: number;
+  };
+  channel: {
+    connected: boolean;
+    error_events: string[];
+    audio_bytes_sent: number;
+    audio_bytes_received: number;
+  };
+}
+
 export interface AudioTestResult {
   test_name: AudioTestName;
   status: "pass" | "fail";
   metrics: Record<string, number | boolean>;
   duration_ms: number;
   error?: string;
+  diagnostics?: TestDiagnostics;
 }
 
 // --- Conversation test types ---
@@ -156,6 +175,7 @@ export interface ConversationTestResult {
   observed_tool_calls?: ObservedToolCall[];
   duration_ms: number;
   metrics: ConversationMetrics;
+  diagnostics?: TestDiagnostics;
 }
 
 // --- Deep metric types ---
@@ -234,6 +254,14 @@ export interface ToolCallMetrics {
   failed: number;
   mean_latency_ms?: number;
   names: string[];
+}
+
+export interface AudioAnalysisWarning {
+  metric: string;
+  message: string;
+  severity: "warning" | "critical";
+  value: number;
+  threshold: number;
 }
 
 export interface AudioAnalysisMetrics {
