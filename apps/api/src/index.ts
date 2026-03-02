@@ -1,14 +1,15 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import cookie from "@fastify/cookie";
-import { eq, lt, and, isNull } from "drizzle-orm";
+import websocket from "@fastify/websocket";
+import { eq, lt, and } from "drizzle-orm";
 import { schema } from "@voiceci/db";
 import { healthRoutes } from "./routes/health.js";
-import { uploadRoutes } from "./routes/uploads.js";
 import { runRoutes } from "./routes/runs.js";
 import { callbackRoutes } from "./routes/callback.js";
 import { mcpRoutes } from "./routes/mcp/index.js";
 import { keyRoutes } from "./routes/keys.js";
+import { relayRoutes } from "./routes/relay.js";
 import { dbPlugin } from "./plugins/db.js";
 import { queuePlugin } from "./plugins/queue.js";
 import { authPlugin } from "./plugins/auth.js";
@@ -30,14 +31,15 @@ async function main() {
     exposedHeaders: ["Mcp-Session-Id", "Mcp-Protocol-Version"],
   });
   await app.register(cookie);
+  await app.register(websocket);
   await app.register(dbPlugin);
   await app.register(queuePlugin);
   await app.register(authPlugin);
   await app.register(healthRoutes);
-  await app.register(uploadRoutes);
   await app.register(runRoutes);
   await app.register(callbackRoutes);
   await app.register(keyRoutes);
+  await app.register(relayRoutes);
   await app.register(mcpRoutes);
 
   // Stuck run cleanup
@@ -77,19 +79,18 @@ async function main() {
         console.log(`Cleaned up ${stuckRunning.length} stuck running run(s): ${stuckRunning.map((r) => r.id).join(", ")}`);
       }
 
-      // 2. Runs stuck in "queued" with no bundle_hash (upload command never executed)
+      // 2. Runs stuck in "queued" that were never activated
       const queuedCutoff = new Date(Date.now() - STUCK_QUEUED_MS);
       const stuckQueued = await app.db
         .update(schema.runs)
         .set({
           status: "fail",
           finished_at: new Date(),
-          error_text: "Run was never activated — the upload command was not executed. Re-run voiceci_run_suite and execute the returned command.",
+          error_text: "Run was never activated — the relay command was not executed. Re-run voiceci_run_suite and execute the returned command.",
         })
         .where(
           and(
             eq(schema.runs.status, "queued"),
-            isNull(schema.runs.bundle_hash),
             lt(schema.runs.created_at, queuedCutoff),
           )
         )

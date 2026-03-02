@@ -2,15 +2,14 @@
   "name": "@voiceci/runner",
   "version": "0.0.1",
   "private": true,
-  "main": "dist/index.js",
+  "main": "dist/executor.js",
   "exports": {
-    ".": "./dist/index.js",
+    ".": "./dist/executor.js",
     "./executor": "./dist/executor.js",
     "./load-test": "./dist/load-test.js"
   },
   "scripts": {
     "build": "tsc",
-    "start": "node dist/index.js",
     "clean": "rm -rf dist"
   },
   "dependencies": {

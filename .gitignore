@@ -9,4 +9,5 @@ dist/
 .DS_Store
 coverage/
 .context/
+.claude/worktrees/
 tasks/

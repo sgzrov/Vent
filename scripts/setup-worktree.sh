@@ -3,48 +3,76 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-VOICECI_CONFIG_DIR="$HOME/.config/voiceci"
-ENV_SOURCE="$VOICECI_CONFIG_DIR/.env"
+MAIN_REPO_ROOT=$(git -C "$PROJECT_ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null | sed 's|/\.git$||' || echo "$PROJECT_ROOT")
+
+# Conductor layout: conductor/workspaces/<repo>/<name> → conductor/repos/<repo>
+WORKSPACES_DIR="$(dirname "$PROJECT_ROOT")"
+REPO_NAME="$(basename "$WORKSPACES_DIR")"
+CONDUCTOR_ROOT="$(cd "$WORKSPACES_DIR/../.." 2>/dev/null && pwd || echo "")"
+CONDUCTOR_REPO_ROOT="${CONDUCTOR_ROOT:+$CONDUCTOR_ROOT/repos/$REPO_NAME}"
 
 cd "$PROJECT_ROOT"
 
-echo "==> Setting up VoiceCI worktree in $PROJECT_ROOT"
+echo "==> Setting up VoiceCI workspace in $PROJECT_ROOT"
 
 # ── 1. Copy env files ─────────────────────────────────────────────────────────
 
 copy_env_file() {
   local filename="$1"
-  local fallback="$2"
 
-  # Always copy from centralized config if it exists (source of truth)
-  if [ -f "$fallback" ]; then
-    cp "$fallback" "$filename"
-    echo "    Copied $filename from $fallback"
+  # Already exists (e.g. Conductor copied it or previous run)
+  if [ -f "$filename" ]; then
+    echo "    $filename already exists, keeping it"
     return
   fi
 
-  # If no centralized config, try to copy from another worktree
-  if [ ! -f "$filename" ]; then
-    while IFS= read -r line; do
-      local wt_path
-      wt_path="$(echo "$line" | awk '{print $1}')"
-      if [ "$wt_path" != "$PROJECT_ROOT" ] && [ -f "$wt_path/$filename" ]; then
-        cp "$wt_path/$filename" "$filename"
-        echo "    Copied $filename from $wt_path"
-        # Persist to centralized config for future worktrees
-        mkdir -p "$VOICECI_CONFIG_DIR"
-        cp "$filename" "$fallback"
-        return
-      fi
-    done < <(git worktree list 2>/dev/null || true)
+  # Priority 1: Conductor root repo (repos/<name>/.env)
+  if [ -n "$CONDUCTOR_REPO_ROOT" ] && [ -f "$CONDUCTOR_REPO_ROOT/$filename" ]; then
+    cp "$CONDUCTOR_REPO_ROOT/$filename" "$filename"
+    echo "    Copied $filename from $CONDUCTOR_REPO_ROOT (Conductor root repo)"
+    return
+  fi
 
-    # Last resort: create from example
+  # Priority 2: Git worktree main repo root
+  if [ "$MAIN_REPO_ROOT" != "$PROJECT_ROOT" ] && [ -f "$MAIN_REPO_ROOT/$filename" ]; then
+    cp "$MAIN_REPO_ROOT/$filename" "$filename"
+    echo "    Copied $filename from $MAIN_REPO_ROOT (main worktree)"
+    return
+  fi
+
+  # Priority 3: Any sibling Conductor workspace that has it
+  local workspaces_dir
+  workspaces_dir="$(dirname "$PROJECT_ROOT")"
+  for sibling in "$workspaces_dir"/*/; do
+    sibling="${sibling%/}"
+    if [ "$sibling" != "$PROJECT_ROOT" ] && [ -f "$sibling/$filename" ]; then
+      cp "$sibling/$filename" "$filename"
+      echo "    Copied $filename from $sibling (sibling workspace)"
+      return
+    fi
+  done
+
+  # Priority 4: Any git worktree that has it
+  while IFS= read -r line; do
+    local wt_path
+    wt_path="$(echo "$line" | awk '{print $1}')"
+    if [ "$wt_path" != "$PROJECT_ROOT" ] && [ -f "$wt_path/$filename" ]; then
+      cp "$wt_path/$filename" "$filename"
+      echo "    Copied $filename from $wt_path (git worktree)"
+      return
+    fi
+  done < <(git worktree list 2>/dev/null || true)
+
+  # Last resort: create from example
+  if [ -f ".env.example" ]; then
     cp .env.example "$filename"
-    echo "    Created $filename from .env.example (fill in your secrets)"
+    echo "    WARNING: Created $filename from .env.example (fill in your secrets!)"
+  else
+    echo "    ERROR: No $filename source found and no .env.example available"
   fi
 }
 
-copy_env_file ".env" "$ENV_SOURCE"
+copy_env_file ".env"
 
 # ── 2. Install dependencies ─────────────────────────────────────────────────
 

@@ -3,7 +3,6 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { schema } from "@voiceci/db";
-import { createStorageClient } from "@voiceci/artifacts";
 import { z } from "zod";
 import {
   AdapterTypeSchema,
@@ -20,7 +19,7 @@ export function registerActionTools(
   // --- Tool: voiceci_run_suite ---
   server.registerTool("voiceci_run_suite", {
     title: "Run Test Suite",
-    description: "Run a test suite against a voice agent. Requires a `voiceci/` folder in the project root with `audio.json` and/or `conversations.json`.\n\nRead all JSON files in the `voiceci/` folder, merge them into one config object, then pass the merged object as the `config` parameter. For already-deployed agents (SIP, WebRTC, platform adapters, or agent_url), this queues immediately — no bash step. For bundled websocket agents, a short upload command is returned.\n\nThen poll voiceci_get_status with the run_id.",
+    description: "Run a test suite against a voice agent. Requires a `voiceci/` folder in the project root with `audio.json` and/or `conversations.json`.\n\nRead all JSON files in the `voiceci/` folder, merge them into one config object, then pass the merged object as the `config` parameter. For already-deployed agents (SIP, WebRTC, platform adapters, or agent_url), this queues immediately — no bash step. For local WebSocket agents with start_command, a relay command is returned to connect your local agent.\n\nThen poll voiceci_get_status with the run_id.",
     inputSchema: {
       config: z
         .any()
@@ -161,46 +160,47 @@ export function registerActionTools(
       };
     }
 
-    // Bundled agent — store config in DB, return bash for tar+upload+hashes
-    const storage = createStorageClient();
-    const bundleKey = `bundles/${randomUUID()}.tar.gz`;
-    const uploadUrl = await storage.presignUpload(bundleKey);
+    // Local WebSocket agent — store config in DB, return relay command
+    const relayToken = randomUUID();
+    const startCommand = cfg.start_command as string | undefined;
 
     const [run] = await app.db
       .insert(schema.runs)
       .values({
         api_key_id: apiKeyId,
         user_id: userId,
-        source_type: "bundle",
-        bundle_key: bundleKey,
+        source_type: "relay",
+        bundle_key: null,
         bundle_hash: null,
         status: "queued",
         test_spec_json: testSpecJson,
         idempotency_key: idempotency_key ?? null,
+        relay_token: relayToken,
       })
       .returning();
 
     const runId = run!.id;
+    const agentPort = 3001;
 
-    const root = project_root ?? ".";
-    const tarTarget = project_root ? `-C "${project_root}" .` : ".";
-    const excludes = "--exclude=node_modules --exclude=.git --exclude=dist --exclude=.next --exclude=.turbo --exclude=coverage --exclude=voiceci";
-    const lockfileHashCmd = `(cat "${root}/package-lock.json" "${root}/yarn.lock" "${root}/pnpm-lock.yaml" 2>/dev/null || true) | shasum -a 256 | awk '{print $1}'`;
-    const activateUrl = `${apiUrl}/internal/runs/${runId}/activate`;
+    const relayArgs = [
+      `--run-id ${runId}`,
+      `--token ${relayToken}`,
+      `--api-url ${apiUrl}`,
+      `--agent-port ${agentPort}`,
+    ];
+    if (startCommand) {
+      relayArgs.push(`--start-command "${startCommand}"`);
+    }
+    if (cfg.health_endpoint) {
+      relayArgs.push(`--health-endpoint ${cfg.health_endpoint}`);
+    }
 
-    const uploadCommand = [
-      `tar czf /tmp/vci-bundle.tar.gz ${excludes} ${tarTarget}`,
-      `BUNDLE_HASH=$(shasum -a 256 /tmp/vci-bundle.tar.gz | awk '{print $1}')`,
-      `LOCKFILE_HASH=$(${lockfileHashCmd})`,
-      `curl -sf -X PUT -T /tmp/vci-bundle.tar.gz -H 'Content-Type: application/gzip' '${uploadUrl}'`,
-      `curl -sf -X POST '${activateUrl}' -H 'Content-Type: application/json' -d "{\\"bundle_hash\\":\\"$BUNDLE_HASH\\",\\"lockfile_hash\\":\\"$LOCKFILE_HASH\\"}"`,
-      `echo "Upload complete. Run activated."`,
-    ].join(" && ");
+    const relayCommand = `curl -sS ${apiUrl}/relay/client.mjs -o /tmp/voiceci-relay.mjs && node /tmp/voiceci-relay.mjs ${relayArgs.join(" ")}`;
 
     return {
       content: [{
         type: "text" as const,
-        text: `ACTION REQUIRED: Run this command in the project root to upload the bundle and start the test. The run will NOT proceed until you execute this command.\n\n${uploadCommand}\n\nAfter the command prints "Upload complete. Run activated.", poll voiceci_get_status with run_id: ${runId}`,
+        text: `ACTION REQUIRED: Run this command in the project root to start your agent and connect to VoiceCI for testing. The run will NOT proceed until you execute this command.\n\n${relayCommand}\n\nThe relay client will start your agent, connect to VoiceCI, and tests will run against your local agent. After tests complete, poll voiceci_get_status with run_id: ${runId}`,
       }],
     };
   });

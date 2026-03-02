@@ -12,7 +12,6 @@
   "dependencies": {
     "@voiceci/shared": "workspace:*",
     "@voiceci/db": "workspace:*",
-    "@voiceci/artifacts": "workspace:*",
     "@voiceci/runner": "workspace:*",
     "@voiceci/adapters": "workspace:*",
     "bullmq": "^5.30.0",

@@ -1,5 +1,5 @@
 export type RunStatus = "queued" | "running" | "pass" | "fail";
-export type SourceType = "bundle" | "remote";
+export type SourceType = "bundle" | "remote" | "relay";
 
 export interface VoiceConfig {
   tts?: { voice_id?: string; api_key_env?: string };

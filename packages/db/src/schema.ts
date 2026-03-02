@@ -16,7 +16,7 @@ export const runStatusEnum = pgEnum("run_status", [
   "fail",
 ]);
 
-export const sourceTypeEnum = pgEnum("source_type", ["bundle", "remote"]);
+export const sourceTypeEnum = pgEnum("source_type", ["bundle", "remote", "relay"]);
 
 export const scenarioStatusEnum = pgEnum("scenario_status", ["pass", "fail"]);
 
@@ -42,6 +42,7 @@ export const runs = pgTable("runs", {
   test_spec_json: jsonb("test_spec_json"),
   error_text: text("error_text"),
   idempotency_key: text("idempotency_key"),
+  relay_token: text("relay_token"),
 });
 
 export const scenarioResults = pgTable("scenario_results", {
