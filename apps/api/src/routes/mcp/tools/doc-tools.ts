@@ -16,7 +16,7 @@ export function registerDocTools(server: McpServer) {
 
   server.registerTool("voiceci_get_scenario_guide", {
     title: "Scenario Design Guide",
-    description: "PRIMARY GUIDE — call this first when setting up tests. Includes voiceci.json file format, audio test quick reference, red-team tips, tool_call_eval examples, agent analysis steps, code-to-scenario mapping, 7 persona archetypes, and conversation test authoring. This single guide has everything you need to create voiceci.json. Do NOT call other guides alongside this one.",
+    description: "PRIMARY GUIDE — call this first when setting up tests. Includes voiceci/ folder format, audio test quick reference, red-team tips, tool_call_eval examples, agent analysis steps, code-to-scenario mapping, 7 persona archetypes, and conversation test authoring. This single guide has everything you need to create the voiceci/ test folder. Do NOT call other guides alongside this one.",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
   }, async () => ({
     content: [{ type: "text" as const, text: SCENARIO_GUIDE }],
