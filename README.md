@@ -96,14 +96,14 @@ After connecting, these tools are available to your coding agent:
 
 | Tool | Purpose |
 |------|---------|
-| `voiceci_get_scenario_guide` | Design test scenarios — file format, agent analysis, personas, conversation authoring |
-| `voiceci_get_audio_test_reference` | Audio test definitions, durations, and threshold customization |
-| `voiceci_get_eval_examples` | Red-team attack patterns and tool call integration guides |
-| `voiceci_get_result_guide` | Interpret results — failure diagnosis, metrics, iterative testing |
-| `voiceci_run_suite` | Run audio + conversation tests (relay connects your local agent automatically) |
-| `voiceci_load_test` | Run load/stress tests |
-| `voiceci_get_status` | Check run status and get results |
-| `voiceci_get_setup_guide` | Installation and connection instructions |
+| `voiceci_run_tests` | Run audio + conversation tests (relay connects your local agent automatically) |
+| `voiceci_run_load_test` | Run load/stress tests with traffic patterns (ramp, spike, sustained, soak) |
+| `voiceci_get_run_status` | Check run status and get partial/final results |
+| `voiceci_guide_setup` | Installation and connection instructions |
+| `voiceci_guide_test_authoring` | Design tests — file format, agent analysis, personas, conversation authoring |
+| `voiceci_guide_results` | Interpret results — failure diagnosis, metrics, iterative testing |
+| `voiceci_guide_audio_tests` | Audio test definitions, durations, and threshold customization |
+| `voiceci_guide_security_and_tools` | Red-team attack patterns and tool call integration guides |
 
 ## License
 

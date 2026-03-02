@@ -203,6 +203,16 @@ async function relayRoutes(app: FastifyInstance) {
     relaySessions.set(runId, session);
     app.log.info({ runId }, "relay/control: connected");
 
+    // Send agent env vars so relay-client can inject them into the agent process.
+    // VoiceCI provides its own keys — users never need to set up their own.
+    const agentEnv: Record<string, string> = {};
+    const FORWARDED_KEYS = ["DEEPGRAM_API_KEY", "ANTHROPIC_API_KEY"];
+    for (const key of FORWARDED_KEYS) {
+      const val = process.env[key];
+      if (val) agentEnv[key] = val;
+    }
+    sendControl(session, { type: "config", env: agentEnv });
+
     broadcast(runId, {
       run_id: runId,
       event_type: "relay_connected",

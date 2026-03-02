@@ -8,11 +8,13 @@ Tests live in a `voiceci/` folder in the project root, with separate files for e
 
 ### How Testing Works
 
-VoiceCI runs all tests REMOTELY in cloud infrastructure. For local WebSocket agents (with `start_command`), VoiceCI uses a relay tunnel — your agent runs locally and VoiceCI connects to it via WebSocket. You MUST execute the returned relay command after calling `voiceci_run_suite`. Code changes take effect immediately without re-uploading.
+VoiceCI runs all tests REMOTELY in cloud infrastructure. For local WebSocket agents (with `start_command`), VoiceCI uses a relay tunnel — your agent runs locally and VoiceCI connects to it via WebSocket. You MUST execute the returned relay command after calling `voiceci_run_tests`. Code changes take effect immediately without re-uploading.
+
+**API keys**: VoiceCI automatically provides `DEEPGRAM_API_KEY` and `ANTHROPIC_API_KEY` to the agent process via the relay. The user does NOT need to set up their own API keys, source `.env` files, or install dotenv. Do NOT read, modify, or reference the user's `.env` file — VoiceCI handles this.
 
 ### File Format
 
-Read all JSON files in the `voiceci/` folder, merge them into one config object, then call `voiceci_run_suite` with the merged object as the `config` parameter. For local agents, execute the returned relay command in your terminal.
+Read all JSON files in the `voiceci/` folder, merge them into one config object, then call `voiceci_run_tests` with the merged object as the `config` parameter. For local agents, execute the returned relay command in your terminal.
 
 #### voiceci/audio.json (default — create this first)
 
@@ -68,7 +70,7 @@ If `conversations.json` is the only file (no `audio.json`), it must also include
 | `start_command` | string | No | Command to start the agent (default: `npm run start`). Websocket only. |
 | `health_endpoint` | string | No | Health check path (default: `/health`). Websocket only. |
 | `agent_url` | string | No | Agent URL (default: `http://localhost:3001`). Websocket only. |
-| `audio_tests` | string[] | Yes | Audio test names to run (call `voiceci_get_audio_test_reference`) |
+| `audio_tests` | string[] | Yes | Audio test names to run (call `voiceci_guide_audio_tests`) |
 | `audio_test_thresholds` | object | No | Override default pass/fail thresholds |
 | `target_phone_number` | string | No | Phone number for sip/retell/bland adapters |
 | `platform` | object | No | Platform config for vapi/retell/elevenlabs/bland |
@@ -95,8 +97,8 @@ Each conversation test object:
 
 ### Workflow
 
-1. **First run**: Read agent code → create `voiceci/` folder with `audio.json` → read it → call `voiceci_run_suite(config=...)` → run relay command if returned → poll `voiceci_get_status`
-2. **Adding conversation tests**: Create `voiceci/conversations.json` → read both files, merge → call `voiceci_run_suite` with merged config
+1. **First run**: Read agent code → create `voiceci/` folder with `audio.json` → read it → call `voiceci_run_tests(config=...)` → run relay command if returned → poll `voiceci_get_run_status`
+2. **Adding conversation tests**: Create `voiceci/conversations.json` → read both files, merge → call `voiceci_run_tests` with merged config
 3. **Selective runs**: To run only audio tests, read only `audio.json`. To run only conversation tests, read only `conversations.json`.
 4. **After failures**: Update the relevant file (`audio.json` or `conversations.json`) → re-run
 5. **Regression tests**: Add new pinning scenarios to `conversations.json` after fixing failures
@@ -105,7 +107,7 @@ Commit the `voiceci/` folder to git so the team can edit and reuse tests.
 
 ### Audio Tests
 
-For available test names, durations, and threshold customization, call `voiceci_get_audio_test_reference`.
+For available test names, durations, and threshold customization, call `voiceci_guide_audio_tests`.
 
 **Smoke test**: `["echo", "ttfb", "barge_in", "silence_handling", "connection_stability", "response_completeness"]`
 
@@ -327,7 +329,7 @@ Write specific, binary (yes/no) questions. Each tests ONE behavior.
 
 ### Red-Team & Tool Call Testing
 
-For detailed red-team attack patterns (with caller_prompt and eval examples) and tool call integration guides, call `voiceci_get_eval_examples`.
+For detailed red-team attack patterns (with caller_prompt and eval examples) and tool call integration guides, call `voiceci_guide_security_and_tools`.
 
 ### max_turns — Depth Guide
 

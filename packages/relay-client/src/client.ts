@@ -20,9 +20,15 @@ export class RelayClient {
   private config: RelayClientConfig;
   private closed = false;
   private handlers = new Map<string, RelayEventHandler[]>();
+  private _agentEnv: Record<string, string> = {};
 
   constructor(config: RelayClientConfig) {
     this.config = config;
+  }
+
+  /** Env vars received from VoiceCI server to inject into the agent process. */
+  get agentEnv(): Record<string, string> {
+    return this._agentEnv;
   }
 
   on(event: string, handler: RelayEventHandler): void {
@@ -43,13 +49,25 @@ export class RelayClient {
 
     return new Promise<void>((resolve, reject) => {
       const ws = new WebSocket(controlUrl);
+      let configReceived = false;
 
       ws.addEventListener("open", () => {
         this.controlWs = ws;
         this.setupControlHandlers(ws);
         this.emit("connected");
+      });
+
+      // Wait for the config message (sent immediately after auth) before resolving.
+      // This ensures agentEnv is populated before the caller spawns the agent.
+      this.on("config_received", () => {
+        configReceived = true;
         resolve();
       });
+
+      // Fallback: resolve after 3s even if no config arrives (backwards compat)
+      setTimeout(() => {
+        if (!configReceived && this.controlWs) resolve();
+      }, 3_000);
 
       ws.addEventListener("error", (ev) => {
         if (!this.controlWs) {
@@ -92,9 +110,12 @@ export class RelayClient {
     ws.addEventListener("message", (event) => {
       try {
         const data = typeof event.data === "string" ? event.data : new TextDecoder().decode(event.data as ArrayBuffer);
-        const msg = JSON.parse(data) as { type: string; conn_id?: string };
+        const msg = JSON.parse(data) as { type: string; conn_id?: string; env?: Record<string, string> };
 
-        if (msg.type === "new_connection" && msg.conn_id) {
+        if (msg.type === "config" && msg.env) {
+          this._agentEnv = msg.env;
+          this.emit("config_received");
+        } else if (msg.type === "new_connection" && msg.conn_id) {
           this.handleNewConnection(msg.conn_id);
         } else if (msg.type === "run_complete") {
           this.emit("run_complete");

@@ -52,13 +52,31 @@ async function waitForHealth(port: number, path: string, timeoutMs = 60_000): Pr
 let agentProcess: ChildProcess | null = null;
 
 async function main() {
-  // 1. Start agent if --start-command provided
+  // 1. Connect relay first — receives env vars (API keys) from VoiceCI server
+  const client = new RelayClient({
+    apiUrl,
+    runId,
+    relayToken: token,
+    agentPort,
+    healthEndpoint,
+  });
+
+  console.error("[relay] Connecting to relay server...");
+  await client.connect();
+  console.error("[relay] Connected to relay server");
+
+  const envKeys = Object.keys(client.agentEnv);
+  if (envKeys.length > 0) {
+    console.error(`[relay] Received env vars from VoiceCI: ${envKeys.join(", ")}`);
+  }
+
+  // 2. Start agent if --start-command provided, with VoiceCI env vars injected
   if (startCommand) {
     console.error(`[relay] Starting agent: ${startCommand}`);
     agentProcess = spawn(startCommand, {
       shell: true,
       stdio: "pipe",
-      env: { ...process.env, PORT: String(agentPort) },
+      env: { ...process.env, ...client.agentEnv, PORT: String(agentPort) },
     });
 
     agentProcess.stdout?.on("data", (data: Buffer) => {
@@ -72,24 +90,11 @@ async function main() {
       console.error(`[relay] Agent process exited (code=${code}, signal=${signal})`);
     });
 
-    // 2. Wait for health
+    // 3. Wait for health
     console.error(`[relay] Waiting for agent health at localhost:${agentPort}${healthEndpoint}...`);
     await waitForHealth(agentPort, healthEndpoint);
     console.error("[relay] Agent is healthy");
   }
-
-  // 3. Connect relay
-  const client = new RelayClient({
-    apiUrl,
-    runId,
-    relayToken: token,
-    agentPort,
-    healthEndpoint,
-  });
-
-  console.error("[relay] Connecting to relay server...");
-  await client.connect();
-  console.error("[relay] Connected to relay server");
 
   // 4. Activate the run (queue the test job)
   console.error("[relay] Activating run...");

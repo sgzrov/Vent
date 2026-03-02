@@ -16,32 +16,25 @@ import { executeTests, expandRedTeamTests } from "@voiceci/runner/executor";
 // ---------------------------------------------------------------------------
 
 async function emitEvent(
-  db: Database,
+  _db: Database,
   runId: string,
   eventType: string,
   message: string,
   metadata?: Record<string, unknown>,
 ): Promise<void> {
   try {
-    // Write to DB
-    await db.insert(schema.runEvents).values({
-      run_id: runId,
-      event_type: eventType,
-      message,
-      metadata_json: metadata ?? null,
-    });
-
-    // Notify API for SSE/MCP broadcast
+    // POST to API — it handles both DB write and SSE broadcast.
+    // (Don't write to DB here too, or events get duplicated.)
     const apiUrl = process.env["API_URL"] ?? "https://voiceci-api.fly.dev";
     const secret = process.env["RUNNER_CALLBACK_SECRET"] ?? "";
-    void fetch(`${apiUrl}/internal/run-event`, {
+    await fetch(`${apiUrl}/internal/run-event`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         [RUNNER_CALLBACK_HEADER]: secret,
       },
       body: JSON.stringify({ run_id: runId, event_type: eventType, message, metadata_json: metadata }),
-    }).catch(() => {});
+    });
   } catch {
     // Best-effort — don't fail the run if event emission fails
   }

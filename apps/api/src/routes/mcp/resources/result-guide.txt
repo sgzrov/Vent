@@ -99,7 +99,7 @@ Testing is NOT single-shot. You should iterate based on results. Update the test
 
 ### Workflow: Smoke → Analyze → Follow-up → Confirm
 
-**1. Smoke test** (first voiceci_run_suite call):
+**1. Smoke test** (first voiceci_run_tests call):
 - Include all 6 audio tests + 2-3 happy-path conversation tests (5 turns each)
 - This gives a broad baseline in ~60 seconds
 

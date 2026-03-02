@@ -64,7 +64,7 @@ export async function callbackRoutes(app: FastifyInstance) {
       result?: Record<string, unknown>;
     };
 
-    // Insert partial result into DB for incremental visibility via voiceci_get_status
+    // Insert partial result into DB for incremental visibility via voiceci_get_run_status
     if (body.result) {
       try {
         const isConversation = body.test_type === "conversation";
@@ -106,7 +106,7 @@ export async function callbackRoutes(app: FastifyInstance) {
   });
 
   // --- Run activation (called by relay client for local agents) ---
-  // Config is always pre-stored by voiceci_run_suite — this activates the run and queues the job.
+  // Config is always pre-stored by voiceci_run_tests — this activates the run and queues the job.
   app.post<{ Params: { id: string } }>("/internal/runs/:id/activate", async (request, reply) => {
     const runId = request.params.id;
     const body = request.body as Record<string, unknown>;
@@ -126,7 +126,7 @@ export async function callbackRoutes(app: FastifyInstance) {
     }
 
     if (!run.test_spec_json) {
-      return reply.status(400).send({ error: "Run has no stored config — voiceci_run_suite must be called first" });
+      return reply.status(400).send({ error: "Run has no stored config — voiceci_run_tests must be called first" });
     }
 
     // Authenticate via relay token

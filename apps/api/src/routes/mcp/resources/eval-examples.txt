@@ -90,7 +90,7 @@ Voice agents often make tool calls mid-conversation (CRM lookups, appointment bo
 
 For platform-hosted agents, VoiceCI exchanges audio with the agent and then pulls ground truth tool call data after the call. `vapi` and `elevenlabs` connect via WebSocket. `retell` and `bland` connect via SIP (phone call) and resolve the platform call ID post-call to fetch tool data.
 
-Set the `platform` config in voiceci_run_suite:
+Set the `platform` config in voiceci_run_tests:
 ```json
 {
   "adapter": "vapi",

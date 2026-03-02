@@ -16,10 +16,10 @@ export function registerActionTools(
   apiKeyId: string,
   userId: string,
 ) {
-  // --- Tool: voiceci_run_suite ---
-  server.registerTool("voiceci_run_suite", {
-    title: "Run Test Suite",
-    description: "Run a test suite against a voice agent. Requires a `voiceci/` folder in the project root with `audio.json` and/or `conversations.json`.\n\nRead all JSON files in the `voiceci/` folder, merge them into one config object, then pass the merged object as the `config` parameter. For already-deployed agents (SIP, WebRTC, platform adapters, or agent_url), this queues immediately — no bash step. For local WebSocket agents with start_command, a relay command is returned to connect your local agent.\n\nThen poll voiceci_get_status with the run_id.",
+  // --- Tool: voiceci_run_tests ---
+  server.registerTool("voiceci_run_tests", {
+    title: "Run Tests",
+    description: "Run audio and conversation tests against a voice agent. Requires a `voiceci/` folder in the project root with `audio.json` and/or `conversations.json`.\n\nRead all JSON files in the `voiceci/` folder, merge them into one config object, then pass the merged object as the `config` parameter. For already-deployed agents (SIP, WebRTC, platform adapters, or agent_url), this queues immediately — no bash step. For local WebSocket agents with start_command, a relay command is returned to connect your local agent.\n\nThen poll voiceci_get_run_status with the run_id.",
     inputSchema: {
       config: z
         .any()
@@ -154,7 +154,7 @@ export function registerActionTools(
           text: JSON.stringify({
             run_id: runId,
             status: "queued",
-            message: "Run queued. Poll voiceci_get_status with the run_id.",
+            message: "Run queued. Poll voiceci_get_run_status with the run_id.",
           }, null, 2),
         }],
       };
@@ -200,13 +200,13 @@ export function registerActionTools(
     return {
       content: [{
         type: "text" as const,
-        text: `ACTION REQUIRED: Run this command in the project root to start your agent and connect to VoiceCI for testing. The run will NOT proceed until you execute this command.\n\n${relayCommand}\n\nThe relay client will start your agent, connect to VoiceCI, and tests will run against your local agent. After tests complete, poll voiceci_get_status with run_id: ${runId}`,
+        text: `ACTION REQUIRED: Run this command in the project root to start your agent and connect to VoiceCI for testing. The run will NOT proceed until you execute this command.\n\n${relayCommand}\n\nThe relay client will start your agent, connect to VoiceCI, and tests will run against your local agent. After tests complete, poll voiceci_get_run_status with run_id: ${runId}`,
       }],
     };
   });
 
-  // --- Tool: voiceci_load_test ---
-  server.registerTool("voiceci_load_test", {
+  // --- Tool: voiceci_run_load_test ---
+  server.registerTool("voiceci_run_load_test", {
     title: "Run Load Test",
     description: "Run a load/stress test against an already-deployed voice agent. Sends N concurrent calls with a traffic pattern (ramp, spike, sustained, soak). Measures TTFB percentiles, error rates, and auto-detects breaking point. Results pushed via SSE as timeline snapshots every second. Only works with already-deployed agents (SIP, WebRTC, or websocket with agent_url).",
     inputSchema: {
@@ -305,12 +305,12 @@ export function registerActionTools(
     };
   });
 
-  // --- Tool: voiceci_get_status ---
-  server.registerTool("voiceci_get_status", {
+  // --- Tool: voiceci_get_run_status ---
+  server.registerTool("voiceci_get_run_status", {
     title: "Get Run Status",
     description: "Get the current status and results of a test run by ID. Poll this to track progress — it returns partial results as individual tests complete, so you can reason about early failures while other tests are still running. Once the run finishes, returns the full aggregate summary and all results.",
     inputSchema: {
-      run_id: z.string().uuid().describe("The run ID returned by voiceci_run_suite."),
+      run_id: z.string().uuid().describe("The run ID returned by voiceci_run_tests."),
     },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
   }, async ({ run_id }) => {

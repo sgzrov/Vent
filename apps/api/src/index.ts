@@ -86,7 +86,7 @@ async function main() {
         .set({
           status: "fail",
           finished_at: new Date(),
-          error_text: "Run was never activated — the relay command was not executed. Re-run voiceci_run_suite and execute the returned command.",
+          error_text: "Run was never activated — the relay command was not executed. Re-run voiceci_run_tests and execute the returned command.",
         })
         .where(
           and(

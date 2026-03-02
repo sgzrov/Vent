@@ -18,7 +18,7 @@ Tests run in parallel with independent connections. For already-deployed agents 
 
 ## Audio Test Thresholds (Defaults)
 
-You can override any threshold via `audio_test_thresholds` in voiceci_run_suite:
+You can override any threshold via `audio_test_thresholds` in voiceci_run_tests:
 
 | Test | Threshold | Default | Override Key |
 |------|-----------|---------|-------------|
