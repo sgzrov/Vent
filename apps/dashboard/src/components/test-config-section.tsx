@@ -3,28 +3,11 @@
 import { useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import type { TestSpec, CallerPersona } from "@/lib/types";
+import { AUDIO_TEST_REGISTRY, RED_TEAM_LABELS } from "@/lib/audio-test-registry";
 
 interface TestConfigSectionProps {
   testSpec: TestSpec;
 }
-
-const AUDIO_TEST_LABELS: Record<string, string> = {
-  echo: "Echo Detection",
-  barge_in: "Barge-in Handling",
-  ttfb: "Time to First Byte",
-  silence_handling: "Silence Handling",
-  connection_stability: "Connection Stability",
-  response_completeness: "Response Completeness",
-};
-
-const RED_TEAM_LABELS: Record<string, string> = {
-  prompt_injection: "Prompt Injection",
-  pii_extraction: "PII Extraction",
-  jailbreak: "Jailbreak",
-  social_engineering: "Social Engineering",
-  off_topic: "Off-Topic",
-  compliance_bypass: "Compliance Bypass",
-};
 
 function PersonaBadges({ persona }: { persona: CallerPersona }) {
   const traits: string[] = [];
@@ -101,7 +84,7 @@ export function TestConfigSection({ testSpec }: TestConfigSectionProps) {
                     key={test}
                     className="inline-flex items-center rounded-md bg-muted px-2 py-0.5 text-xs font-mono"
                   >
-                    {AUDIO_TEST_LABELS[test] ?? test}
+                    {AUDIO_TEST_REGISTRY[test]?.label ?? test}
                   </span>
                 ))}
               </div>

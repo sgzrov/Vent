@@ -26,7 +26,7 @@ export default async function RootLayout({
 
   return (
     <html lang="en" suppressHydrationWarning>
-      <body className={inter.className}>
+      <body className={`${inter.className} antialiased`}>
         <div className="min-h-screen bg-background">
           {user && (
             <SidebarNav
@@ -37,7 +37,7 @@ export default async function RootLayout({
               }}
             />
           )}
-          <main className={user ? "ml-60 px-10 py-8 max-w-5xl" : ""}>
+          <main className={user ? "ml-56 px-7 pb-10" : ""}>
             {children}
           </main>
         </div>

@@ -36,7 +36,7 @@ export function StatusBadge({ status, size = "sm" }: StatusBadgeProps) {
       variant="outline"
       className={cn(
         config.className,
-        size === "lg" && "text-sm px-3 py-1"
+        size === "lg" && "text-xs px-2.5 py-0.5"
       )}
     >
       {status === "running" && (
