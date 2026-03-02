@@ -99,10 +99,12 @@ export default function ApiKeysPage() {
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-6">
+      <div className="h-16 flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold">API Keys</h1>
-          <p className="text-sm text-muted-foreground mt-1">
+          <h1 className="text-[1.125rem] leading-none font-medium tracking-[-0.01em]">
+            API Keys
+          </h1>
+          <p className="text-[14px] text-muted-foreground mt-2">
             Manage API keys for authenticating with the VoiceCI MCP server.
           </p>
         </div>
@@ -177,6 +179,7 @@ export default function ApiKeysPage() {
           </DialogContent>
         </Dialog>
       </div>
+      <div className="-mx-7 border-b mb-8" />
 
       {loading ? (
         <p className="text-muted-foreground">Loading...</p>

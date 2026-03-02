@@ -1,6 +1,4 @@
-"use client";
-
-import { useState } from "react";
+import { cn } from "@/lib/utils";
 import type { EvalResult } from "@/lib/types";
 
 interface EvalResultsProps {
@@ -9,32 +7,45 @@ interface EvalResultsProps {
 }
 
 function EvalRow({ eval_ }: { eval_: EvalResult }) {
-  const [showReasoning, setShowReasoning] = useState(false);
-
   return (
     <div
-      className="rounded-md border border-border p-3 cursor-pointer hover:bg-accent/30 transition-colors"
-      onClick={() => setShowReasoning(!showReasoning)}
+      className={cn(
+        "rounded-md border p-3",
+        eval_.passed
+          ? "border-emerald-500/20 bg-emerald-500/5"
+          : "border-red-500/20 bg-red-500/5"
+      )}
     >
-      <div className="flex items-start gap-2">
+      <div className="flex items-start gap-3">
         <span
-          className={`mt-1 h-2 w-2 rounded-full shrink-0 ${
+          className={cn(
+            "mt-1 h-2.5 w-2.5 rounded-full shrink-0",
             eval_.passed ? "bg-emerald-500" : "bg-red-500"
-          }`}
+          )}
         />
         <div className="flex-1 min-w-0">
-          <p className="text-sm">{eval_.question}</p>
+          <p className="text-sm font-medium">{eval_.question}</p>
           {!eval_.relevant && (
-            <span className="text-xs text-muted-foreground">
-              (not relevant to conversation)
+            <span className="text-xs text-muted-foreground italic">
+              Not relevant to this conversation
             </span>
           )}
-          {showReasoning && (
+          {eval_.relevant && eval_.reasoning && (
             <p className="text-xs text-muted-foreground mt-1.5 leading-relaxed">
               {eval_.reasoning}
             </p>
           )}
         </div>
+        <span
+          className={cn(
+            "shrink-0 text-xs font-medium px-2 py-0.5 rounded",
+            eval_.passed
+              ? "text-emerald-700 dark:text-emerald-400"
+              : "text-red-700 dark:text-red-400"
+          )}
+        >
+          {eval_.passed ? "PASS" : "FAIL"}
+        </span>
       </div>
     </div>
   );

@@ -1,85 +1,157 @@
 import { Card, CardContent } from "@/components/ui/card";
-import type { RunAggregateV2 } from "@/lib/types";
+import type { RunAggregateV2, TestSpec } from "@/lib/types";
 import { formatDuration } from "@/lib/format";
+import { cn } from "@/lib/utils";
+import { AUDIO_TEST_REGISTRY, RED_TEAM_LABELS } from "@/lib/audio-test-registry";
 
 interface MetricCardsProps {
   aggregate: RunAggregateV2;
+  testSpec?: TestSpec | null;
 }
 
-export function MetricCards({ aggregate }: MetricCardsProps) {
-  const totalTests =
-    aggregate.audio_tests.total + aggregate.conversation_tests.total;
-  const totalPassed =
-    aggregate.audio_tests.passed + aggregate.conversation_tests.passed;
-  const totalFailed =
-    aggregate.audio_tests.failed + aggregate.conversation_tests.failed;
+export function MetricCards({ aggregate, testSpec }: MetricCardsProps) {
+  const hasAudio = aggregate.audio_tests.total > 0;
+  const hasConversation = aggregate.conversation_tests.total > 0;
+  const hasConfig =
+    (testSpec?.audio_tests?.length ?? 0) > 0 ||
+    (testSpec?.conversation_tests?.length ?? 0) > 0 ||
+    (testSpec?.red_team?.length ?? 0) > 0;
 
-  const cards = [
-    {
-      label: "Total Tests",
-      value: `${totalPassed}/${totalTests}`,
-      sub: totalFailed > 0 ? `${totalFailed} failed` : "all passed",
-      color: totalFailed > 0 ? "text-red-600" : "text-emerald-600",
-    },
-    ...(aggregate.audio_tests.total > 0
-      ? [
-          {
-            label: "Audio Tests",
-            value: `${aggregate.audio_tests.passed}/${aggregate.audio_tests.total}`,
-            sub:
-              aggregate.audio_tests.failed > 0
-                ? `${aggregate.audio_tests.failed} failed`
-                : "all passed",
-            color:
-              aggregate.audio_tests.failed > 0
-                ? "text-red-600"
-                : "text-emerald-600",
-          },
-        ]
-      : []),
-    ...(aggregate.conversation_tests.total > 0
-      ? [
-          {
-            label: "Conversation Tests",
-            value: `${aggregate.conversation_tests.passed}/${aggregate.conversation_tests.total}`,
-            sub:
-              aggregate.conversation_tests.failed > 0
-                ? `${aggregate.conversation_tests.failed} failed`
-                : "all passed",
-            color:
-              aggregate.conversation_tests.failed > 0
-                ? "text-red-600"
-                : "text-emerald-600",
-          },
-        ]
-      : []),
-    {
-      label: "Duration",
-      value: formatDuration(aggregate.total_duration_ms),
-      sub: null,
-      color: null,
-    },
-  ];
+  const primary = hasAudio
+    ? {
+        label: "Audio tests",
+        value: `${aggregate.audio_tests.passed}/${aggregate.audio_tests.total}`,
+        failed: aggregate.audio_tests.failed,
+      }
+    : {
+        label: "Conversation tests",
+        value: `${aggregate.conversation_tests.passed}/${aggregate.conversation_tests.total}`,
+        failed: aggregate.conversation_tests.failed,
+      };
 
   return (
-    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-      {cards.map((card) => (
-        <Card key={card.label}>
-          <CardContent className="pt-4 pb-3">
-            <p className="text-xs text-muted-foreground uppercase tracking-wider">
-              {card.label}
-            </p>
-            <p className="text-2xl font-bold mt-1 tabular-nums">{card.value}</p>
-            {card.sub && (
-              <p
-                className={`text-xs mt-0.5 ${card.color ?? "text-muted-foreground"}`}
+    <div
+      className={cn(
+        "grid grid-cols-1 gap-3",
+        hasConfig && "xl:grid-cols-[minmax(0,1fr)_minmax(0,1.3fr)]"
+      )}
+    >
+      <Card>
+        <CardContent className="py-4">
+          <div className="flex flex-wrap items-end gap-x-6 gap-y-3">
+            <div>
+              <p className="text-[11px] text-muted-foreground uppercase tracking-wider">
+                {primary.label}
+              </p>
+              <p className="text-[1.4rem] leading-none font-semibold mt-1 tabular-nums">
+                {primary.value}
+              </p>
+            </div>
+
+            <span className="hidden sm:block h-8 w-px bg-border" />
+
+            <div>
+              <p className="text-[11px] text-muted-foreground uppercase tracking-wider">
+                Status
+              </p>
+              <span
+                className={cn(
+                  "inline-flex items-center rounded-md px-2 py-1 text-xs font-medium mt-1",
+                  primary.failed > 0
+                    ? "bg-red-500/10 text-red-600 dark:text-red-400"
+                    : "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                )}
               >
-                {card.sub}
+                {primary.failed > 0 ? `${primary.failed} failed` : "All passed"}
+              </span>
+            </div>
+
+            <span className="hidden sm:block h-8 w-px bg-border" />
+
+            <div>
+              <p className="text-[11px] text-muted-foreground uppercase tracking-wider">
+                Duration
+              </p>
+              <p className="text-[1.4rem] leading-none font-semibold mt-1 tabular-nums">
+                {formatDuration(aggregate.total_duration_ms)}
+              </p>
+            </div>
+
+            {hasAudio && hasConversation && (
+              <p className="text-xs text-muted-foreground ml-auto">
+                Conversation: {aggregate.conversation_tests.passed}/
+                {aggregate.conversation_tests.total}
               </p>
             )}
+          </div>
+        </CardContent>
+      </Card>
+
+      {hasConfig && (
+        <Card>
+          <CardContent className="py-4">
+            <div className="space-y-3">
+              <p className="text-[11px] text-muted-foreground uppercase tracking-wider">
+                Tests Run
+              </p>
+
+              {(testSpec?.audio_tests?.length ?? 0) > 0 && (
+                <div>
+                  <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-2">
+                    Audio
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {testSpec!.audio_tests!.map((test) => (
+                      <span
+                        key={test}
+                        className="inline-flex items-center rounded-md bg-muted px-2 py-0.5 text-xs font-mono"
+                      >
+                        {AUDIO_TEST_REGISTRY[test]?.label ?? test}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {(testSpec?.conversation_tests?.length ?? 0) > 0 && (
+                <div>
+                  <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-2">
+                    Conversations
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {testSpec!.conversation_tests!.map((test, i) => (
+                      <span
+                        key={`${test.name ?? "conversation"}-${i}`}
+                        className="inline-flex items-center rounded-md bg-muted px-2 py-0.5 text-xs font-mono"
+                      >
+                        {test.name ?? `Conversation ${i + 1}`}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {(testSpec?.red_team?.length ?? 0) > 0 && (
+                <div>
+                  <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-2">
+                    Security
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {testSpec!.red_team!.map((attack) => (
+                      <span
+                        key={attack}
+                        className="inline-flex items-center rounded-md bg-red-500/10 text-red-600 dark:text-red-400 px-2 py-0.5 text-xs font-mono"
+                      >
+                        {RED_TEAM_LABELS[attack] ?? attack}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
           </CardContent>
         </Card>
-      ))}
+      )}
     </div>
   );
 }
