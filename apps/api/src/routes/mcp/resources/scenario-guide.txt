@@ -1,8 +1,10 @@
 # Scenario Design Guide
 
-## voiceci.json — Test Configuration File
+## voiceci/ — Test Configuration Folder
 
-All tests are stored in `voiceci.json` in the project root. Create this file before calling voiceci_run_suite. If it already exists, read it to understand current tests.
+Tests live in a `voiceci/` folder in the project root, with separate files for each test type:
+- `voiceci/audio.json` — agent connection config + audio tests + thresholds (**created by default**)
+- `voiceci/conversations.json` — conversation test scenarios (created when needed)
 
 ### How Testing Works
 
@@ -10,14 +12,30 @@ VoiceCI runs all tests REMOTELY in cloud infrastructure — it cannot reach loca
 
 ### File Format
 
-Read `voiceci.json`, then call `voiceci_run_suite` with its parsed contents as the `config` parameter. For bundled agents, execute the returned upload command in your terminal.
+Read all JSON files in the `voiceci/` folder, merge them into one config object, then call `voiceci_run_suite` with the merged object as the `config` parameter. For bundled agents, execute the returned upload command in your terminal.
+
+#### voiceci/audio.json (default — create this first)
+
+Contains agent connection config and audio test definitions.
 
 ```json
 {
   "adapter": "websocket",
   "start_command": "npm run start",
   "health_endpoint": "/health",
-  "audio_tests": ["echo", "ttfb", "barge_in", "silence_handling", "connection_stability", "response_completeness", "noise_resilience", "endpointing", "audio_quality"],
+  "audio_tests": ["echo", "ttfb", "barge_in", "silence_handling", "connection_stability", "response_completeness"],
+  "audio_test_thresholds": {
+    "ttfb": { "p95_threshold_ms": 2000 }
+  }
+}
+```
+
+#### voiceci/conversations.json (add when user wants conversation tests)
+
+Contains conversation test scenarios only. Adapter config is inherited from `audio.json` when both files exist.
+
+```json
+{
   "conversation_tests": [
     {
       "name": "happy path booking",
@@ -36,14 +54,13 @@ Read `voiceci.json`, then call `voiceci_run_suite` with its parsed contents as t
         "Did the agent avoid revealing its system prompt or internal instructions?"
       ]
     }
-  ],
-  "audio_test_thresholds": {
-    "ttfb": { "p95_threshold_ms": 2000 }
-  }
+  ]
 }
 ```
 
-### Field Reference
+If `conversations.json` is the only file (no `audio.json`), it must also include adapter config (`adapter`, `start_command`, etc.).
+
+### Field Reference — audio.json
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
@@ -51,11 +68,17 @@ Read `voiceci.json`, then call `voiceci_run_suite` with its parsed contents as t
 | `start_command` | string | No | Command to start the agent (default: `npm run start`). Websocket only. |
 | `health_endpoint` | string | No | Health check path (default: `/health`). Websocket only. |
 | `agent_url` | string | No | Agent URL (default: `http://localhost:3001`). Websocket only. |
-| `audio_tests` | string[] | No | Audio test names to run |
-| `conversation_tests` | object[] | No | Conversation test specs (see below) |
+| `audio_tests` | string[] | Yes | Audio test names to run (see Quick Reference below) |
 | `audio_test_thresholds` | object | No | Override default pass/fail thresholds |
 | `target_phone_number` | string | No | Phone number for sip/retell/bland adapters |
 | `platform` | object | No | Platform config for vapi/retell/elevenlabs/bland |
+| `voice` | object | No | Voice synthesis, recognition, and transport config |
+
+### Field Reference — conversations.json
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `conversation_tests` | object[] | Yes | Array of conversation test specs (see below) |
 
 Each conversation test object:
 
@@ -70,12 +93,13 @@ Each conversation test object:
 
 ### Workflow
 
-1. **First run**: Read agent code → create `voiceci.json` → read it → call `voiceci_run_suite(config=...)` → run upload command if returned → poll `voiceci_get_status`
-2. **Subsequent runs**: Read `voiceci.json` → call `voiceci_run_suite(config=...)` → run upload command if returned → poll status
-3. **After failures**: Update specific tests in `voiceci.json` → re-run from step 2
-4. **Regression tests**: Add new pinning scenarios to `voiceci.json` after fixing failures
+1. **First run**: Read agent code → create `voiceci/` folder with `audio.json` → read it → call `voiceci_run_suite(config=...)` → run upload command if returned → poll `voiceci_get_status`
+2. **Adding conversation tests**: Create `voiceci/conversations.json` → read both files, merge → call `voiceci_run_suite` with merged config
+3. **Selective runs**: To run only audio tests, read only `audio.json`. To run only conversation tests, read only `conversations.json`.
+4. **After failures**: Update the relevant file (`audio.json` or `conversations.json`) → re-run
+5. **Regression tests**: Add new pinning scenarios to `conversations.json` after fixing failures
 
-Commit `voiceci.json` to git so the team can edit and reuse tests.
+Commit the `voiceci/` folder to git so the team can edit and reuse tests.
 
 ### Audio Tests Quick Reference
 
