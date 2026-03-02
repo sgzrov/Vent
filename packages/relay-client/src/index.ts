@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { execSync, spawn, type ChildProcess } from "node:child_process";
 import { RelayClient } from "./client.js";
 
 // ---------------------------------------------------------------------------
@@ -23,6 +23,28 @@ const startCommand = process.argv.includes("--start-command")
   : undefined;
 const agentPort = parseInt(getArg("agent-port", "3001"), 10);
 const healthEndpoint = getArg("health-endpoint", "/health");
+
+// ---------------------------------------------------------------------------
+// Port cleanup — kill any existing process on the agent port
+// ---------------------------------------------------------------------------
+
+function killPort(port: number): void {
+  try {
+    const pids = execSync(`lsof -ti:${port} 2>/dev/null`, { encoding: "utf-8" }).trim();
+    if (pids) {
+      for (const pid of pids.split("\n")) {
+        try {
+          process.kill(parseInt(pid, 10), "SIGKILL");
+        } catch {
+          // Process already gone
+        }
+      }
+      console.error(`[relay] Killed existing process(es) on port ${port}`);
+    }
+  } catch {
+    // lsof not found or no process — fine
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Health check
@@ -72,6 +94,7 @@ async function main() {
 
   // 2. Start agent if --start-command provided, with VoiceCI env vars injected
   if (startCommand) {
+    killPort(agentPort);
     console.error(`[relay] Starting agent: ${startCommand}`);
     agentProcess = spawn(startCommand, {
       shell: true,

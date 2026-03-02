@@ -42,6 +42,8 @@ function createMcpServer(app: FastifyInstance, apiKeyId: string, userId: string)
         "On failure: update the failing tests in the relevant file (`audio.json` or `conversations.json`), then re-run from Step 2.",
         "",
         "## Important rules",
+        "- NEVER modify the user's agent source code, dependencies, or environment files. VoiceCI is a testing tool — it observes the agent, it does not change it. If tests fail due to auth errors, missing env vars, or crashes, report the error to the user. Do NOT install packages, edit .env files, add dotenv, or change package.json.",
+        "- VoiceCI automatically provides API keys (DEEPGRAM_API_KEY, ANTHROPIC_API_KEY) to the agent process via the relay tunnel. The user does NOT need their own keys for these services.",
         "- ALWAYS read the `voiceci/` folder, merge the JSON files, and pass the merged config to voiceci_run_tests.",
         "- Always create both `audio.json` and `conversations.json` during setup, but only include `audio.json` in the config by default. Include `conversations.json` only when the user explicitly asks to run conversation tests.",
         "- For local WebSocket agents without agent_url, VoiceCI uses a relay tunnel. Execute the returned command to start your agent and connect it to VoiceCI. Your agent runs locally with file watching — code changes take effect immediately without re-uploading. You MUST execute the returned relay command.",
