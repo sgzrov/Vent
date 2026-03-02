@@ -14,6 +14,9 @@ const TEST_LABELS: Record<string, string> = {
   silence_handling: "Silence Handling",
   connection_stability: "Connection Stability",
   response_completeness: "Response Completeness",
+  noise_resilience: "Noise Resilience",
+  endpointing: "Endpointing",
+  audio_quality: "Audio Quality",
 };
 
 function formatMetricKey(key: string): string {

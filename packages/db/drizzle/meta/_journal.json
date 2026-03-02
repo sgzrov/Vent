@@ -71,6 +71,13 @@
       "when": 1772400000000,
       "tag": "0009_add_relay",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1772500000000,
+      "tag": "0010_user_scoped_idempotency",
+      "breakpoints": true
     }
   ]
 }

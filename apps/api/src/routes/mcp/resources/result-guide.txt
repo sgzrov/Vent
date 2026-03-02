@@ -2,9 +2,14 @@
 
 ## Interpreting Results
 
+### MCP Fix Plan (for fast code fixes)
+- `voiceci_get_run_status` now returns `fix_plan` when there are failures.
+- `fix_plan.prioritized_packets` gives per-failure debugging packets with dense evidence only (deduplicated metrics/evals/transcript/tool calls/diagnostics/context).
+- `fix_plan.targeted_rerun_config` is a minimal config that re-runs only failing tests so you can validate fixes quickly.
+
 ### Audio Test Failures
 - **echo fail**: Agent has a feedback loop (STT picks up TTS output). Check audio pipeline isolation, echo cancellation.
-- **ttfb fail**: p95 latency > threshold. Check per-tier metrics (simple vs complex vs tool-triggering) and TTFW delta. High `ttfw_delta_ms` means agent produces silence/filler before speaking.
+- **ttfb fail**: p95 latency > threshold. Check per-tier metrics (simple vs complex vs tool-triggering). High `mean_silence_pad_ms` means agent sends silent audio before speech starts (TTS warmup issue). Compare `p95_ttfb_ms` (first audio byte — infrastructure) vs `p95_ttfw_ms` (first speech via VAD — perceived latency) — a large gap means dead audio padding before the agent actually speaks.
 - **barge_in fail**: Agent took > 2000ms to stop after interruption. Check VAD configuration, stream handling.
 - **silence_handling fail**: Agent disconnected during silence. Check WebSocket timeout settings, keep-alive config.
 - **connection_stability fail**: Disconnected mid-conversation. Check WebSocket reconnection logic, memory leaks.
@@ -34,6 +39,30 @@ Every conversation test includes `metrics.audio_analysis` — VAD-based speech/s
 - High `silence_gaps_over_2s` → likely slow tool calls or LLM inference mid-response. Check `silence_threshold_ms` tuning
 - High `longest_monologue_ms` → agent gives excessively long responses without pausing. Prompt/conversation design issue
 - Compare `talk_ratio_vad` (VAD-corrected) with `talk_ratio` (buffer-based) — big gap means significant silence in agent audio
+
+### Prosody Metrics (Hume Expression Measurement)
+
+When `prosody: true` is set on a conversation test, `metrics.prosody` contains emotional analysis of the agent's voice from Hume AI's Expression Measurement API. This analyzes tone, rhythm, and timbre — not text content. Requires `HUME_API_KEY` env var. Cost: ~$0.06/min audio (~$0.02-0.05 per conversation test).
+
+| Metric | What it means | Healthy range | Flag when |
+|--------|--------------|---------------|-----------|
+| `mean_calmness` | Average calmness across agent turns | 0.3-0.7 | <0.3 (agent sounds tense or agitated) |
+| `mean_confidence` | Average confidence in agent's voice | 0.25-0.6 | <0.25 (agent sounds hesitant or uncertain) |
+| `peak_frustration` | Highest frustration in any single turn | <0.3 | >0.5 (agent sounded frustrated or angry) |
+| `emotion_consistency` | How stable emotional tone is across turns (1 = perfectly consistent) | 0.5-0.9 | <0.4 (erratic emotional tone) |
+| `naturalness` | Composite: calmness + confidence + consistency - frustration | 0.5-0.8 | <0.4 (robotic or unnatural voice) |
+| `emotion_trajectory` | Direction of emotional shift: stable, improving, degrading, volatile | stable or improving | degrading (agent became less calm) |
+| `per_turn` | Per-turn breakdown: top 5 emotions, calmness, confidence, frustration, warmth, uncertainty | Varies | Inspect for specific turn issues |
+| `hume_latency_ms` | Hume API processing time (infrastructure overhead) | <15000ms | Informational only |
+
+**Automatic Warnings:** If a metric exceeds thresholds, warnings appear in `metrics.prosody_warnings` with severity and message. These are informational — they do NOT affect pass/fail.
+
+**How to use:**
+- High `naturalness` + passing evals = agent sounds good and works correctly
+- Low `naturalness` but passing evals = functional but poor voice quality, investigate TTS config
+- `peak_frustration` > 0.5 in specific turns → check what the caller said that turn, the agent's TTS may be reflecting aggressive phrasing
+- `emotion_trajectory: degrading` → agent voice quality degrades over longer conversations, possibly TTS or model issue
+- Compare `prosody.per_turn[i].warmth` with `behavioral.empathy_score` — low warmth + low empathy = poor agent tone
 
 ### Conversation Test Failures
 - Read the judge's `reasoning` field — it explains WHY.
@@ -85,11 +114,14 @@ Every conversation test includes `metrics.harness_overhead` — timing of VoiceC
 | `mean_stt_ms` | Average STT transcription time across all turns |
 
 **Why this matters:**
-- `metrics.latency.ttfb_per_turn_ms` measures the **agent's response time** (TTFB = time from sending audio to first response byte)
+- `metrics.latency.ttfb_per_turn_ms` measures time from sending audio to **first audio byte back** (infrastructure latency)
+- `metrics.latency.ttfw_per_turn_ms` measures time to **first speech detected via VAD** (user-perceived latency — the primary metric)
+- `metrics.latency.mean_silence_pad_ms` is the dead audio gap between first byte and first speech (TTFW - TTFB). High values indicate TTS warmup or audio buffering issues
+- `metrics.latency.mouth_to_ear_est_ms` estimates end-to-end latency including channel connect time (informational)
 - `metrics.harness_overhead` measures **VoiceCI's overhead** (TTS + STT API calls)
-- Total wall-clock time per turn ≈ TTS overhead + agent TTFB + audio collection + STT overhead
+- Total wall-clock time per turn ≈ TTS overhead + agent TTFW + audio collection + STT overhead
 - If harness overhead is high (mean_tts_ms > 500 or mean_stt_ms > 400), the test infrastructure is adding significant latency — this is NOT the agent's fault
-- Agent TTFB (p50/p90/p95/p99) is the metric that reflects agent quality; harness overhead is separate
+- Agent TTFW (p50/p90/p95/p99) is the metric that best reflects perceived agent quality; TTFB is infrastructure-only
 
 ---
 

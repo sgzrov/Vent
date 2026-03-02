@@ -1,17 +1,20 @@
 /**
- * TTFB (Time To First Byte) test — measures agent response latency.
+ * TTFB (Time To First Byte) + TTFW (Time To First Word) test — measures agent response latency.
  *
  * Procedure:
  * 1. Send tiered prompts: simple, complex, and tool-triggering
- * 2. For each prompt, measure TTFB (first audio byte) and TTFW (first word via VAD)
+ * 2. For each prompt, measure:
+ *    - TTFB: time until first audio byte arrives (infrastructure latency)
+ *    - TTFW: time until VAD detects first speech (perceived latency)
+ *    - Silence Pad: TTFW - TTFB (dead audio before speech, TTS warmup diagnostic)
  * 3. Report overall and per-tier p50/p95
  * 4. PASS if p95 TTFB < threshold, FAIL otherwise
  */
 
 import type { AudioChannel } from "@voiceci/adapters";
 import type { AudioTestResult, AudioTestThresholds } from "@voiceci/shared";
-import { synthesize, BatchVAD } from "@voiceci/voice";
-import { waitForSpeech, collectUntilEndOfTurn } from "./helpers.js";
+import { synthesize, VoiceActivityDetector } from "@voiceci/voice";
+import { collectUntilEndOfTurn } from "./helpers.js";
 
 const DEFAULT_P95_THRESHOLD_MS = 3000;
 const DEFAULT_P95_COMPLEX_THRESHOLD_MS = 5000;
@@ -58,11 +61,13 @@ export async function runTtfbTest(
 
   const allTtfb: number[] = [];
   const allTtfw: number[] = [];
+  const allSilencePad: number[] = [];
   const tierTtfb: Record<Tier, number[]> = { simple: [], complex: [], tool: [] };
+  const tierTtfw: Record<Tier, number[]> = { simple: [], complex: [], tool: [] };
 
-  // Initialize BatchVAD for TTFW measurement
-  const batchVAD = new BatchVAD();
-  await batchVAD.init();
+  // Shared VAD instance — reused across all prompts to avoid WASM reload
+  const vad = new VoiceActivityDetector({ silenceThresholdMs: 1000 });
+  await vad.init();
 
   try {
     for (const prompt of PROMPTS) {
@@ -70,37 +75,33 @@ export async function runTtfbTest(
       const sendTime = Date.now();
       channel.sendAudio(audio);
 
-      const { detectedAt, timedOut } = await waitForSpeech(channel, 10000);
-
-      if (!timedOut && detectedAt > 0) {
-        const ttfb = detectedAt - sendTime;
-        allTtfb.push(ttfb);
-        tierTtfb[prompt.tier].push(ttfb);
-      }
-
-      // Collect agent response for TTFW analysis
-      const { audio: agentAudio } = await collectUntilEndOfTurn(channel, {
+      // Single-pass collection: tracks both firstChunkAt (TTFB) and speechOnsetAt (TTFW)
+      const { stats } = await collectUntilEndOfTurn(channel, {
         timeoutMs: 10000,
         silenceThresholdMs: 1000,
+        vad,
       });
 
-      // TTFW: find first speech onset in collected audio via BatchVAD
-      if (agentAudio.length > 0 && !timedOut && detectedAt > 0) {
-        const ttfb = detectedAt - sendTime;
-        // Analyze first 2s of agent audio
-        const maxBytes = 2 * 24000 * 2; // 2 seconds of 24kHz 16-bit
-        const segment = agentAudio.subarray(0, Math.min(agentAudio.length, maxBytes));
-        const segments = batchVAD.analyze(segment);
+      // TTFB: first audio byte back from agent
+      if (stats.firstChunkAt !== null) {
+        const ttfb = Math.max(0, stats.firstChunkAt - sendTime);
+        allTtfb.push(ttfb);
+        tierTtfb[prompt.tier].push(ttfb);
 
-        if (segments.length > 0) {
-          // TTFW = TTFB + offset to first speech segment
-          const ttfw = ttfb + segments[0]!.startMs;
+        // TTFW: first speech detected via VAD
+        if (stats.speechOnsetAt !== null) {
+          const ttfw = Math.max(0, stats.speechOnsetAt - sendTime);
           allTtfw.push(ttfw);
+          tierTtfw[prompt.tier].push(ttfw);
+
+          // Silence pad: dead audio before speech starts
+          const silencePad = Math.max(0, ttfw - ttfb);
+          allSilencePad.push(silencePad);
         }
       }
     }
   } finally {
-    batchVAD.destroy();
+    vad.destroy();
   }
 
   const MIN_RESPONSES = Math.max(1, PROMPTS.length - 2); // At least 5/7 prompts must get responses
@@ -125,12 +126,12 @@ export async function runTtfbTest(
     };
   }
 
-  // Overall percentiles
+  // Overall TTFB percentiles
   const sortedAll = [...allTtfb].sort((a, b) => a - b);
   const p50All = percentile(sortedAll, 0.5);
   const p95All = percentile(sortedAll, 0.95);
 
-  // Per-tier stats
+  // Per-tier TTFB stats
   const sortedSimple = [...tierTtfb.simple].sort((a, b) => a - b);
   const sortedComplex = [...tierTtfb.complex].sort((a, b) => a - b);
   const sortedTool = [...tierTtfb.tool].sort((a, b) => a - b);
@@ -139,7 +140,11 @@ export async function runTtfbTest(
   const sortedTtfw = [...allTtfw].sort((a, b) => a - b);
   const p50Ttfw = percentile(sortedTtfw, 0.5);
   const p95Ttfw = percentile(sortedTtfw, 0.95);
-  const ttfwDelta = allTtfw.length > 0 ? mean(allTtfw) - mean(allTtfb) : 0;
+
+  // Per-tier TTFW stats
+  const sortedSimpleTtfw = [...tierTtfw.simple].sort((a, b) => a - b);
+  const sortedComplexTtfw = [...tierTtfw.complex].sort((a, b) => a - b);
+  const sortedToolTtfw = [...tierTtfw.tool].sort((a, b) => a - b);
 
   // Pass/fail
   let passed = p95All <= P95_THRESHOLD_MS;
@@ -169,22 +174,31 @@ export async function runTtfbTest(
     status: passed ? "pass" : "fail",
     metrics: {
       responses_received: allTtfb.length,
+      // Overall TTFB (first audio byte — infrastructure latency)
       mean_ttfb_ms: mean(allTtfb),
       p50_ttfb_ms: Math.round(p50All),
       p95_ttfb_ms: Math.round(p95All),
       threshold_ms: P95_THRESHOLD_MS,
-      // Per-tier
+      // Per-tier TTFB
       simple_mean_ttfb_ms: mean(tierTtfb.simple),
       simple_p95_ttfb_ms: Math.round(percentile(sortedSimple, 0.95)),
       complex_mean_ttfb_ms: mean(tierTtfb.complex),
       complex_p95_ttfb_ms: Math.round(percentile(sortedComplex, 0.95)),
       tool_mean_ttfb_ms: mean(tierTtfb.tool),
       tool_p95_ttfb_ms: Math.round(percentile(sortedTool, 0.95)),
-      // TTFW
+      // Overall TTFW (first speech via VAD — perceived latency)
       mean_ttfw_ms: mean(allTtfw),
       p50_ttfw_ms: Math.round(p50Ttfw),
       p95_ttfw_ms: Math.round(p95Ttfw),
-      ttfw_delta_ms: Math.round(ttfwDelta),
+      // Per-tier TTFW
+      simple_mean_ttfw_ms: mean(tierTtfw.simple),
+      simple_p95_ttfw_ms: Math.round(percentile(sortedSimpleTtfw, 0.95)),
+      complex_mean_ttfw_ms: mean(tierTtfw.complex),
+      complex_p95_ttfw_ms: Math.round(percentile(sortedComplexTtfw, 0.95)),
+      tool_mean_ttfw_ms: mean(tierTtfw.tool),
+      tool_p95_ttfw_ms: Math.round(percentile(sortedToolTtfw, 0.95)),
+      // Silence pad (TTFW - TTFB — dead audio before speech)
+      mean_silence_pad_ms: mean(allSilencePad),
     },
     duration_ms: durationMs,
     ...(!passed && { error: errors.join("; ") }),

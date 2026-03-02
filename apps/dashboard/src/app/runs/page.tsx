@@ -42,14 +42,15 @@ export default function RunsPage() {
       }
       const data = await res.json();
       if (!res.ok || !Array.isArray(data)) {
-        setError(`API ${res.status}: ${JSON.stringify(data)}`);
+        setError(`Unable to load runs (HTTP ${res.status}).`);
       } else {
         setRuns(data);
         setError(null);
       }
       setLoading(false);
     } catch (e) {
-      setError(String(e));
+      console.error("Failed to fetch runs:", e);
+      setError("Unable to load runs. Please retry.");
       setLoading(false);
     }
   }, [filter]);

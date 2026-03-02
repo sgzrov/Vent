@@ -21,42 +21,98 @@ function hashKey(raw: string): string {
 }
 
 export const authPlugin = fp(async (app) => {
-  const workos = new WorkOS(process.env["WORKOS_API_KEY"]!, {
-    clientId: process.env["WORKOS_CLIENT_ID"]!,
-  });
-  const cookiePassword = process.env["WORKOS_COOKIE_PASSWORD"]!;
+  const workosApiKey = process.env["WORKOS_API_KEY"];
+  const workosClientId = process.env["WORKOS_CLIENT_ID"];
+  const cookiePassword = process.env["WORKOS_COOKIE_PASSWORD"];
+  const workosEnabled =
+    !!workosApiKey && !!workosClientId && !!cookiePassword;
+
+  if (!workosEnabled) {
+    const anyWorkosConfigured =
+      !!workosApiKey || !!workosClientId || !!cookiePassword;
+    if (anyWorkosConfigured) {
+      app.log.warn(
+        "WorkOS auth is partially configured. Session auth is disabled until WORKOS_API_KEY, WORKOS_CLIENT_ID, and WORKOS_COOKIE_PASSWORD are all set.",
+      );
+    } else {
+      app.log.info("WorkOS auth is not configured. API key auth remains enabled.");
+    }
+  }
+
+  const workos = workosEnabled
+    ? new WorkOS(workosApiKey, { clientId: workosClientId })
+    : null;
+
+  async function tryAuthenticateApiKey(
+    request: any,
+    reply: any,
+    rejectNonBearer: boolean,
+  ): Promise<"ok" | "none" | "invalid"> {
+    const authHeader = request.headers["authorization"];
+    if (!authHeader) return "none";
+    if (!authHeader.startsWith("Bearer ")) {
+      if (!rejectNonBearer) return "none";
+      await reply.status(401).send({
+        error: "Invalid authorization header. Expected 'Bearer <api_key>'.",
+      });
+      return "invalid";
+    }
+
+    const rawKey = authHeader.slice(7).trim();
+    if (!rawKey) {
+      await reply.status(401).send({ error: "Missing API key value." });
+      return "invalid";
+    }
+
+    const keyHash = hashKey(rawKey);
+
+    const [found] = await app.db
+      .select()
+      .from(schema.apiKeys)
+      .where(
+        and(
+          eq(schema.apiKeys.key_hash, keyHash),
+          isNull(schema.apiKeys.revoked_at),
+        ),
+      )
+      .limit(1);
+
+    if (!found) {
+      await reply.status(401).send({ error: "Invalid API key" });
+      return "invalid";
+    }
+
+    request.apiKeyId = found.id;
+    request.userId = found.user_id;
+    request.authMethod = "api_key";
+    return "ok";
+  }
+
+  async function verifyApiKey(request: any, reply: any) {
+    const apiKeyAuth = await tryAuthenticateApiKey(request, reply, true);
+    if (apiKeyAuth === "ok" || apiKeyAuth === "invalid") return;
+    await reply.status(401).send({
+      error: "Missing authentication. Provide a Bearer API key.",
+    });
+  }
 
   async function verifyAuth(request: any, reply: any) {
     // Path 1: Bearer API key (MCP/CLI)
-    const authHeader = request.headers["authorization"];
-    if (authHeader?.startsWith("Bearer ")) {
-      const rawKey = authHeader.slice(7);
-      const keyHash = hashKey(rawKey);
-
-      const [found] = await app.db
-        .select()
-        .from(schema.apiKeys)
-        .where(
-          and(
-            eq(schema.apiKeys.key_hash, keyHash),
-            isNull(schema.apiKeys.revoked_at)
-          )
-        )
-        .limit(1);
-
-      if (!found) {
-        return reply.status(401).send({ error: "Invalid API key" });
-      }
-
-      request.apiKeyId = found.id;
-      request.userId = found.user_id;
-      request.authMethod = "api_key";
+    const apiKeyAuth = await tryAuthenticateApiKey(request, reply, false);
+    if (apiKeyAuth === "ok" || apiKeyAuth === "invalid") {
       return;
     }
 
     // Path 2: WorkOS sealed session cookie (dashboard)
     const sessionCookie = request.cookies?.["wos-session"];
     if (sessionCookie) {
+      if (!workos || !cookiePassword) {
+        await reply.status(401).send({
+          error: "Session authentication is not configured on this API server. Provide a Bearer API key.",
+        });
+        return;
+      }
+
       try {
         const session = workos.userManagement.loadSealedSession({
           sessionData: sessionCookie,
@@ -93,17 +149,16 @@ export const authPlugin = fp(async (app) => {
           }
         }
       } catch (err: any) {
-        console.log("[auth] session error:", err.message);
+        app.log.warn({ err }, "Session authentication failed");
         // Fall through to 401
       }
     }
 
-    return reply.status(401).send({
+    await reply.status(401).send({
       error: "Missing or invalid authentication. Provide a Bearer API key or a valid session cookie.",
     });
   }
 
+  app.decorate("verifyApiKey", verifyApiKey);
   app.decorate("verifyAuth", verifyAuth);
-  // Keep verifyApiKey as alias for backward compat with MCP routes
-  app.decorate("verifyApiKey", verifyAuth);
 });

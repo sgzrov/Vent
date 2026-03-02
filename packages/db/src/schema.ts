@@ -7,7 +7,9 @@ import {
   bigint,
   jsonb,
   pgEnum,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 
 export const runStatusEnum = pgEnum("run_status", [
   "queued",
@@ -22,28 +24,37 @@ export const scenarioStatusEnum = pgEnum("scenario_status", ["pass", "fail"]);
 
 export const testTypeEnum = pgEnum("test_type", ["audio", "conversation"]);
 
-export const runs = pgTable("runs", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  api_key_id: uuid("api_key_id")
-    .notNull()
-    .references(() => apiKeys.id),
-  user_id: text("user_id").notNull(),
-  status: runStatusEnum("status").notNull().default("queued"),
-  source_type: sourceTypeEnum("source_type").notNull(),
-  bundle_key: text("bundle_key"),
-  bundle_hash: text("bundle_hash"),
-  created_at: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-  started_at: timestamp("started_at", { withTimezone: true }),
-  finished_at: timestamp("finished_at", { withTimezone: true }),
-  duration_ms: integer("duration_ms"),
-  aggregate_json: jsonb("aggregate_json"),
-  test_spec_json: jsonb("test_spec_json"),
-  error_text: text("error_text"),
-  idempotency_key: text("idempotency_key"),
-  relay_token: text("relay_token"),
-});
+export const runs = pgTable(
+  "runs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    api_key_id: uuid("api_key_id")
+      .notNull()
+      .references(() => apiKeys.id),
+    user_id: text("user_id").notNull(),
+    status: runStatusEnum("status").notNull().default("queued"),
+    source_type: sourceTypeEnum("source_type").notNull(),
+    bundle_key: text("bundle_key"),
+    bundle_hash: text("bundle_hash"),
+    created_at: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    started_at: timestamp("started_at", { withTimezone: true }),
+    finished_at: timestamp("finished_at", { withTimezone: true }),
+    duration_ms: integer("duration_ms"),
+    aggregate_json: jsonb("aggregate_json"),
+    test_spec_json: jsonb("test_spec_json"),
+    error_text: text("error_text"),
+    // Stores a SHA-256 of the provided idempotency key.
+    idempotency_key: text("idempotency_key"),
+    relay_token: text("relay_token"),
+  },
+  (table) => ({
+    runsUserScopedIdempotency: uniqueIndex("runs_user_id_idempotency_key_unique")
+      .on(table.user_id, table.idempotency_key)
+      .where(sql`${table.idempotency_key} IS NOT NULL`),
+  }),
+);
 
 export const scenarioResults = pgTable("scenario_results", {
   id: uuid("id").primaryKey().defaultRandom(),

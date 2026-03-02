@@ -38,6 +38,7 @@ function createMcpServer(app: FastifyInstance, apiKeyId: string, userId: string)
         "  - For local WebSocket agents: run the returned relay command to start your agent and connect to VoiceCI.",
         "",
         "Step 3: voiceci_get_run_status → poll with run_id until status is 'pass' or 'fail'.",
+        "  - When `fix_plan` is present, use `fix_plan.prioritized_packets` evidence and re-run with `fix_plan.targeted_rerun_config`.",
         "",
         "On failure: update the failing tests in the relevant file (`audio.json` or `conversations.json`), then re-run from Step 2.",
         "",

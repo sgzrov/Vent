@@ -58,6 +58,8 @@ export interface ConversationTestSpec {
   tool_call_eval?: string[];
   silence_threshold_ms?: number;
   persona?: CallerPersona;
+  /** Opt-in: run Hume prosody analysis on agent audio (requires HUME_API_KEY) */
+  prosody?: boolean;
 }
 
 export const RED_TEAM_ATTACKS = [
@@ -142,6 +144,56 @@ export interface AudioAnalysisWarning {
   message: string;
 }
 
+// ============================================================
+// Prosody analysis types (Hume Expression Measurement)
+// ============================================================
+
+/** Per-turn emotional profile from Hume prosody analysis */
+export interface TurnEmotionProfile {
+  turn_index: number;
+  /** Top 5 emotions by score */
+  top_emotions: Array<{ name: string; score: number }>;
+  /** Composite: avg(Calmness, Contentment) */
+  calmness: number;
+  /** Composite: avg(Confidence, Determination) */
+  confidence: number;
+  /** Composite: avg(Anger, Annoyance, Contempt) */
+  frustration: number;
+  /** Composite: avg(Sympathy, Care) */
+  warmth: number;
+  /** Composite: avg(Confusion, Doubt, Anxiety) */
+  uncertainty: number;
+}
+
+/** Aggregate prosody metrics for a full conversation */
+export interface ProsodyMetrics {
+  /** Per-turn emotional profiles (agent turns only) */
+  per_turn: TurnEmotionProfile[];
+  /** Mean calmness across all agent turns (0-1) */
+  mean_calmness: number;
+  /** Mean confidence across all agent turns (0-1) */
+  mean_confidence: number;
+  /** Max frustration score seen in any single turn (0-1) */
+  peak_frustration: number;
+  /** Std dev of dominant emotion scores — high = consistent voice (0-1) */
+  emotion_consistency: number;
+  /** Composite: calmness + confidence + consistency - frustration (0-1) */
+  naturalness: number;
+  /** Direction of emotional shift across the conversation */
+  emotion_trajectory: "stable" | "improving" | "degrading" | "volatile";
+  /** Hume job processing time (ms) — infrastructure overhead */
+  hume_latency_ms: number;
+}
+
+/** Warning from prosody grading — informational, never affects pass/fail */
+export interface ProsodyWarning {
+  metric: string;
+  value: number;
+  threshold: number;
+  severity: "warning" | "critical";
+  message: string;
+}
+
 export interface TestSpec {
   audio_tests?: AudioTestName[];
   conversation_tests?: ConversationTestSpec[];
@@ -189,6 +241,10 @@ export interface ConversationTurn {
   timestamp_ms: number;
   audio_duration_ms?: number;
   ttfb_ms?: number;
+  /** Time to first word — VAD-detected speech onset (ms from audio sent) */
+  ttfw_ms?: number;
+  /** Dead audio before speech starts: ttfw_ms - ttfb_ms */
+  silence_pad_ms?: number;
   stt_confidence?: number;
   /** Harness TTS synthesis time for this turn's caller audio (ms) */
   tts_ms?: number;
@@ -225,6 +281,17 @@ export interface LatencyMetrics {
   first_turn_ttfb_ms: number;
   total_silence_ms: number;
   mean_turn_gap_ms: number;
+  /** Time to first word (VAD speech onset) per agent turn */
+  ttfw_per_turn_ms?: number[];
+  p50_ttfw_ms?: number;
+  p90_ttfw_ms?: number;
+  p95_ttfw_ms?: number;
+  p99_ttfw_ms?: number;
+  first_turn_ttfw_ms?: number;
+  /** Mean dead audio before speech (TTFW - TTFB) across agent turns */
+  mean_silence_pad_ms?: number;
+  /** Estimated mouth-to-ear latency: mean TTFW + channel connect latency */
+  mouth_to_ear_est_ms?: number;
 }
 
 export interface HarnessOverhead {
@@ -282,6 +349,8 @@ export interface AudioAnalysisMetrics {
 export interface ConversationMetrics {
   turns: number;
   mean_ttfb_ms: number;
+  /** Mean time to first word (VAD speech onset) across agent turns */
+  mean_ttfw_ms?: number;
   total_duration_ms: number;
   talk_ratio?: number;
   transcript?: TranscriptMetrics;
@@ -290,6 +359,8 @@ export interface ConversationMetrics {
   tool_calls?: ToolCallMetrics;
   audio_analysis?: AudioAnalysisMetrics;
   audio_analysis_warnings?: AudioAnalysisWarning[];
+  prosody?: ProsodyMetrics;
+  prosody_warnings?: ProsodyWarning[];
   harness_overhead?: HarnessOverhead;
 }
 

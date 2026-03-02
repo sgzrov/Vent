@@ -16,7 +16,8 @@
     "@anthropic-ai/sdk": "^0.78.0",
     "@voiceci/adapters": "workspace:*",
     "@voiceci/shared": "workspace:*",
-    "@voiceci/voice": "workspace:*"
+    "@voiceci/voice": "workspace:*",
+    "hume": "^0.15.15"
   },
   "devDependencies": {
     "typescript": "^5.7.0"

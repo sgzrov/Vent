@@ -35,7 +35,7 @@ export default function RunDetailPage() {
           return;
         }
         if (!res.ok) {
-          if (!cancelled) setError(`API ${res.status}`);
+          if (!cancelled) setError(`Unable to load run (HTTP ${res.status}).`);
           return;
         }
         const data = await res.json();
@@ -44,7 +44,8 @@ export default function RunDetailPage() {
           setError(null);
         }
       } catch (e) {
-        if (!cancelled) setError(String(e));
+        console.error("Failed to fetch run details:", e);
+        if (!cancelled) setError("Unable to load run details. Please retry.");
       }
     };
 
@@ -61,14 +62,23 @@ export default function RunDetailPage() {
   }, [id, run?.status]);
 
   const handleSetBaseline = async () => {
-    await fetch(`${API_URL}/runs/${id}/baseline`, {
+    const baselineRes = await fetch(`${API_URL}/runs/${id}/baseline`, {
       method: "POST",
       credentials: "include",
     });
+    if (!baselineRes.ok) {
+      setError(`Unable to set baseline (HTTP ${baselineRes.status}).`);
+      return;
+    }
     const res = await fetch(`${API_URL}/runs/${id}`, {
       credentials: "include",
     });
+    if (!res.ok) {
+      setError(`Unable to refresh run (HTTP ${res.status}).`);
+      return;
+    }
     setRun(await res.json());
+    setError(null);
   };
 
   if (error) return <p className="text-red-600 font-mono text-sm">{error}</p>;

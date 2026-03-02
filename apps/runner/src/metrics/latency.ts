@@ -23,15 +23,27 @@ function mean(values: number[]): number {
 
 /**
  * Compute latency metrics from conversation turns.
- * Expects turns to have ttfb_ms populated on agent turns.
+ * Expects turns to have ttfb_ms (and optionally ttfw_ms, silence_pad_ms) populated on agent turns.
  */
-export function computeLatencyMetrics(turns: ConversationTurn[]): LatencyMetrics {
+export function computeLatencyMetrics(turns: ConversationTurn[], connectLatencyMs?: number): LatencyMetrics {
   const agentTurns = turns.filter((t) => t.role === "agent");
   const ttfbValues = agentTurns
     .map((t) => t.ttfb_ms)
     .filter((v): v is number => v !== undefined);
 
   const sorted = [...ttfbValues].sort((a, b) => a - b);
+
+  // TTFW (time to first word — VAD speech onset)
+  const ttfwValues = agentTurns
+    .map((t) => t.ttfw_ms)
+    .filter((v): v is number => v !== undefined);
+
+  const sortedTtfw = [...ttfwValues].sort((a, b) => a - b);
+
+  // Silence pad (TTFW - TTFB — dead audio before speech)
+  const silencePadValues = agentTurns
+    .map((t) => t.silence_pad_ms)
+    .filter((v): v is number => v !== undefined);
 
   // Turn gaps: time between end of one turn and start of next
   const turnGaps: number[] = [];
@@ -50,7 +62,8 @@ export function computeLatencyMetrics(turns: ConversationTurn[]): LatencyMetrics
     ? turnGaps.reduce((sum, g) => sum + g, 0) / turnGaps.length
     : 0;
 
-  return {
+  // Base TTFB metrics (always present)
+  const result: LatencyMetrics = {
     ttfb_per_turn_ms: ttfbValues,
     p50_ttfb_ms: percentile(sorted, 50),
     p90_ttfb_ms: percentile(sorted, 90),
@@ -60,6 +73,28 @@ export function computeLatencyMetrics(turns: ConversationTurn[]): LatencyMetrics
     total_silence_ms: totalSilenceMs,
     mean_turn_gap_ms: meanTurnGapMs,
   };
+
+  // TTFW metrics (only when data exists)
+  if (ttfwValues.length > 0) {
+    result.ttfw_per_turn_ms = ttfwValues;
+    result.p50_ttfw_ms = percentile(sortedTtfw, 50);
+    result.p90_ttfw_ms = percentile(sortedTtfw, 90);
+    result.p95_ttfw_ms = percentile(sortedTtfw, 95);
+    result.p99_ttfw_ms = percentile(sortedTtfw, 99);
+    result.first_turn_ttfw_ms = ttfwValues[0] ?? 0;
+  }
+
+  // Silence pad (only when data exists)
+  if (silencePadValues.length > 0) {
+    result.mean_silence_pad_ms = mean(silencePadValues);
+  }
+
+  // Mouth-to-ear estimate (only when both TTFW and connect latency exist)
+  if (ttfwValues.length > 0 && connectLatencyMs != null && connectLatencyMs > 0) {
+    result.mouth_to_ear_est_ms = mean(ttfwValues) + Math.round(connectLatencyMs);
+  }
+
+  return result;
 }
 
 /**

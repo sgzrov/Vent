@@ -2,7 +2,7 @@
 // Keep in sync with the backend source of truth.
 
 export type RunStatus = "queued" | "running" | "pass" | "fail";
-export type SourceType = "bundle" | "remote";
+export type SourceType = "bundle" | "remote" | "relay";
 export type TestType = "audio" | "conversation";
 export type AudioTestName =
   | "echo"
@@ -10,7 +10,10 @@ export type AudioTestName =
   | "ttfb"
   | "silence_handling"
   | "connection_stability"
-  | "response_completeness";
+  | "response_completeness"
+  | "noise_resilience"
+  | "endpointing"
+  | "audio_quality";
 
 // --- Test spec types ---
 
@@ -34,6 +37,7 @@ export interface ConversationTestSpec {
   tool_call_eval?: string[];
   silence_threshold_ms?: number;
   persona?: CallerPersona;
+  prosody?: boolean;
 }
 
 export type RedTeamAttack =
@@ -119,6 +123,8 @@ export interface ConversationTurn {
   timestamp_ms: number;
   audio_duration_ms?: number;
   ttfb_ms?: number;
+  ttfw_ms?: number;
+  silence_pad_ms?: number;
   stt_confidence?: number;
   tts_ms?: number;
   stt_ms?: number;
@@ -157,6 +163,7 @@ export interface ConversationTestResult {
 export interface ConversationMetrics {
   turns: number;
   mean_ttfb_ms: number;
+  mean_ttfw_ms?: number;
   total_duration_ms: number;
   talk_ratio?: number;
   transcript?: TranscriptMetrics;
@@ -164,6 +171,9 @@ export interface ConversationMetrics {
   behavioral?: BehavioralMetrics;
   tool_calls?: ToolCallMetrics;
   audio_analysis?: AudioAnalysisMetrics;
+  audio_analysis_warnings?: AudioAnalysisWarning[];
+  prosody?: ProsodyMetrics;
+  prosody_warnings?: ProsodyWarning[];
   harness_overhead?: HarnessOverhead;
 }
 
@@ -176,12 +186,21 @@ export interface LatencyMetrics {
   first_turn_ttfb_ms: number;
   total_silence_ms: number;
   mean_turn_gap_ms: number;
+  ttfw_per_turn_ms?: number[];
+  p50_ttfw_ms?: number;
+  p90_ttfw_ms?: number;
+  p95_ttfw_ms?: number;
+  p99_ttfw_ms?: number;
+  first_turn_ttfw_ms?: number;
+  mean_silence_pad_ms?: number;
+  mouth_to_ear_est_ms?: number;
 }
 
 export interface TranscriptMetrics {
   wer?: number;
   repetition_score?: number;
   reprompt_count?: number;
+  /** Filler words per 100 words (already a percent value). */
   filler_word_rate?: number;
   words_per_minute?: number;
   vocabulary_diversity?: number;
@@ -226,6 +245,43 @@ export interface AudioAnalysisMetrics {
   per_turn_speech_segments: number[];
   per_turn_internal_silence_ms: number[];
   mean_agent_speech_segment_ms: number;
+}
+
+export interface AudioAnalysisWarning {
+  metric: string;
+  value: number;
+  threshold: number;
+  severity: "warning" | "critical";
+  message: string;
+}
+
+export interface TurnEmotionProfile {
+  turn_index: number;
+  top_emotions: Array<{ name: string; score: number }>;
+  calmness: number;
+  confidence: number;
+  frustration: number;
+  warmth: number;
+  uncertainty: number;
+}
+
+export interface ProsodyMetrics {
+  per_turn: TurnEmotionProfile[];
+  mean_calmness: number;
+  mean_confidence: number;
+  peak_frustration: number;
+  emotion_consistency: number;
+  naturalness: number;
+  emotion_trajectory: "stable" | "improving" | "degrading" | "volatile";
+  hume_latency_ms: number;
+}
+
+export interface ProsodyWarning {
+  metric: string;
+  value: number;
+  threshold: number;
+  severity: "warning" | "critical";
+  message: string;
 }
 
 export interface HarnessOverhead {
