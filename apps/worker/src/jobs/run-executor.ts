@@ -10,7 +10,7 @@ import type {
   PlatformConfig,
 } from "@voiceci/shared";
 import type { AudioChannelConfig } from "@voiceci/adapters";
-import { executeTests } from "@voiceci/runner/executor";
+import { executeTests, expandRedTeamTests } from "@voiceci/runner/executor";
 import { createMachine, waitForMachine, destroyMachine, resolveAppImage } from "../fly-machines.js";
 
 // ---------------------------------------------------------------------------
@@ -261,8 +261,9 @@ async function executeRemoteRun(db: Database, job: RunJob): Promise<void> {
   };
 
   const testSpec = job.test_spec as TestSpec;
+  const redTeamExpanded = testSpec.red_team ? expandRedTeamTests(testSpec.red_team).length : 0;
   const totalTests =
-    (testSpec.audio_tests?.length ?? 0) + (testSpec.conversation_tests?.length ?? 0);
+    (testSpec.audio_tests?.length ?? 0) + (testSpec.conversation_tests?.length ?? 0) + redTeamExpanded;
   let completedTests = 0;
 
   try {
@@ -499,10 +500,13 @@ export async function executeRun(job: RunJob): Promise<void> {
     if (job.bundle_hash) machineEnv["BUNDLE_HASH"] = job.bundle_hash;
     if (bundleDownloadUrl) machineEnv["BUNDLE_DOWNLOAD_URL"] = bundleDownloadUrl;
 
-    // Dynamic machine sizing based on total test count
+    // Dynamic machine sizing based on total test count (including expanded red-team)
+    const jobTestSpec = job.test_spec as TestSpec | undefined;
+    const redTeamCount = jobTestSpec?.red_team ? expandRedTeamTests(jobTestSpec.red_team).length : 0;
     const testCount =
       (Array.isArray(job.test_spec?.audio_tests) ? (job.test_spec.audio_tests as unknown[]).length : 0) +
-      (Array.isArray(job.test_spec?.conversation_tests) ? (job.test_spec.conversation_tests as unknown[]).length : 0);
+      (Array.isArray(job.test_spec?.conversation_tests) ? (job.test_spec.conversation_tests as unknown[]).length : 0) +
+      redTeamCount;
 
     let cpuKind = "shared";
     let cpus = 1;

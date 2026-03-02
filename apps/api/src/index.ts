@@ -1,7 +1,7 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import cookie from "@fastify/cookie";
-import { eq, lt, and } from "drizzle-orm";
+import { eq, lt, and, isNull } from "drizzle-orm";
 import { schema } from "@voiceci/db";
 import { healthRoutes } from "./routes/health.js";
 import { uploadRoutes } from "./routes/uploads.js";
@@ -40,9 +40,10 @@ async function main() {
   await app.register(keyRoutes);
   await app.register(mcpRoutes);
 
-  // Stuck run cleanup — mark runs stuck in "running" for >10 minutes as failed
+  // Stuck run cleanup
   const CLEANUP_INTERVAL_MS = 60_000;
-  const STUCK_THRESHOLD_MS = 10 * 60_000;
+  const STUCK_RUNNING_MS = 10 * 60_000;   // "running" for >10 min
+  const STUCK_QUEUED_MS = 5 * 60_000;     // "queued" + never activated for >5 min
   let cleanupInterval: ReturnType<typeof setInterval>;
 
   app.addHook("onClose", async () => {
@@ -55,8 +56,9 @@ async function main() {
 
   cleanupInterval = setInterval(async () => {
     try {
-      const cutoff = new Date(Date.now() - STUCK_THRESHOLD_MS);
-      const stuck = await app.db
+      // 1. Runs stuck in "running" for >10 minutes (server may have restarted)
+      const runningCutoff = new Date(Date.now() - STUCK_RUNNING_MS);
+      const stuckRunning = await app.db
         .update(schema.runs)
         .set({
           status: "fail",
@@ -66,13 +68,35 @@ async function main() {
         .where(
           and(
             eq(schema.runs.status, "running"),
-            lt(schema.runs.started_at, cutoff),
+            lt(schema.runs.started_at, runningCutoff),
           )
         )
         .returning({ id: schema.runs.id });
 
-      if (stuck.length > 0) {
-        console.log(`Cleaned up ${stuck.length} stuck run(s): ${stuck.map((r) => r.id).join(", ")}`);
+      if (stuckRunning.length > 0) {
+        console.log(`Cleaned up ${stuckRunning.length} stuck running run(s): ${stuckRunning.map((r) => r.id).join(", ")}`);
+      }
+
+      // 2. Runs stuck in "queued" with no bundle_hash (upload command never executed)
+      const queuedCutoff = new Date(Date.now() - STUCK_QUEUED_MS);
+      const stuckQueued = await app.db
+        .update(schema.runs)
+        .set({
+          status: "fail",
+          finished_at: new Date(),
+          error_text: "Run was never activated — the upload command was not executed. Re-run voiceci_run_suite and execute the returned command.",
+        })
+        .where(
+          and(
+            eq(schema.runs.status, "queued"),
+            isNull(schema.runs.bundle_hash),
+            lt(schema.runs.created_at, queuedCutoff),
+          )
+        )
+        .returning({ id: schema.runs.id });
+
+      if (stuckQueued.length > 0) {
+        console.log(`Cleaned up ${stuckQueued.length} stuck queued run(s): ${stuckQueued.map((r) => r.id).join(", ")}`);
       }
     } catch (err) {
       console.error("Stuck run cleanup failed:", err);

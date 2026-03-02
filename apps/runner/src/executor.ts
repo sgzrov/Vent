@@ -16,7 +16,10 @@ import type {
 } from "@voiceci/shared";
 import { createAudioChannel, type AudioChannelConfig } from "@voiceci/adapters";
 import { runAudioTest } from "./audio-tests/index.js";
-import { runConversationTest } from "./conversation/index.js";
+import { runConversationTest, expandRedTeamTests } from "./conversation/index.js";
+
+// Re-export for consumers that import from @voiceci/runner/executor
+export { expandRedTeamTests };
 
 export interface TestStartInfo {
   test_name: string;
@@ -71,6 +74,10 @@ export async function executeTests(opts: ExecuteTestsOpts): Promise<ExecuteTests
     onTestComplete,
   } = opts;
 
+  // Expand red_team attacks into conversation tests
+  const redTeamTests = testSpec.red_team ? expandRedTeamTests(testSpec.red_team) : [];
+  const allConversationTests = [...(testSpec.conversation_tests ?? []), ...redTeamTests];
+
   const audioTasks = (testSpec.audio_tests ?? []).map((testName) => async () => {
     onTestStart?.({ test_name: testName, test_type: "audio" });
     console.log(`  Audio test: ${testName}`);
@@ -122,7 +129,7 @@ export async function executeTests(opts: ExecuteTestsOpts): Promise<ExecuteTests
     }
   });
 
-  const conversationTasks = (testSpec.conversation_tests ?? []).map((spec) => async () => {
+  const conversationTasks = allConversationTests.map((spec) => async () => {
     const testName = spec.name ?? `conversation:${spec.caller_prompt.slice(0, 50)}`;
     onTestStart?.({ test_name: testName, test_type: "conversation" });
     console.log(`  Conversation: ${spec.caller_prompt.slice(0, 60)}...`);

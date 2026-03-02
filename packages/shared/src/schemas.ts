@@ -1,11 +1,23 @@
 import { z } from "zod";
-import { AUDIO_TEST_NAMES } from "./types.js";
+import { AUDIO_TEST_NAMES, RED_TEAM_ATTACKS } from "./types.js";
 
 // ============================================================
 // V2 Schemas — Dynamic voice agent testing
 // ============================================================
 
 export const AudioTestNameSchema = z.enum(AUDIO_TEST_NAMES);
+
+export const CallerPersonaSchema = z.object({
+  pace: z.enum(["slow", "normal", "fast"]).optional(),
+  clarity: z.enum(["clear", "vague", "rambling"]).optional(),
+  disfluencies: z.boolean().optional(),
+  cooperation: z.enum(["cooperative", "reluctant", "hostile"]).optional(),
+  emotion: z.enum(["neutral", "cheerful", "confused", "frustrated", "skeptical", "rushed"]).optional(),
+  interruption_style: z.enum(["none", "occasional", "frequent"]).optional(),
+  memory: z.enum(["reliable", "unreliable"]).optional(),
+  intent_clarity: z.enum(["clear", "indirect", "vague"]).optional(),
+  confirmation_style: z.enum(["explicit", "vague"]).optional(),
+}).optional();
 
 export const ConversationTestSpecSchema = z.object({
   name: z.string().optional(),
@@ -14,16 +26,23 @@ export const ConversationTestSpecSchema = z.object({
   eval: z.array(z.string().min(1)).min(1),
   tool_call_eval: z.array(z.string().min(1)).optional(),
   silence_threshold_ms: z.number().int().min(200).max(10000).optional(),
+  persona: CallerPersonaSchema,
 });
+
+export const RedTeamAttackSchema = z.enum(RED_TEAM_ATTACKS);
 
 export const TestSpecSchema = z
   .object({
     audio_tests: z.array(AudioTestNameSchema).optional(),
     conversation_tests: z.array(ConversationTestSpecSchema).optional(),
+    red_team: z.array(RedTeamAttackSchema).optional(),
   })
   .refine(
-    (d) => (d.audio_tests?.length ?? 0) + (d.conversation_tests?.length ?? 0) > 0,
-    { message: "At least one audio_test or conversation_test is required" }
+    (d) =>
+      (d.audio_tests?.length ?? 0) +
+      (d.conversation_tests?.length ?? 0) +
+      (d.red_team?.length ?? 0) > 0,
+    { message: "At least one audio_test, conversation_test, or red_team attack is required" }
   );
 
 export const AdapterTypeSchema = z.enum(["websocket", "sip", "webrtc", "vapi", "retell", "elevenlabs", "bland"]);

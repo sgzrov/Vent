@@ -35,7 +35,7 @@ export async function runConversationTest(
   const transcript: ConversationTurn[] = [];
   const ttfbValues: number[] = [];
 
-  const caller = new CallerLLM(spec.caller_prompt);
+  const caller = new CallerLLM(spec.caller_prompt, spec.persona);
   const adaptiveThreshold = new AdaptiveThreshold({
     baseMs: spec.silence_threshold_ms ?? 800,
   });

@@ -78,7 +78,8 @@ If `conversations.json` is the only file (no `audio.json`), it must also include
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `conversation_tests` | object[] | Yes | Array of conversation test specs (see below) |
+| `conversation_tests` | object[] | No | Array of conversation test specs (see below) |
+| `red_team` | string[] | No | Attack categories to auto-generate adversarial tests (see Red-Team section) |
 
 Each conversation test object:
 
@@ -90,6 +91,7 @@ Each conversation test object:
 | `eval` | string[] | Yes | Binary yes/no evaluation questions |
 | `tool_call_eval` | string[] | No | Evaluation questions about tool call behavior |
 | `silence_threshold_ms` | number | No | Starting silence threshold for end-of-turn detection |
+| `persona` | object | No | Structured behavioral modifiers for the caller (see Persona section) |
 
 ### Workflow
 
@@ -120,6 +122,81 @@ Available audio tests (use these values in the `audio_tests` array):
 **Smoke test**: Use `["echo", "ttfb", "barge_in", "silence_handling", "connection_stability", "response_completeness"]` for a quick baseline.
 
 For detailed thresholds and metrics, call `voiceci_get_audio_test_reference`.
+
+### Persona Configuration
+
+The optional `persona` field controls HOW the caller behaves, separate from WHAT they want (defined in `caller_prompt`). Persona traits are injected into the caller LLM's system prompt so they apply consistently across all turns.
+
+Available traits:
+
+| Trait | Values | Effect |
+|-------|--------|--------|
+| `pace` | `slow`, `normal`, `fast` | Response speed and verbosity |
+| `clarity` | `clear`, `vague`, `rambling` | How clearly the caller expresses themselves |
+| `disfluencies` | `true`, `false` | Adds "um", "uh", "like", "you know" |
+| `cooperation` | `cooperative`, `reluctant`, `hostile` | Willingness to work with the agent |
+| `emotion` | `neutral`, `cheerful`, `confused`, `frustrated`, `skeptical`, `rushed` | Emotional state throughout the call |
+| `interruption_style` | `none`, `occasional`, `frequent` | How often the caller interrupts the agent |
+| `memory` | `reliable`, `unreliable` | Whether the caller remembers and stays consistent |
+| `intent_clarity` | `clear`, `indirect`, `vague` | How directly the caller states their goal |
+| `confirmation_style` | `explicit`, `vague` | How clearly the caller confirms or denies |
+
+Example — same scenario, different persona:
+```json
+{
+  "name": "frustrated booking attempt",
+  "caller_prompt": "You are Sarah calling to book a dental cleaning next week.",
+  "max_turns": 10,
+  "persona": {
+    "emotion": "frustrated",
+    "cooperation": "reluctant",
+    "disfluencies": true,
+    "pace": "fast"
+  },
+  "eval": [
+    "Did the agent de-escalate the caller's frustration?",
+    "Did the agent successfully book the appointment despite the caller's impatience?"
+  ]
+}
+```
+
+Use personas to test the same scenario across different caller behaviors:
+- Same booking flow with a `cooperative` vs `hostile` caller
+- Same support query with `clear` vs `vague` intent
+- Same complaint with `reliable` vs `unreliable` memory
+
+### Red-Team Testing
+
+Add `red_team` to `conversations.json` to auto-generate adversarial test scenarios:
+
+```json
+{
+  "conversation_tests": [...],
+  "red_team": ["prompt_injection", "jailbreak", "pii_extraction"]
+}
+```
+
+Available attack categories:
+
+| Attack | What it tests | Scenarios |
+|--------|--------------|-----------|
+| `prompt_injection` | System prompt extraction, instruction override, role hijacking | 2 |
+| `pii_extraction` | Requests for other callers' data, data source probing | 2 |
+| `jailbreak` | Hypothetical bypass, gradual boundary pushing (crescendo) | 2 |
+| `social_engineering` | Authority impersonation, urgency injection to bypass procedures | 2 |
+| `off_topic` | Topic drift, opinion extraction, capability probing | 2 |
+| `compliance_bypass` | Verification skipping, policy exception pressure | 2 |
+
+Each category generates 2 predefined scenarios with 15-20 max_turns, hostile/deceptive personas, and attack-specific eval questions. Red-team results appear alongside regular conversation test results.
+
+To run all attacks: `"red_team": ["prompt_injection", "pii_extraction", "jailbreak", "social_engineering", "off_topic", "compliance_bypass"]`
+
+You can also run red-team tests standalone (no `conversation_tests` needed):
+```json
+{
+  "red_team": ["prompt_injection", "jailbreak", "compliance_bypass"]
+}
+```
 
 ---
 

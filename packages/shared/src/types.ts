@@ -38,6 +38,18 @@ export type AudioTestName = (typeof AUDIO_TEST_NAMES)[number];
 
 export type AdapterType = "websocket" | "sip" | "webrtc" | "vapi" | "retell" | "elevenlabs" | "bland";
 
+export interface CallerPersona {
+  pace?: "slow" | "normal" | "fast";
+  clarity?: "clear" | "vague" | "rambling";
+  disfluencies?: boolean;
+  cooperation?: "cooperative" | "reluctant" | "hostile";
+  emotion?: "neutral" | "cheerful" | "confused" | "frustrated" | "skeptical" | "rushed";
+  interruption_style?: "none" | "occasional" | "frequent";
+  memory?: "reliable" | "unreliable";
+  intent_clarity?: "clear" | "indirect" | "vague";
+  confirmation_style?: "explicit" | "vague";
+}
+
 export interface ConversationTestSpec {
   name?: string;
   caller_prompt: string;
@@ -45,7 +57,19 @@ export interface ConversationTestSpec {
   eval: string[];
   tool_call_eval?: string[];
   silence_threshold_ms?: number;
+  persona?: CallerPersona;
 }
+
+export const RED_TEAM_ATTACKS = [
+  "prompt_injection",
+  "pii_extraction",
+  "jailbreak",
+  "social_engineering",
+  "off_topic",
+  "compliance_bypass",
+] as const;
+
+export type RedTeamAttack = (typeof RED_TEAM_ATTACKS)[number];
 
 // ============================================================
 // Tool call types
@@ -121,6 +145,7 @@ export interface AudioAnalysisWarning {
 export interface TestSpec {
   audio_tests?: AudioTestName[];
   conversation_tests?: ConversationTestSpec[];
+  red_team?: RedTeamAttack[];
 }
 
 export interface TestDiagnostics {

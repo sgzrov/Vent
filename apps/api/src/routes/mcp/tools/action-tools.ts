@@ -79,6 +79,7 @@ export function registerActionTools(
         testSpecJson: {
           audio_tests: cfg.audio_tests ?? null,
           conversation_tests: cfg.conversation_tests ?? null,
+          red_team: cfg.red_team ?? null,
           adapter,
           voice_config: voiceConfig,
           audio_test_thresholds: cfg.audio_test_thresholds ?? null,
@@ -137,6 +138,7 @@ export function registerActionTools(
         test_spec: {
           audio_tests: cfg.audio_tests ?? null,
           conversation_tests: cfg.conversation_tests ?? null,
+          red_team: cfg.red_team ?? null,
         },
         target_phone_number: targetPhoneNumber,
         voice_config: voiceConfig,

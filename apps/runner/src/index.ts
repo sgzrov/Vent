@@ -10,6 +10,7 @@ import type {
 } from "@voiceci/shared";
 import type { AudioChannelConfig } from "@voiceci/adapters";
 import { executeTests } from "./executor.js";
+import { expandRedTeamTests } from "./conversation/red-team.js";
 import { reportResults, reportTestProgress, reportRunEvent } from "./reporter.js";
 import { waitForHealth } from "./health-check.js";
 
@@ -137,8 +138,9 @@ async function main() {
   };
 
   try {
+    const redTeamExpanded = testSpec.red_team ? expandRedTeamTests(testSpec.red_team).length : 0;
     const totalTests =
-      (testSpec.audio_tests?.length ?? 0) + (testSpec.conversation_tests?.length ?? 0);
+      (testSpec.audio_tests?.length ?? 0) + (testSpec.conversation_tests?.length ?? 0) + redTeamExpanded;
     let completedTests = 0;
 
     const { status, audioResults, conversationResults, aggregate } = await executeTests({

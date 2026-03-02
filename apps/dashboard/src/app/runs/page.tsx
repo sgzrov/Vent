@@ -34,6 +34,7 @@ export default function RunsPage() {
       if (filter) params.set("status", filter);
       const res = await fetch(`${API_URL}/runs?${params}`, {
         credentials: "include",
+        cache: "no-store",
       });
       if (res.status === 401) {
         window.location.reload();
