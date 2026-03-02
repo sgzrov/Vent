@@ -98,7 +98,7 @@ After connecting, these tools are available to your coding agent:
 |------|---------|
 | `voiceci_get_scenario_guide` | How to design test scenarios (audio tests, eval patterns, personas, red-teaming) |
 | `voiceci_get_result_guide` | How to interpret test results |
-| `voiceci_run_suite` | Run audio + conversation tests (handles upload automatically) |
+| `voiceci_run_suite` | Run audio + conversation tests (relay connects your local agent automatically) |
 | `voiceci_load_test` | Run load/stress tests |
 | `voiceci_get_status` | Check run status and get results |
 | `voiceci_get_setup_guide` | Installation and connection instructions |

@@ -8,11 +8,11 @@ Tests live in a `voiceci/` folder in the project root, with separate files for e
 
 ### How Testing Works
 
-VoiceCI runs all tests REMOTELY in cloud infrastructure — it cannot reach localhost. Do NOT start the agent locally. For bundled agents (websocket with `start_command`), VoiceCI uploads your code and runs it in its own infrastructure. You MUST execute the returned upload command after calling `voiceci_run_suite`.
+VoiceCI runs all tests REMOTELY in cloud infrastructure. For local WebSocket agents (with `start_command`), VoiceCI uses a relay tunnel — your agent runs locally and VoiceCI connects to it via WebSocket. You MUST execute the returned relay command after calling `voiceci_run_suite`. Code changes take effect immediately without re-uploading.
 
 ### File Format
 
-Read all JSON files in the `voiceci/` folder, merge them into one config object, then call `voiceci_run_suite` with the merged object as the `config` parameter. For bundled agents, execute the returned upload command in your terminal.
+Read all JSON files in the `voiceci/` folder, merge them into one config object, then call `voiceci_run_suite` with the merged object as the `config` parameter. For local agents, execute the returned relay command in your terminal.
 
 #### voiceci/audio.json (default — create this first)
 
@@ -95,7 +95,7 @@ Each conversation test object:
 
 ### Workflow
 
-1. **First run**: Read agent code → create `voiceci/` folder with `audio.json` → read it → call `voiceci_run_suite(config=...)` → run upload command if returned → poll `voiceci_get_status`
+1. **First run**: Read agent code → create `voiceci/` folder with `audio.json` → read it → call `voiceci_run_suite(config=...)` → run relay command if returned → poll `voiceci_get_status`
 2. **Adding conversation tests**: Create `voiceci/conversations.json` → read both files, merge → call `voiceci_run_suite` with merged config
 3. **Selective runs**: To run only audio tests, read only `audio.json`. To run only conversation tests, read only `conversations.json`.
 4. **After failures**: Update the relevant file (`audio.json` or `conversations.json`) → re-run
