@@ -66,6 +66,7 @@ export class ElevenLabsAudioChannel extends BaseAudioChannel {
   }
 
   async connect(): Promise<void> {
+    const connectStart = Date.now();
     const wsUrl = `wss://api.elevenlabs.io/v1/convai/conversation?agent_id=${this.config.agentId}`;
 
     return new Promise((resolve, reject) => {
@@ -98,6 +99,7 @@ export class ElevenLabsAudioChannel extends BaseAudioChannel {
             // Resolve once we get the conversation metadata
             if (msg.type === "conversation_initiation_metadata" && msg.conversation_id) {
               this.conversationId = msg.conversation_id;
+              this._stats.connectLatencyMs = Date.now() - connectStart;
               clearTimeout(timeout);
               resolve();
             }
@@ -108,6 +110,7 @@ export class ElevenLabsAudioChannel extends BaseAudioChannel {
 
         ws.on("error", (err) => {
           clearTimeout(timeout);
+          this._stats.errorEvents.push(err.message);
           this.emit("error", err);
         });
 
@@ -129,6 +132,7 @@ export class ElevenLabsAudioChannel extends BaseAudioChannel {
       throw new Error("ElevenLabs WebSocket not connected");
     }
 
+    this._stats.bytesSent += pcm.length;
     // Resample 24kHz → 16kHz, then base64 encode
     const pcm16k = resample(pcm, 24000, 16000);
     const base64Audio = pcm16k.toString("base64");
@@ -168,6 +172,7 @@ export class ElevenLabsAudioChannel extends BaseAudioChannel {
     if (msg.type === "audio" && msg.audio?.chunk) {
       // Decode base64 audio and resample 16kHz → 24kHz
       const pcm16k = Buffer.from(msg.audio.chunk, "base64");
+      this._stats.bytesReceived += pcm16k.length;
       const pcm24k = resample(pcm16k, 16000, 24000);
       this.emit("audio", pcm24k);
     }

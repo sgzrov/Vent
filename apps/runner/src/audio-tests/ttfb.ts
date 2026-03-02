@@ -103,13 +103,25 @@ export async function runTtfbTest(
     batchVAD.destroy();
   }
 
+  const MIN_RESPONSES = Math.max(1, PROMPTS.length - 2); // At least 5/7 prompts must get responses
+
   if (allTtfb.length === 0) {
     return {
       test_name: "ttfb",
       status: "fail",
-      metrics: { responses_received: 0 },
+      metrics: { responses_received: 0, total_prompts: PROMPTS.length },
       duration_ms: Math.round(performance.now() - startTime),
       error: "Agent did not respond to any prompts",
+    };
+  }
+
+  if (allTtfb.length < MIN_RESPONSES) {
+    return {
+      test_name: "ttfb",
+      status: "fail",
+      metrics: { responses_received: allTtfb.length, total_prompts: PROMPTS.length },
+      duration_ms: Math.round(performance.now() - startTime),
+      error: `Agent only responded to ${allTtfb.length}/${PROMPTS.length} prompts (minimum ${MIN_RESPONSES})`,
     };
   }
 

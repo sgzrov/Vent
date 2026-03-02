@@ -20,15 +20,15 @@ export function registerActionTools(
   // --- Tool: voiceci_run_suite ---
   server.registerTool("voiceci_run_suite", {
     title: "Run Test Suite",
-    description: "Run a test suite against a voice agent. Requires voiceci.json in the project root.\n\nRead voiceci.json, then pass its parsed JSON as the `config` parameter. For already-deployed agents (SIP, WebRTC, platform adapters, or agent_url), this queues immediately — no bash step. For bundled websocket agents, a short upload command is returned.\n\nThen poll voiceci_get_status with the run_id.",
+    description: "Run a test suite against a voice agent. Requires a `voiceci/` folder in the project root with `audio.json` and/or `conversations.json`.\n\nRead all JSON files in the `voiceci/` folder, merge them into one config object, then pass the merged object as the `config` parameter. For already-deployed agents (SIP, WebRTC, platform adapters, or agent_url), this queues immediately — no bash step. For bundled websocket agents, a short upload command is returned.\n\nThen poll voiceci_get_status with the run_id.",
     inputSchema: {
       config: z
         .any()
-        .describe("Parsed contents of voiceci.json. Read the file, then pass the parsed JSON object here."),
+        .describe("Merged config from voiceci/ folder. Read all JSON files in voiceci/, merge them into one object, then pass it here."),
       project_root: z
         .string()
         .optional()
-        .describe("Absolute path to agent project root containing voiceci.json. Defaults to current working directory."),
+        .describe("Absolute path to agent project root containing the voiceci/ folder. Defaults to current working directory."),
       idempotency_key: z
         .string()
         .uuid()
@@ -79,6 +79,7 @@ export function registerActionTools(
         testSpecJson: {
           audio_tests: cfg.audio_tests ?? null,
           conversation_tests: cfg.conversation_tests ?? null,
+          red_team: cfg.red_team ?? null,
           adapter,
           voice_config: voiceConfig,
           audio_test_thresholds: cfg.audio_test_thresholds ?? null,
@@ -101,7 +102,7 @@ export function registerActionTools(
       return {
         content: [{
           type: "text" as const,
-          text: "Error: config parameter is required. Read voiceci.json from the project root and pass its parsed JSON contents as the config parameter.",
+          text: "Error: config parameter is required. Read all JSON files from the voiceci/ folder, merge them, and pass the merged object as the config parameter.",
         }],
         isError: true,
       };
@@ -137,6 +138,7 @@ export function registerActionTools(
         test_spec: {
           audio_tests: cfg.audio_tests ?? null,
           conversation_tests: cfg.conversation_tests ?? null,
+          red_team: cfg.red_team ?? null,
         },
         target_phone_number: targetPhoneNumber,
         voice_config: voiceConfig,
@@ -182,7 +184,7 @@ export function registerActionTools(
 
     const root = project_root ?? ".";
     const tarTarget = project_root ? `-C "${project_root}" .` : ".";
-    const excludes = "--exclude=node_modules --exclude=.git --exclude=dist --exclude=.next --exclude=.turbo --exclude=coverage --exclude=voiceci.json";
+    const excludes = "--exclude=node_modules --exclude=.git --exclude=dist --exclude=.next --exclude=.turbo --exclude=coverage --exclude=voiceci";
     const lockfileHashCmd = `(cat "${root}/package-lock.json" "${root}/yarn.lock" "${root}/pnpm-lock.yaml" 2>/dev/null || true) | shasum -a 256 | awk '{print $1}'`;
     const activateUrl = `${apiUrl}/internal/runs/${runId}/activate`;
 

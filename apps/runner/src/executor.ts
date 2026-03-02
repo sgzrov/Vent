@@ -12,10 +12,14 @@ import type {
   ConversationTestResult,
   RunAggregateV2,
   AudioTestThresholds,
+  TestDiagnostics,
 } from "@voiceci/shared";
 import { createAudioChannel, type AudioChannelConfig } from "@voiceci/adapters";
 import { runAudioTest } from "./audio-tests/index.js";
-import { runConversationTest } from "./conversation/index.js";
+import { runConversationTest, expandRedTeamTests } from "./conversation/index.js";
+
+// Re-export for consumers that import from @voiceci/runner/executor
+export { expandRedTeamTests };
 
 export interface TestStartInfo {
   test_name: string;
@@ -70,14 +74,54 @@ export async function executeTests(opts: ExecuteTestsOpts): Promise<ExecuteTests
     onTestComplete,
   } = opts;
 
+  // Expand red_team attacks into conversation tests
+  const redTeamTests = testSpec.red_team ? expandRedTeamTests(testSpec.red_team) : [];
+  const allConversationTests = [...(testSpec.conversation_tests ?? []), ...redTeamTests];
+
   const audioTasks = (testSpec.audio_tests ?? []).map((testName) => async () => {
     onTestStart?.({ test_name: testName, test_type: "audio" });
     console.log(`  Audio test: ${testName}`);
     const channel = createAudioChannel(channelConfig);
+    const start = Date.now();
     try {
       await channel.connect();
       const result = await runAudioTest(testName, channel, audioTestThresholds);
       console.log(`    ${testName}: ${result.status} (${result.duration_ms}ms)`);
+      console.log(JSON.stringify({
+        event: "test_complete", test_name: testName, test_type: "audio",
+        status: result.status, duration_ms: result.duration_ms,
+        error_origin: result.diagnostics?.error_origin ?? null,
+        error_detail: result.diagnostics?.error_detail ?? null,
+        channel: { bytes_sent: channel.stats.bytesSent, bytes_received: channel.stats.bytesReceived, errors: channel.stats.errorEvents },
+      }));
+      onTestComplete?.(result);
+      return result;
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      console.error(`    ${testName}: error — ${errorMsg}`);
+      const result: AudioTestResult = {
+        test_name: testName,
+        status: "fail",
+        metrics: {},
+        duration_ms: Date.now() - start,
+        error: errorMsg,
+        diagnostics: {
+          error_origin: "platform",
+          error_detail: errorMsg,
+          timing: { channel_connect_ms: channel.stats.connectLatencyMs },
+          channel: {
+            connected: channel.connected,
+            error_events: channel.stats.errorEvents,
+            audio_bytes_sent: channel.stats.bytesSent,
+            audio_bytes_received: channel.stats.bytesReceived,
+          },
+        },
+      };
+      console.log(JSON.stringify({
+        event: "test_complete", test_name: testName, test_type: "audio",
+        status: "fail", duration_ms: result.duration_ms,
+        error_origin: "platform", error_detail: errorMsg,
+      }));
       onTestComplete?.(result);
       return result;
     } finally {
@@ -85,15 +129,53 @@ export async function executeTests(opts: ExecuteTestsOpts): Promise<ExecuteTests
     }
   });
 
-  const conversationTasks = (testSpec.conversation_tests ?? []).map((spec) => async () => {
+  const conversationTasks = allConversationTests.map((spec) => async () => {
     const testName = spec.name ?? `conversation:${spec.caller_prompt.slice(0, 50)}`;
     onTestStart?.({ test_name: testName, test_type: "conversation" });
     console.log(`  Conversation: ${spec.caller_prompt.slice(0, 60)}...`);
     const channel = createAudioChannel(channelConfig);
+    const start = Date.now();
     try {
       await channel.connect();
       const result = await runConversationTest(spec, channel);
       console.log(`    Status: ${result.status} (${result.duration_ms}ms)`);
+      console.log(JSON.stringify({
+        event: "test_complete", test_name: testName, test_type: "conversation",
+        status: result.status, duration_ms: result.duration_ms,
+        error_origin: result.diagnostics?.error_origin ?? null,
+        channel: { bytes_sent: channel.stats.bytesSent, bytes_received: channel.stats.bytesReceived, errors: channel.stats.errorEvents },
+      }));
+      onTestComplete?.(result);
+      return result;
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      console.error(`    ${testName}: error — ${errorMsg}`);
+      const result: ConversationTestResult = {
+        name: spec.name,
+        caller_prompt: spec.caller_prompt,
+        status: "fail",
+        transcript: [],
+        eval_results: [],
+        duration_ms: Date.now() - start,
+        metrics: { turns: 0, mean_ttfb_ms: 0, total_duration_ms: Date.now() - start },
+        error: errorMsg,
+        diagnostics: {
+          error_origin: "platform",
+          error_detail: errorMsg,
+          timing: { channel_connect_ms: channel.stats.connectLatencyMs },
+          channel: {
+            connected: channel.connected,
+            error_events: channel.stats.errorEvents,
+            audio_bytes_sent: channel.stats.bytesSent,
+            audio_bytes_received: channel.stats.bytesReceived,
+          },
+        },
+      };
+      console.log(JSON.stringify({
+        event: "test_complete", test_name: testName, test_type: "conversation",
+        status: "fail", duration_ms: result.duration_ms,
+        error_origin: "platform", error_detail: errorMsg,
+      }));
       onTestComplete?.(result);
       return result;
     } finally {

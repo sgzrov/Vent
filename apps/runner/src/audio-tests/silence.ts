@@ -12,7 +12,6 @@ import type { AudioChannel } from "@voiceci/adapters";
 import type { AudioTestResult, AudioTestThresholds } from "@voiceci/shared";
 import { synthesize } from "@voiceci/voice";
 import { waitForSpeech, collectUntilEndOfTurn } from "./helpers.js";
-import { generateSilence } from "./signals.js";
 
 const DEFAULT_SILENCE_DURATION_MS = 8000;
 const RE_PROMPT_TIMEOUT_MS = 15000;
@@ -42,9 +41,15 @@ export async function runSilenceHandlingTest(
 
   await collectUntilEndOfTurn(channel, { timeoutMs: 10000 });
 
-  // Step 2: Go silent — send silence buffer so the connection stays active
-  const silence = generateSilence(SILENCE_DURATION_MS);
-  channel.sendAudio(silence);
+  // Step 2: Go silent — stream silence in 20ms chunks for realistic behavior
+  const CHUNK_MS = 20;
+  const chunkSize = Math.floor(24000 * 2 * (CHUNK_MS / 1000)); // 960 bytes per 20ms
+  const totalChunks = Math.ceil(SILENCE_DURATION_MS / CHUNK_MS);
+  const silenceChunk = Buffer.alloc(chunkSize);
+  for (let i = 0; i < totalChunks; i++) {
+    channel.sendAudio(silenceChunk);
+    await new Promise((r) => setTimeout(r, CHUNK_MS));
+  }
 
   // Step 3: Wait to see if agent re-prompts
   const { timedOut: noReprompt } = await waitForSpeech(

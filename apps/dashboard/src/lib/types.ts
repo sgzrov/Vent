@@ -14,6 +14,18 @@ export type AudioTestName =
 
 // --- Test spec types ---
 
+export interface CallerPersona {
+  pace?: "slow" | "normal" | "fast";
+  clarity?: "clear" | "vague" | "rambling";
+  disfluencies?: boolean;
+  cooperation?: "cooperative" | "reluctant" | "hostile";
+  emotion?: "neutral" | "cheerful" | "confused" | "frustrated" | "skeptical" | "rushed";
+  interruption_style?: "none" | "occasional" | "frequent";
+  memory?: "reliable" | "unreliable";
+  intent_clarity?: "clear" | "indirect" | "vague";
+  confirmation_style?: "explicit" | "vague";
+}
+
 export interface ConversationTestSpec {
   name?: string;
   caller_prompt: string;
@@ -21,11 +33,21 @@ export interface ConversationTestSpec {
   eval: string[];
   tool_call_eval?: string[];
   silence_threshold_ms?: number;
+  persona?: CallerPersona;
 }
+
+export type RedTeamAttack =
+  | "prompt_injection"
+  | "pii_extraction"
+  | "jailbreak"
+  | "social_engineering"
+  | "off_topic"
+  | "compliance_bypass";
 
 export interface TestSpec {
   audio_tests?: AudioTestName[];
   conversation_tests?: ConversationTestSpec[];
+  red_team?: RedTeamAttack[];
 }
 
 // --- Run-level types ---

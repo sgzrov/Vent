@@ -16,7 +16,18 @@ import { generateSilence } from "./signals.js";
 
 const DEFAULT_MIN_PASS_SNR_DB = 10;
 const DEFAULT_MAX_TTFB_DEGRADATION_MS = 2000;
-const PROMPT = "Hi, can you tell me what services you offer?";
+const BASELINE_PROMPT = "Hi, can you tell me what services you offer?";
+const TRIAL_PROMPTS = [
+  "What are your hours of operation?",
+  "Where are you located?",
+  "Do you accept walk-in appointments?",
+  "How much does a basic appointment cost?",
+  "Can I speak to someone about my account?",
+  "What payment methods do you accept?",
+  "Do you have any availability this week?",
+  "Are you open on weekends?",
+  "Can you tell me about your cancellation policy?",
+];
 const SNR_LEVELS = [20, 10, 5] as const;
 const NOISE_TYPES = ["white", "babble", "pink"] as const;
 type NoiseType = (typeof NOISE_TYPES)[number];
@@ -42,11 +53,10 @@ export async function runNoiseResilienceTest(
   const startTime = performance.now();
 
   // Phase 0: Baseline (clean audio)
-  const cleanAudio = await synthesize(PROMPT);
-  const cleanDurationMs = Math.round((cleanAudio.length / 2 / 24000) * 1000);
+  const baselineAudio = await synthesize(BASELINE_PROMPT);
 
   const baselineSendTime = Date.now();
-  channel.sendAudio(cleanAudio);
+  channel.sendAudio(baselineAudio);
 
   const baselineSpeech = await waitForSpeech(channel, 10000);
   if (baselineSpeech.timedOut) {
@@ -62,8 +72,9 @@ export async function runNoiseResilienceTest(
   const baselineTtfb = baselineSpeech.detectedAt - baselineSendTime;
   await collectUntilEndOfTurn(channel, { timeoutMs: 15000, silenceThresholdMs: 1500 });
 
-  // Phase 1: Noisy trials
+  // Phase 1: Noisy trials — each trial uses a different prompt to avoid context confusion
   const trials: TrialResult[] = [];
+  let trialIndex = 0;
 
   for (const noiseType of NOISE_TYPES) {
     for (const snrDb of SNR_LEVELS) {
@@ -71,6 +82,10 @@ export async function runNoiseResilienceTest(
       channel.sendAudio(generateSilence(500));
       await new Promise((r) => setTimeout(r, 500));
 
+      const trialPrompt = TRIAL_PROMPTS[trialIndex % TRIAL_PROMPTS.length]!;
+      trialIndex++;
+      const cleanAudio = await synthesize(trialPrompt);
+      const cleanDurationMs = Math.round((cleanAudio.length / 2 / 24000) * 1000);
       const noise = NOISE_GENERATORS[noiseType](cleanDurationMs);
       const noisyAudio = mixAudio(cleanAudio, noise, snrDb);
 

@@ -54,7 +54,7 @@ export async function createMachine(config: MachineConfig): Promise<string> {
           guest: {
             cpu_kind: config.cpuKind ?? "shared",
             cpus: config.cpus ?? 1,
-            memory_mb: config.memoryMb ?? 4096,
+            memory_mb: config.memoryMb ?? 2048,
           },
           auto_destroy: true,
           restart: { policy: "no" },

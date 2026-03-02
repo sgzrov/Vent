@@ -29,13 +29,17 @@ export async function collectUntilEndOfTurn(
   opts: {
     timeoutMs?: number;
     silenceThresholdMs?: number;
+    /** Pre-initialized VAD instance — reused across turns to avoid WASM reload. */
+    vad?: VoiceActivityDetector;
   } = {}
 ): Promise<{ audio: Buffer; timedOut: boolean; stats: CollectionStats }> {
   const timeoutMs = opts.timeoutMs ?? 15000;
-  const silenceThresholdMs = opts.silenceThresholdMs ?? 1500;
+  const silenceThresholdMs = opts.silenceThresholdMs ?? 800;
 
-  const vad = new VoiceActivityDetector({ silenceThresholdMs });
-  await vad.init();
+  const ownsVAD = !opts.vad;
+  const vad = opts.vad ?? new VoiceActivityDetector({ silenceThresholdMs });
+  if (ownsVAD) await vad.init();
+  else vad.reset();
 
   const chunks: Buffer[] = [];
   let timedOut = false;
@@ -82,24 +86,35 @@ export async function collectUntilEndOfTurn(
         if (state === "end_of_turn") {
           clearTimeout(timeout);
           channel.off("audio", onAudio);
+          channel.off("error", onError);
           resolve();
         }
+      };
+
+      const onError = (err: Error) => {
+        timedOut = true;
+        clearTimeout(timeout);
+        channel.off("audio", onAudio);
+        channel.off("error", onError);
+        resolve();
       };
 
       const timeout = setTimeout(() => {
         timedOut = true;
         channel.off("audio", onAudio);
+        channel.off("error", onError);
         resolve();
       }, timeoutMs);
 
       channel.on("audio", onAudio);
+      channel.on("error", onError);
     });
   } finally {
     // Account for speech that was still ongoing at end
     if (speechStartedAt !== null) {
       totalSpeechMs += Date.now() - speechStartedAt;
     }
-    vad.destroy();
+    if (ownsVAD) vad.destroy();
   }
 
   return {
@@ -119,16 +134,25 @@ export async function collectForDuration(
   const chunks: Buffer[] = [];
 
   await new Promise<void>((resolve) => {
-    const timeout = setTimeout(() => {
-      channel.off("audio", onAudio);
-      resolve();
-    }, durationMs);
-
     const onAudio = (chunk: Buffer) => {
       chunks.push(chunk);
     };
 
+    const onError = () => {
+      clearTimeout(timeout);
+      channel.off("audio", onAudio);
+      channel.off("error", onError);
+      resolve();
+    };
+
+    const timeout = setTimeout(() => {
+      channel.off("audio", onAudio);
+      channel.off("error", onError);
+      resolve();
+    }, durationMs);
+
     channel.on("audio", onAudio);
+    channel.on("error", onError);
   });
 
   return Buffer.concat(chunks);
@@ -156,17 +180,28 @@ export async function waitForSpeech(
           detectedAt = Date.now();
           clearTimeout(timeout);
           channel.off("audio", onAudio);
+          channel.off("error", onError);
           resolve();
         }
+      };
+
+      const onError = () => {
+        timedOut = true;
+        clearTimeout(timeout);
+        channel.off("audio", onAudio);
+        channel.off("error", onError);
+        resolve();
       };
 
       const timeout = setTimeout(() => {
         timedOut = true;
         channel.off("audio", onAudio);
+        channel.off("error", onError);
         resolve();
       }, timeoutMs);
 
       channel.on("audio", onAudio);
+      channel.on("error", onError);
     });
   } finally {
     vad.destroy();

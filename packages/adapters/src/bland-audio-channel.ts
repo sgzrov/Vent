@@ -70,14 +70,21 @@ export class BlandAudioChannel extends BaseAudioChannel {
   }
 
   async connect(): Promise<void> {
+    const connectStart = Date.now();
     // Fetch agent config from Bland's inbound number
     const agentConfig = await this.fetchInboundConfig();
 
     // Start SIP in inbound mode — Plivo app created, number configured, waiting
     this.sipChannel = new SipAudioChannel({ ...this.config.sip, mode: "inbound" });
 
-    this.sipChannel.on("audio", (chunk) => this.emit("audio", chunk));
-    this.sipChannel.on("error", (err) => this.emit("error", err));
+    this.sipChannel.on("audio", (chunk) => {
+      this._stats.bytesReceived += chunk.length;
+      this.emit("audio", chunk);
+    });
+    this.sipChannel.on("error", (err) => {
+      this._stats.errorEvents.push(err.message);
+      this.emit("error", err);
+    });
     this.sipChannel.on("disconnected", () => this.emit("disconnected"));
 
     await this.sipChannel.connect();
@@ -110,12 +117,14 @@ export class BlandAudioChannel extends BaseAudioChannel {
 
     const data = (await res.json()) as BlandSendCallResponse;
     this.callId = data.call_id;
+    this._stats.connectLatencyMs = Date.now() - connectStart;
   }
 
   sendAudio(pcm: Buffer): void {
     if (!this.sipChannel) {
       throw new Error("Bland channel not connected");
     }
+    this._stats.bytesSent += pcm.length;
     this.sipChannel.sendAudio(pcm);
   }
 
