@@ -16,3 +16,5 @@ function load(name: string): string {
 export const SETUP_GUIDE = load("setup-guide.txt");
 export const SCENARIO_GUIDE = load("scenario-guide.txt");
 export const RESULT_GUIDE = load("result-guide.txt");
+export const AUDIO_TEST_REFERENCE = load("audio-test-reference.txt");
+export const EVAL_EXAMPLES = load("eval-examples.txt");

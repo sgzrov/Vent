@@ -96,8 +96,10 @@ After connecting, these tools are available to your coding agent:
 
 | Tool | Purpose |
 |------|---------|
-| `voiceci_get_scenario_guide` | How to design test scenarios (audio tests, eval patterns, personas, red-teaming) |
-| `voiceci_get_result_guide` | How to interpret test results |
+| `voiceci_get_scenario_guide` | Design test scenarios — file format, agent analysis, personas, conversation authoring |
+| `voiceci_get_audio_test_reference` | Audio test definitions, durations, and threshold customization |
+| `voiceci_get_eval_examples` | Red-team attack patterns and tool call integration guides |
+| `voiceci_get_result_guide` | Interpret results — failure diagnosis, metrics, iterative testing |
 | `voiceci_run_suite` | Run audio + conversation tests (relay connects your local agent automatically) |
 | `voiceci_load_test` | Run load/stress tests |
 | `voiceci_get_status` | Check run status and get results |

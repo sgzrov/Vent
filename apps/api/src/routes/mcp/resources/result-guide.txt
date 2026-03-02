@@ -13,6 +13,28 @@
 - **endpointing fail**: Agent interrupts during mid-sentence pauses. Check VAD silence threshold — it's too aggressive. Increase endpointing timeout or add pause detection logic.
 - **audio_quality fail**: Issues with agent's output audio — check `metrics` for specific failures (clipping, energy drops, clicks, truncation). Clipping = gain too high; sudden drops = TTS streaming issues; clicks = buffer boundary problems.
 
+### Audio Analysis Metrics (VAD-Derived)
+
+Every conversation test includes `metrics.audio_analysis` — VAD-based speech/silence analysis of the agent's audio. Computed from actual audio waveforms, not turn-level approximations.
+
+| Metric | What it means | Healthy range | Flag when |
+|--------|--------------|---------------|-----------|
+| `agent_speech_ratio` | % of agent's air time that is actual speech (vs silence/pauses) | 0.6-0.9 | <0.5 (agent mostly silent — possible audio issue or very long thinking pauses) |
+| `talk_ratio_vad` | VAD-corrected ratio: caller time / (caller + agent speech). More accurate than `talk_ratio` | 0.3-0.7 | >0.7 (caller dominates — agent not saying enough) or <0.3 (agent monologuing) |
+| `longest_monologue_ms` | Longest continuous agent speech segment | <15,000ms | >30,000ms (agent talked 30+ seconds without pause — poor conversational style) |
+| `silence_gaps_over_2s` | Count of >2s silences within agent responses | 0-1 per call | >=3 (frequent long pauses — agent is slow or struggling) |
+| `total_internal_silence_ms` | Total silence within agent turns (not between-turn gaps) | Varies | High relative to total agent audio = agent has processing issues |
+| `per_turn_speech_segments` | Speech bursts per agent turn [array] | 1-3 per turn | Many segments (>5) = agent speech is very choppy/fragmented |
+| `mean_agent_speech_segment_ms` | Average speech burst duration | 2000-8000ms | <500ms (extremely choppy) or >20,000ms (long monologue) |
+
+**Automatic Warnings:** If a metric exceeds its threshold, a warning appears in `metrics.audio_analysis_warnings` with severity ("warning" or "critical") and a human-readable message. These are informational — they do NOT affect pass/fail status.
+
+**How to use:**
+- Low `agent_speech_ratio` but passing evals → agent works but has latency/audio issues worth investigating
+- High `silence_gaps_over_2s` → likely slow tool calls or LLM inference mid-response. Check `silence_threshold_ms` tuning
+- High `longest_monologue_ms` → agent gives excessively long responses without pausing. Prompt/conversation design issue
+- Compare `talk_ratio_vad` (VAD-corrected) with `talk_ratio` (buffer-based) — big gap means significant silence in agent audio
+
 ### Conversation Test Failures
 - Read the judge's `reasoning` field — it explains WHY.
 - `relevant: false` means the conversation didn't cover that eval topic — NOT a failure.
