@@ -5,7 +5,7 @@ Tests run in parallel with independent connections. For already-deployed agents 
 | Test | What It Measures | When to Include | Duration |
 |------|------------------|-----------------|----------|
 | echo | Feedback loop detection — agent STT picking up its own TTS | ALWAYS include | ~15s |
-| ttfb | Tiered latency: simple/complex/tool-triggering prompts + TTFW (first word) | Production agents, latency-sensitive apps | ~50s |
+| ttfb | Tiered latency: TTFB (first audio byte), TTFW (first speech via VAD), silence pad, per-tier breakdowns | Production agents, latency-sensitive apps | ~50s |
 | barge_in | Interrupt handling — does agent stop when user cuts in? | Conversational agents (not one-shot) | ~20s |
 | silence_handling | Does agent stay connected during 8s silence? | Phone/voice agents | ~15s |
 | connection_stability | 5-turn multi-turn robustness, no disconnections | Always good to include | ~30s |

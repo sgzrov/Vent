@@ -1,7 +1,7 @@
 "use client";
 
 export default function GlobalError({
-  error,
+  error: _error,
 }: {
   error: Error & { digest?: string };
   reset: () => void;
@@ -9,13 +9,10 @@ export default function GlobalError({
   return (
     <html>
       <body style={{ padding: 40, fontFamily: "monospace", color: "#ff6b6b", background: "#111" }}>
-        <h2>Global Debug Error</h2>
-        <pre style={{ whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
-          {error.message}
-        </pre>
-        <pre style={{ whiteSpace: "pre-wrap", wordBreak: "break-all", color: "#888", fontSize: 12 }}>
-          {error.stack}
-        </pre>
+        <h2>Application Error</h2>
+        <p style={{ color: "#bbb", maxWidth: 480 }}>
+          The dashboard hit an unexpected error. Please refresh and try again.
+        </p>
       </body>
     </html>
   );

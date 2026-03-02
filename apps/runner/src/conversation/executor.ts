@@ -18,12 +18,14 @@ import type {
   ConversationMetrics,
   ObservedToolCall,
   ToolCallMetrics,
+  EvalResult,
 } from "@voiceci/shared";
 import { synthesize, BatchVAD, VoiceActivityDetector, StreamingTranscriber } from "@voiceci/voice";
 import { CallerLLM } from "./caller-llm.js";
 import { JudgeLLM } from "./judge-llm.js";
 import { collectUntilEndOfTurn } from "../audio-tests/helpers.js";
 import { computeAllMetrics } from "../metrics/index.js";
+import { analyzeProsody } from "../metrics/prosody.js";
 import { AdaptiveThreshold } from "./adaptive-threshold.js";
 import { gradeAudioAnalysisMetrics, type TurnAudioData } from "../metrics/audio-analysis.js";
 
@@ -34,6 +36,7 @@ export async function runConversationTest(
   const startTime = performance.now();
   const transcript: ConversationTurn[] = [];
   const ttfbValues: number[] = [];
+  const ttfwValues: number[] = [];
 
   const caller = new CallerLLM(spec.caller_prompt, spec.persona);
   const adaptiveThreshold = new AdaptiveThreshold({
@@ -63,6 +66,7 @@ export async function runConversationTest(
   }
 
   const turnAudioData: TurnAudioData[] = [];
+  const agentAudioBuffers: Buffer[] = [];
   let agentText: string | null = null;
 
   try {
@@ -123,11 +127,19 @@ export async function runConversationTest(
 
       const agentTimestamp = performance.now() - startTime;
 
-      // Measure TTFB from first audio chunk timestamp
+      // Measure TTFB (first audio byte) and TTFW (first speech via VAD)
       let turnTtfb: number | undefined;
+      let turnTtfw: number | undefined;
+      let turnSilencePad: number | undefined;
       if (agentAudio.length > 0 && stats.firstChunkAt !== null) {
         turnTtfb = Math.max(0, stats.firstChunkAt - sendTime);
         ttfbValues.push(turnTtfb);
+
+        if (stats.speechOnsetAt !== null) {
+          turnTtfw = Math.max(0, stats.speechOnsetAt - sendTime);
+          ttfwValues.push(turnTtfw);
+          turnSilencePad = Math.max(0, turnTtfw - turnTtfb);
+        }
       }
 
       // Step 4: Get streaming STT result + batch VAD analysis
@@ -142,6 +154,7 @@ export async function runConversationTest(
 
         // Batch VAD on agent audio for speech/silence segmentation
         const speechSegments = batchVAD.analyze(agentAudio);
+        if (spec.prosody) agentAudioBuffers.push(Buffer.from(agentAudio));
         turnAudioData.push({
           role: "agent",
           audioDurationMs: agentAudioDurationMs,
@@ -154,6 +167,8 @@ export async function runConversationTest(
           timestamp_ms: Math.round(agentTimestamp),
           audio_duration_ms: agentAudioDurationMs,
           ttfb_ms: turnTtfb,
+          ttfw_ms: turnTtfw,
+          silence_pad_ms: turnSilencePad,
           stt_confidence: confidence,
           stt_ms: sttMs,
         });
@@ -165,6 +180,8 @@ export async function runConversationTest(
           text: "",
           timestamp_ms: Math.round(agentTimestamp),
           ttfb_ms: turnTtfb,
+          ttfw_ms: turnTtfw,
+          silence_pad_ms: turnSilencePad,
         });
       }
     }
@@ -184,17 +201,32 @@ export async function runConversationTest(
 
     // Evaluate tool call criteria if provided and tool call data exists
     const hasToolCallEval = spec.tool_call_eval && spec.tool_call_eval.length > 0;
-    if (hasToolCallEval && observedToolCalls.length > 0) {
-      judgePromises.push(
-        judge.evaluateToolCalls(transcript, observedToolCalls, spec.tool_call_eval!),
-      );
+    if (hasToolCallEval) {
+      if (observedToolCalls.length > 0) {
+        judgePromises.push(
+          judge.evaluateToolCalls(transcript, observedToolCalls, spec.tool_call_eval!),
+        );
+      } else {
+        const unmetToolCallEvals: EvalResult[] = spec.tool_call_eval!.map((question) => ({
+          question,
+          relevant: true,
+          passed: false,
+          reasoning: "No tool calls were observed in this run, so tool_call_eval criteria cannot be satisfied.",
+        }));
+        judgePromises.push(Promise.resolve(unmetToolCallEvals));
+      }
     }
 
-    const [evalResults, behavioral, toolCallEvalResults] = (await Promise.all(judgePromises)) as [
-      Awaited<ReturnType<typeof judge.evaluate>>,
-      Awaited<ReturnType<typeof judge.evaluateAllBehavioral>>,
-      Awaited<ReturnType<typeof judge.evaluateToolCalls>> | undefined,
-    ];
+    // Run judge + prosody analysis in parallel
+    const [judgeResults, prosodyResult] = await Promise.all([
+      Promise.all(judgePromises) as Promise<[
+        Awaited<ReturnType<typeof judge.evaluate>>,
+        Awaited<ReturnType<typeof judge.evaluateAllBehavioral>>,
+        Awaited<ReturnType<typeof judge.evaluateToolCalls>> | undefined,
+      ]>,
+      spec.prosody ? analyzeProsody(agentAudioBuffers) : Promise.resolve(null),
+    ]);
+    const [evalResults, behavioral, toolCallEvalResults] = judgeResults;
 
     // Compute deep metrics (instant — pure functions)
     const totalDurationMs = Math.round(performance.now() - startTime);
@@ -202,8 +234,12 @@ export async function runConversationTest(
       ttfbValues.length > 0
         ? Math.round(ttfbValues.reduce((a, b) => a + b, 0) / ttfbValues.length)
         : 0;
+    const meanTtfw =
+      ttfwValues.length > 0
+        ? Math.round(ttfwValues.reduce((a, b) => a + b, 0) / ttfwValues.length)
+        : undefined;
 
-    const { transcript: transcriptMetrics, latency, talk_ratio, audio_analysis, harness_overhead } = computeAllMetrics(transcript, turnAudioData);
+    const { transcript: transcriptMetrics, latency, talk_ratio, audio_analysis, harness_overhead } = computeAllMetrics(transcript, turnAudioData, channel.stats.connectLatencyMs);
 
     // Compute tool call metrics
     let toolCallMetrics: ToolCallMetrics | undefined;
@@ -236,6 +272,7 @@ export async function runConversationTest(
     const metrics: ConversationMetrics = {
       turns: transcript.length,
       mean_ttfb_ms: meanTtfb,
+      mean_ttfw_ms: meanTtfw,
       total_duration_ms: totalDurationMs,
       talk_ratio,
       transcript: transcriptMetrics,
@@ -244,6 +281,8 @@ export async function runConversationTest(
       tool_calls: toolCallMetrics,
       audio_analysis,
       audio_analysis_warnings: audioAnalysisWarnings?.length ? audioAnalysisWarnings : undefined,
+      prosody: prosodyResult?.metrics,
+      prosody_warnings: prosodyResult?.warnings?.length ? prosodyResult.warnings : undefined,
       harness_overhead,
     };
 
@@ -253,8 +292,9 @@ export async function runConversationTest(
       relevantResults.length > 0 && relevantResults.every((r) => r.passed);
 
     const relevantToolCallResults = (toolCallEvalResults ?? []).filter((r) => r.relevant);
-    const allToolCallEvalsPassed =
-      relevantToolCallResults.length === 0 || relevantToolCallResults.every((r) => r.passed);
+    const allToolCallEvalsPassed = hasToolCallEval
+      ? relevantToolCallResults.length > 0 && relevantToolCallResults.every((r) => r.passed)
+      : true;
 
     const allPassed = allEvalsPassed && allToolCallEvalsPassed;
 

@@ -1,14 +1,25 @@
 import type { FastifyInstance } from "fastify";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { randomUUID, createHash } from "node:crypto";
+import { eq, and } from "drizzle-orm";
 import { schema } from "@voiceci/db";
 import { z } from "zod";
 import {
   AdapterTypeSchema,
   LoadPatternSchema,
+  type RedTeamAttack,
 } from "@voiceci/shared";
+import { expandRedTeamTests } from "@voiceci/runner/executor";
 import { runLoadTestInProcess } from "../../../services/test-runner.js";
+import { buildFixPlan } from "./fix-plan.js";
+
+function hashIdempotencyKey(raw: string): string {
+  return createHash("sha256").update(raw).digest("hex");
+}
+
+function shellEscape(value: string): string {
+  return `'${value.replace(/'/g, `'\"'\"'`)}'`;
+}
 
 export function registerActionTools(
   server: McpServer,
@@ -42,12 +53,23 @@ export function registerActionTools(
       idempotency_key,
     },
   ) => {
+    void project_root;
+
+    const hashedIdempotencyKey = idempotency_key
+      ? hashIdempotencyKey(idempotency_key)
+      : null;
+
     // Idempotency check — return existing run if key matches
-    if (idempotency_key) {
+    if (hashedIdempotencyKey) {
       const [existing] = await app.db
         .select({ id: schema.runs.id, status: schema.runs.status })
         .from(schema.runs)
-        .where(eq(schema.runs.idempotency_key, idempotency_key))
+        .where(
+          and(
+            eq(schema.runs.user_id, userId),
+            eq(schema.runs.idempotency_key, hashedIdempotencyKey),
+          ),
+        )
         .limit(1);
 
       if (existing) {
@@ -107,7 +129,41 @@ export function registerActionTools(
       };
     }
 
-    const cfg = (typeof config === "string" ? JSON.parse(config) : config) as Record<string, unknown>;
+    let cfg: Record<string, unknown>;
+    if (typeof config === "string") {
+      try {
+        const parsed = JSON.parse(config) as unknown;
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+          return {
+            content: [{
+              type: "text" as const,
+              text: "Error: config must be a JSON object.",
+            }],
+            isError: true,
+          };
+        }
+        cfg = parsed as Record<string, unknown>;
+      } catch {
+        return {
+          content: [{
+            type: "text" as const,
+            text: "Error: config string is not valid JSON.",
+          }],
+          isError: true,
+        };
+      }
+    } else if (typeof config === "object" && config !== null && !Array.isArray(config)) {
+      cfg = config as Record<string, unknown>;
+    } else {
+      return {
+        content: [{
+          type: "text" as const,
+          text: "Error: config must be an object.",
+        }],
+        isError: true,
+      };
+    }
+
     const { testSpecJson, adapter, agentUrl, voiceConfig, targetPhoneNumber, isRemote } = buildTestSpec(cfg);
 
     if (isRemote) {
@@ -122,7 +178,7 @@ export function registerActionTools(
           bundle_hash: "remote",
           status: "queued",
           test_spec_json: testSpecJson,
-          idempotency_key: idempotency_key ?? null,
+          idempotency_key: hashedIdempotencyKey,
         })
         .returning();
 
@@ -174,7 +230,7 @@ export function registerActionTools(
         bundle_hash: null,
         status: "queued",
         test_spec_json: testSpecJson,
-        idempotency_key: idempotency_key ?? null,
+        idempotency_key: hashedIdempotencyKey,
         relay_token: relayToken,
       })
       .returning();
@@ -183,19 +239,23 @@ export function registerActionTools(
     const agentPort = 3001;
 
     const relayArgs = [
-      `--run-id ${runId}`,
-      `--token ${relayToken}`,
-      `--api-url ${apiUrl}`,
-      `--agent-port ${agentPort}`,
+      "--run-id",
+      runId,
+      "--token",
+      relayToken,
+      "--api-url",
+      apiUrl,
+      "--agent-port",
+      String(agentPort),
     ];
     if (startCommand) {
-      relayArgs.push(`--start-command "${startCommand}"`);
+      relayArgs.push("--start-command", startCommand);
     }
     if (cfg.health_endpoint) {
-      relayArgs.push(`--health-endpoint ${cfg.health_endpoint}`);
+      relayArgs.push("--health-endpoint", String(cfg.health_endpoint));
     }
 
-    const relayCommand = `curl -sS ${apiUrl}/relay/client.mjs -o /tmp/voiceci-relay.mjs && node /tmp/voiceci-relay.mjs ${relayArgs.join(" ")}`;
+    const relayCommand = `curl -sS ${shellEscape(`${apiUrl}/relay/client.mjs`)} -o /tmp/voiceci-relay.mjs && node /tmp/voiceci-relay.mjs ${relayArgs.map((arg) => shellEscape(arg)).join(" ")}`;
 
     return {
       content: [{
@@ -308,7 +368,7 @@ export function registerActionTools(
   // --- Tool: voiceci_get_run_status ---
   server.registerTool("voiceci_get_run_status", {
     title: "Get Run Status",
-    description: "Get the current status and results of a test run by ID. Poll this to track progress — it returns partial results as individual tests complete, so you can reason about early failures while other tests are still running. Once the run finishes, returns the full aggregate summary and all results.",
+    description: "Get the current status and results of a test run by ID. Poll this to track progress — it returns partial results as individual tests complete, so you can reason about early failures while other tests are still running. Once the run finishes, returns the full aggregate summary and all results. When failures exist, response includes `fix_plan` with prioritized failure packets and a `targeted_rerun_config`.",
     inputSchema: {
       run_id: z.string().uuid().describe("The run ID returned by voiceci_run_tests."),
     },
@@ -317,7 +377,12 @@ export function registerActionTools(
     const [run] = await app.db
       .select()
       .from(schema.runs)
-      .where(eq(schema.runs.id, run_id))
+      .where(
+        and(
+          eq(schema.runs.id, run_id),
+          eq(schema.runs.user_id, userId),
+        ),
+      )
       .limit(1);
 
     if (!run) {
@@ -335,9 +400,21 @@ export function registerActionTools(
         .where(eq(schema.scenarioResults.run_id, run_id));
 
       // Derive total test count from stored config
-      const spec = run.test_spec_json as { audio_tests?: unknown[]; conversation_tests?: unknown[] } | null;
+      const spec = run.test_spec_json as {
+        audio_tests?: unknown[];
+        conversation_tests?: unknown[];
+        red_team?: RedTeamAttack[];
+      } | null;
+      let redTeamExpanded = 0;
+      if (spec?.red_team) {
+        try {
+          redTeamExpanded = expandRedTeamTests(spec.red_team).length;
+        } catch {
+          redTeamExpanded = 0;
+        }
+      }
       const totalTests = spec
-        ? (spec.audio_tests?.length ?? 0) + (spec.conversation_tests?.length ?? 0)
+        ? (spec.audio_tests?.length ?? 0) + (spec.conversation_tests?.length ?? 0) + redTeamExpanded
         : undefined;
 
       if (partialResults.length === 0) {
@@ -365,6 +442,22 @@ export function registerActionTools(
       const conversationResults = partialResults
         .filter((s) => s.test_type === "conversation")
         .map((s) => s.metrics_json);
+      const fixPlan = buildFixPlan({
+        audioResults,
+        conversationResults,
+        testSpecJson: (run.test_spec_json as Record<string, unknown> | null) ?? null,
+      });
+      app.log.debug({
+        run_id: run.id,
+        run_status: run.status,
+        completed: partialResults.length,
+        total: totalTests ?? null,
+        audio_results: audioResults.length,
+        conversation_results: conversationResults.length,
+        fix_plan_present: fixPlan != null,
+        failing_tests: fixPlan?.failing_tests ?? 0,
+        top_priority: fixPlan?.top_priority ?? null,
+      }, "Generated fix_plan for in-progress run");
 
       return {
         content: [{
@@ -377,6 +470,7 @@ export function registerActionTools(
             started_at: run.started_at,
             audio_results: audioResults,
             conversation_results: conversationResults,
+            fix_plan: fixPlan,
             message: `Run in progress: ${partialResults.length}${totalTests ? `/${totalTests}` : ""} tests completed. Poll again for more results.`,
           }, null, 2),
         }],
@@ -395,6 +489,20 @@ export function registerActionTools(
     const conversationResults = scenarios
       .filter((s) => s.test_type === "conversation")
       .map((s) => s.metrics_json);
+    const fixPlan = buildFixPlan({
+      audioResults,
+      conversationResults,
+      testSpecJson: (run.test_spec_json as Record<string, unknown> | null) ?? null,
+    });
+    app.log.debug({
+      run_id: run.id,
+      run_status: run.status,
+      audio_results: audioResults.length,
+      conversation_results: conversationResults.length,
+      fix_plan_present: fixPlan != null,
+      failing_tests: fixPlan?.failing_tests ?? 0,
+      top_priority: fixPlan?.top_priority ?? null,
+    }, "Generated fix_plan for completed run");
 
     return {
       content: [{
@@ -405,6 +513,7 @@ export function registerActionTools(
           aggregate: run.aggregate_json,
           audio_results: audioResults,
           conversation_results: conversationResults,
+          fix_plan: fixPlan,
           error_text: run.error_text ?? null,
           duration_ms: run.duration_ms,
           started_at: run.started_at,

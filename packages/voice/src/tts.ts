@@ -2,10 +2,14 @@
  * Deepgram Aura-2 TTS — converts text to PCM 16-bit 24kHz mono audio.
  */
 
+import { createClient, DeepgramApiError } from "@deepgram/sdk";
 import { withRetry } from "@voiceci/shared";
 
-const DEEPGRAM_BASE_URL = "https://api.deepgram.com/v1";
 const DEFAULT_MODEL = "aura-2-thalia-en";
+
+function isRetryableStatus(status: number): boolean {
+  return status === 408 || status === 429 || status >= 500;
+}
 
 export interface TTSConfig {
   voiceId?: string;
@@ -28,31 +32,44 @@ export async function synthesize(
   }
 
   const model = config?.voiceId ?? DEFAULT_MODEL;
-  const url = `${DEEPGRAM_BASE_URL}/speak?model=${model}&encoding=linear16&container=none&sample_rate=24000`;
+  const deepgram = createClient(apiKey);
 
-  const res = await withRetry(async () => {
-    const r = await fetch(url, {
-      method: "POST",
-      headers: {
-        Authorization: `Token ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ text }),
-    });
+  const response = await withRetry(async () => {
+    try {
+      const speakClient = await deepgram.speak.request(
+        { text },
+        {
+          model,
+          encoding: "linear16",
+          container: "none",
+          sample_rate: 24000,
+        },
+      );
 
-    if (!r.ok) {
-      if (r.status === 408 || r.status === 429 || r.status >= 500) {
-        throw Object.assign(
-          new Error(`Deepgram TTS retryable (${r.status})`),
-          { retryable: true },
-        );
+      if (!speakClient.result) {
+        throw Object.assign(new Error("Deepgram TTS returned empty response"), {
+          retryable: true,
+        });
       }
-      const errorText = await r.text();
-      throw new Error(`Deepgram TTS failed (${r.status}): ${errorText}`);
+      return speakClient.result;
+    } catch (err) {
+      if (err instanceof DeepgramApiError) {
+        if (isRetryableStatus(err.status)) {
+          throw Object.assign(
+            new Error(`Deepgram TTS retryable (${err.status})`),
+            { retryable: true },
+          );
+        }
+        throw new Error(`Deepgram TTS failed (${err.status}): ${err.message}`);
+      }
+
+      const msg = err instanceof Error ? err.message : String(err);
+      throw Object.assign(new Error(`Deepgram TTS transient error: ${msg}`), {
+        retryable: true,
+      });
     }
-    return r;
   });
 
-  const arrayBuffer = await res.arrayBuffer();
+  const arrayBuffer = await response.arrayBuffer();
   return Buffer.from(arrayBuffer);
 }

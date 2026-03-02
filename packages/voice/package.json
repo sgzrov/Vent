@@ -9,6 +9,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@deepgram/sdk": "^4.11.3",
     "@voiceci/shared": "workspace:*",
     "ws": "^8.18.0"
   },

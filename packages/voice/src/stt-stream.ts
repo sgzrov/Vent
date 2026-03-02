@@ -18,10 +18,13 @@
  *   transcriber.close();
  */
 
-import WebSocket from "ws";
+import {
+  createClient,
+  LiveTranscriptionEvents,
+  type ListenLiveClient,
+  type LiveTranscriptionEvent,
+} from "@deepgram/sdk";
 import type { TranscriptionResult } from "./types.js";
-
-const DEEPGRAM_WS_URL = "wss://api.deepgram.com/v1/listen";
 
 export interface StreamingTranscriberConfig {
   apiKeyEnv?: string;
@@ -30,7 +33,7 @@ export interface StreamingTranscriberConfig {
 }
 
 export class StreamingTranscriber {
-  private ws: WebSocket | null = null;
+  private connection: ListenLiveClient | null = null;
   private readonly apiKeyEnv: string;
   private readonly sampleRate: number;
   private readonly model: string;
@@ -57,60 +60,84 @@ export class StreamingTranscriber {
       throw new Error(`Missing Deepgram API key (env: ${this.apiKeyEnv})`);
     }
 
-    const params = new URLSearchParams({
-      encoding: "linear16",
-      sample_rate: String(this.sampleRate),
-      channels: "1",
-      model: this.model,
-      punctuate: "true",
-      interim_results: "false",
-      endpointing: "false",
-      vad_events: "false",
-    });
-
-    const url = `${DEEPGRAM_WS_URL}?${params}`;
+    const deepgram = createClient(apiKey);
 
     return new Promise<void>((resolve, reject) => {
-      this.ws = new WebSocket(url, {
-        headers: { Authorization: `Token ${apiKey}` },
+      let settled = false;
+      this.connection = deepgram.listen.live({
+        encoding: "linear16",
+        sample_rate: this.sampleRate,
+        channels: 1,
+        model: this.model,
+        punctuate: true,
+        interim_results: false,
+        endpointing: false,
+        vad_events: false,
       });
 
-      this.ws.on("open", () => resolve());
+      const resolveOnce = () => {
+        if (settled) return;
+        settled = true;
+        resolve();
+      };
 
-      this.ws.on("message", (data: WebSocket.Data) => {
-        try {
-          const msg = JSON.parse(data.toString()) as DeepgramWSMessage;
-          if (msg.type === "Results" && msg.is_final) {
-            const alt = msg.channel?.alternatives?.[0];
-            const text = alt?.transcript ?? "";
-            const confidence = alt?.confidence ?? 0;
+      const rejectOnce = (err: unknown) => {
+        if (settled) return;
+        settled = true;
+        const msg =
+          err instanceof Error
+            ? err.message
+            : typeof err === "object" &&
+                err !== null &&
+                "message" in err &&
+                typeof (err as { message?: unknown }).message === "string"
+              ? (err as { message: string }).message
+              : String(err);
+        reject(new Error(`Deepgram streaming STT connection failed: ${msg}`));
+      };
 
-            if (text.length > 0) {
-              this.finalSegments.push({ text, confidence });
-            }
+      this.connection.on(LiveTranscriptionEvents.Open, () => {
+        resolveOnce();
+      });
 
-            // If finalize() was called and we got the final result, resolve
-            if (this.finalizeCalled) {
-              this.resolveFinalTranscript();
-            }
+      this.connection.on(
+        LiveTranscriptionEvents.Transcript,
+        (msg: LiveTranscriptionEvent) => {
+          if (!msg.is_final) {
+            return;
           }
-        } catch {
-          // Ignore parse errors on non-JSON messages
-        }
-      });
 
-      this.ws.on("error", (err) => {
+          const alt = msg.channel?.alternatives?.[0];
+          const text = alt?.transcript ?? "";
+          const confidence = alt?.confidence ?? 0;
+
+          if (text.length > 0) {
+            this.finalSegments.push({ text, confidence });
+          }
+
+          // If finalize() was called and we got the final result, resolve
+          if (this.finalizeCalled) {
+            this.resolveFinalTranscript();
+          }
+        },
+      );
+
+      this.connection.on(LiveTranscriptionEvents.Error, (err: unknown) => {
         if (this.finalizeResolve) {
-          // Return whatever we have so far
           this.resolveFinalTranscript();
         } else {
-          reject(err);
+          rejectOnce(err);
         }
       });
 
-      this.ws.on("close", () => {
+      this.connection.on(LiveTranscriptionEvents.Close, () => {
         if (this.finalizeResolve) {
           this.resolveFinalTranscript();
+          return;
+        }
+
+        if (!settled) {
+          rejectOnce("socket closed before connection opened");
         }
       });
     });
@@ -121,8 +148,12 @@ export class StreamingTranscriber {
    * Call this for every audio chunk received from the channel.
    */
   feedAudio(chunk: Buffer): void {
-    if (this.ws?.readyState === WebSocket.OPEN) {
-      this.ws.send(chunk);
+    if (this.connection?.isConnected()) {
+      const audio = chunk.buffer.slice(
+        chunk.byteOffset,
+        chunk.byteOffset + chunk.byteLength,
+      );
+      this.connection.send(audio);
       this.hasFedAudio = true;
     }
   }
@@ -137,8 +168,8 @@ export class StreamingTranscriber {
     }
 
     // Send Finalize to flush Deepgram's buffer
-    if (this.ws?.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({ type: "Finalize" }));
+    if (this.connection?.isConnected()) {
+      this.connection.finalize();
     }
 
     this.finalizeCalled = true;
@@ -174,18 +205,19 @@ export class StreamingTranscriber {
 
   /** Close the WebSocket connection. */
   close(): void {
-    if (this.ws) {
-      if (this.ws.readyState === WebSocket.OPEN) {
-        this.ws.send(JSON.stringify({ type: "CloseStream" }));
+    if (this.connection) {
+      if (this.connection.isConnected()) {
+        this.connection.requestClose();
       }
-      this.ws.close();
-      this.ws = null;
+      this.connection.removeAllListeners();
+      this.connection.disconnect();
+      this.connection = null;
     }
   }
 
   /** Whether the connection is open and usable. */
   get connected(): boolean {
-    return this.ws?.readyState === WebSocket.OPEN;
+    return this.connection?.isConnected() ?? false;
   }
 
   private buildTranscript(): TranscriptionResult {
@@ -208,15 +240,4 @@ export class StreamingTranscriber {
     this.finalizeCalled = false;
     resolve?.(result);
   }
-}
-
-interface DeepgramWSMessage {
-  type: string;
-  is_final?: boolean;
-  channel?: {
-    alternatives?: Array<{
-      transcript?: string;
-      confidence?: number;
-    }>;
-  };
 }

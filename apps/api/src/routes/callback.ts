@@ -87,19 +87,33 @@ export async function callbackRoutes(app: FastifyInstance) {
     }
 
     // Broadcast to SSE subscribers (dashboard)
+    const progressMessage = `${body.test_name}: ${body.status} (${body.duration_ms}ms)`;
+    const progressMetadata = {
+      test_name: body.test_name,
+      test_type: body.test_type,
+      status: body.status,
+      duration_ms: body.duration_ms,
+      completed: body.completed,
+      total: body.total,
+    };
+
+    const [progressEvent] = await app.db
+      .insert(schema.runEvents)
+      .values({
+        run_id: body.run_id,
+        event_type: "test_completed",
+        message: progressMessage,
+        metadata_json: progressMetadata,
+      })
+      .returning();
+
     broadcast(body.run_id, {
+      id: progressEvent!.id,
       run_id: body.run_id,
       event_type: "test_completed",
-      message: `${body.test_name}: ${body.status} (${body.duration_ms}ms)`,
-      metadata_json: {
-        test_name: body.test_name,
-        test_type: body.test_type,
-        status: body.status,
-        duration_ms: body.duration_ms,
-        completed: body.completed,
-        total: body.total,
-      },
-      created_at: new Date().toISOString(),
+      message: progressMessage,
+      metadata_json: progressMetadata,
+      created_at: progressEvent!.created_at.toISOString(),
     });
 
     return reply.send({ ok: true });
@@ -232,16 +246,30 @@ export async function callbackRoutes(app: FastifyInstance) {
 
     // Broadcast run_complete to SSE subscribers (dashboard)
     const totalTests = body.audio_results.length + body.conversation_results.length;
+    const completeMessage = `${body.status}: ${body.aggregate.audio_tests.passed}/${body.aggregate.audio_tests.total} audio, ${body.aggregate.conversation_tests.passed}/${body.aggregate.conversation_tests.total} conversation`;
+    const completeMetadata = {
+      status: body.status,
+      total_tests: totalTests,
+      aggregate: body.aggregate,
+    };
+
+    const [runCompleteEvent] = await app.db
+      .insert(schema.runEvents)
+      .values({
+        run_id: body.run_id,
+        event_type: "run_complete",
+        message: completeMessage,
+        metadata_json: completeMetadata,
+      })
+      .returning();
+
     broadcast(body.run_id, {
+      id: runCompleteEvent!.id,
       run_id: body.run_id,
       event_type: "run_complete",
-      message: `${body.status}: ${body.aggregate.audio_tests.passed}/${body.aggregate.audio_tests.total} audio, ${body.aggregate.conversation_tests.passed}/${body.aggregate.conversation_tests.total} conversation`,
-      metadata_json: {
-        status: body.status,
-        total_tests: totalTests,
-        aggregate: body.aggregate,
-      },
-      created_at: new Date().toISOString(),
+      message: completeMessage,
+      metadata_json: completeMetadata,
+      created_at: runCompleteEvent!.created_at.toISOString(),
     });
 
     return reply.send({ ok: true });

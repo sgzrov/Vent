@@ -66,6 +66,25 @@ interface TabDef {
 // Component
 // ---------------------------------------------------------------------------
 
+function redactErrorText(text: string): string {
+  const replacements: Array<[RegExp, string]> = [
+    [/\bBearer\s+[A-Za-z0-9._-]+\b/gi, "Bearer [REDACTED]"],
+    [/\b(sk|rk|pk)_[A-Za-z0-9_-]+\b/g, "[REDACTED_KEY]"],
+    [/\b(?:api[_-]?key|token|secret|password)\s*[:=]\s*["']?[^"'\s]+/gi, "$1=[REDACTED]"],
+  ];
+
+  let sanitized = text;
+  for (const [pattern, replacement] of replacements) {
+    sanitized = sanitized.replace(pattern, replacement);
+  }
+
+  const MAX_ERROR_LENGTH = 600;
+  if (sanitized.length > MAX_ERROR_LENGTH) {
+    return `${sanitized.slice(0, MAX_ERROR_LENGTH)}... [truncated]`;
+  }
+  return sanitized;
+}
+
 interface RunDetailViewProps {
   run: RunDetail;
   events?: RunEventRow[];
@@ -197,7 +216,7 @@ export function RunDetailView({
         <Card className="border-destructive mt-4">
           <CardContent className="py-4">
             <p className="text-sm text-destructive font-mono">
-              {run.error_text}
+              {redactErrorText(run.error_text)}
             </p>
           </CardContent>
         </Card>

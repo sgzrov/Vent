@@ -12,8 +12,9 @@ const CreateRunBody = z.object({
 
 export async function runRoutes(app: FastifyInstance) {
   const authPreHandler = { preHandler: app.verifyAuth };
+  const apiKeyPreHandler = { preHandler: app.verifyApiKey };
 
-  app.post("/runs", authPreHandler, async (request, reply) => {
+  app.post("/runs", apiKeyPreHandler, async (request, reply) => {
     const body = CreateRunBody.parse(request.body);
 
     const [run] = await app.db

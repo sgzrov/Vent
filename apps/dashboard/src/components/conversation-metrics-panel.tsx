@@ -175,7 +175,7 @@ function TranscriptSection({ transcript }: { transcript: TranscriptMetrics }) {
   if (transcript.words_per_minute != null)
     items.push({ label: "Words/min", value: String(Math.round(transcript.words_per_minute)) });
   if (transcript.filler_word_rate != null)
-    items.push({ label: "Filler Rate", value: `${(transcript.filler_word_rate * 100).toFixed(1)}%` });
+    items.push({ label: "Filler Rate", value: `${transcript.filler_word_rate.toFixed(1)}%` });
   if (transcript.repetition_score != null)
     items.push({ label: "Repetition", value: `${(transcript.repetition_score * 100).toFixed(1)}%` });
   if (transcript.reprompt_count != null)

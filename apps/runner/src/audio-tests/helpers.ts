@@ -17,6 +17,8 @@ export interface CollectionStats {
   totalSpeechMs: number;
   /** Timestamp (Date.now()) when the first audio chunk was received, or null if none */
   firstChunkAt: number | null;
+  /** Timestamp (Date.now()) when VAD first detected speech, or null if no speech detected */
+  speechOnsetAt: number | null;
 }
 
 /**
@@ -52,6 +54,7 @@ export async function collectUntilEndOfTurn(
   let silenceStartedAt: number | null = null;
   let speechStartedAt: number | null = null;
   let firstChunkAt: number | null = null;
+  let speechOnsetAt: number | null = null;
 
   try {
     await new Promise<void>((resolve) => {
@@ -73,6 +76,7 @@ export async function collectUntilEndOfTurn(
         // Track silence → speech transition (mid-response pause resolved)
         if (state === "speech" && prevState !== "speech") {
           speechSegments++;
+          if (speechOnsetAt === null) speechOnsetAt = now;
           speechStartedAt = now;
           if (silenceStartedAt !== null) {
             const silenceDurationMs = now - silenceStartedAt;
@@ -120,7 +124,7 @@ export async function collectUntilEndOfTurn(
   return {
     audio: Buffer.concat(chunks),
     timedOut,
-    stats: { speechSegments, maxInternalSilenceMs, totalSpeechMs, firstChunkAt },
+    stats: { speechSegments, maxInternalSilenceMs, totalSpeechMs, firstChunkAt, speechOnsetAt },
   };
 }
 

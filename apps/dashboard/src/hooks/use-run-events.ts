@@ -5,6 +5,10 @@ import type { RunEventRow } from "@/lib/types";
 
 const API_URL = "/backend";
 
+function eventDedupKey(event: RunEventRow): string {
+  return event.id || `${event.event_type}:${event.created_at}:${event.message}`;
+}
+
 /**
  * Streams run events via SSE for active runs, returns static events for completed runs.
  */
@@ -16,7 +20,7 @@ export function useRunEvents(
   const [events, setEvents] = useState<RunEventRow[]>(initialEvents);
   const [isStreaming, setIsStreaming] = useState(false);
   const eventSourceRef = useRef<EventSource | null>(null);
-  const seenIds = useRef(new Set<string>());
+  const seenEventKeys = useRef(new Set<string>());
 
   // Sync initial events when they change (e.g. from a poll refresh)
   useEffect(() => {
@@ -34,8 +38,8 @@ export function useRunEvents(
       return;
     }
 
-    // Track seen IDs to deduplicate
-    seenIds.current = new Set(initialEvents.map((e) => e.id));
+    // Track seen event keys to deduplicate reconnect overlap.
+    seenEventKeys.current = new Set(initialEvents.map(eventDedupKey));
     setEvents(initialEvents);
 
     const es = new EventSource(`${API_URL}/runs/${runId}/stream`, {
@@ -49,8 +53,9 @@ export function useRunEvents(
         const event = JSON.parse(msg.data) as RunEventRow;
 
         // Deduplicate (initial batch may overlap with already-fetched events)
-        if (event.id && seenIds.current.has(event.id)) return;
-        if (event.id) seenIds.current.add(event.id);
+        const dedupKey = eventDedupKey(event);
+        if (seenEventKeys.current.has(dedupKey)) return;
+        seenEventKeys.current.add(dedupKey);
 
         setEvents((prev) => [...prev, event]);
 

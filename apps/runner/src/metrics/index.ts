@@ -27,10 +27,11 @@ export interface ComputedMetrics {
  */
 export function computeAllMetrics(
   turns: ConversationTurn[],
-  turnAudioData?: TurnAudioData[]
+  turnAudioData?: TurnAudioData[],
+  connectLatencyMs?: number,
 ): ComputedMetrics {
   const transcript = computeTranscriptMetrics(turns);
-  const latency = computeLatencyMetrics(turns);
+  const latency = computeLatencyMetrics(turns, connectLatencyMs);
   const harness_overhead = computeHarnessOverhead(turns);
 
   // Talk ratio: caller audio duration / total audio duration
@@ -55,3 +56,4 @@ export function computeAllMetrics(
 export { computeTranscriptMetrics } from "./transcript.js";
 export { computeLatencyMetrics, computeHarnessOverhead } from "./latency.js";
 export { computeAudioAnalysisMetrics, type TurnAudioData } from "./audio-analysis.js";
+export { analyzeProsody, gradeProsodyMetrics } from "./prosody.js";

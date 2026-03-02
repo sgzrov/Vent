@@ -14,6 +14,7 @@
 
 import { WebSocketServer, WebSocket } from "ws";
 import http from "node:http";
+import { randomBytes } from "node:crypto";
 import { pcmToMulaw, mulawToPcm, resample } from "@voiceci/voice";
 import type { ObservedToolCall } from "@voiceci/shared";
 import { BaseAudioChannel } from "./audio-channel.js";
@@ -44,10 +45,12 @@ export class SipAudioChannel extends BaseAudioChannel {
   private toolCalls: ObservedToolCall[] = [];
   private connectTimestamp = 0;
   private appId: string | null = null;
+  private readonly toolCallToken: string;
 
   constructor(config: SipAudioChannelConfig) {
     super();
     this.config = config;
+    this.toolCallToken = randomBytes(24).toString("hex");
   }
 
   get connected(): boolean {
@@ -56,7 +59,7 @@ export class SipAudioChannel extends BaseAudioChannel {
 
   get toolCallEndpointUrl(): string | null {
     if (this.port === 0) return null;
-    return `https://${this.config.publicHost}:${this.port}/tool-calls`;
+    return `https://${this.config.publicHost}:${this.port}${this.toolCallPath()}`;
   }
 
   async connect(): Promise<void> {
@@ -251,6 +254,7 @@ export class SipAudioChannel extends BaseAudioChannel {
   private async startServer(): Promise<void> {
     return new Promise((resolve) => {
       this.server = http.createServer((req, res) => {
+        const pathname = this.parsePathname(req.url);
         if (req.url?.startsWith("/answer")) {
           const wsUrl = `wss://${this.config.publicHost}:${this.port}/stream`;
           const xml = [
@@ -262,7 +266,7 @@ export class SipAudioChannel extends BaseAudioChannel {
 
           res.writeHead(200, { "Content-Type": "application/xml" });
           res.end(xml);
-        } else if (req.url?.startsWith("/tool-calls")) {
+        } else if (pathname === this.toolCallPath()) {
           if (req.method === "OPTIONS") {
             res.writeHead(204, {
               "Access-Control-Allow-Origin": "*",
@@ -336,6 +340,19 @@ export class SipAudioChannel extends BaseAudioChannel {
         resolve();
       });
     });
+  }
+
+  private toolCallPath(): string {
+    return `/tool-calls/${this.toolCallToken}`;
+  }
+
+  private parsePathname(rawUrl: string | undefined): string | null {
+    if (!rawUrl) return null;
+    try {
+      return new URL(rawUrl, "http://127.0.0.1").pathname;
+    } catch {
+      return null;
+    }
   }
 
   private handleToolCallPost(req: http.IncomingMessage, res: http.ServerResponse): void {

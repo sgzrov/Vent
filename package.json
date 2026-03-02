@@ -7,7 +7,8 @@
     "lint": "turbo run lint",
     "clean": "turbo run clean",
     "db:generate": "pnpm --filter @voiceci/db generate",
-    "db:migrate": "pnpm --filter @voiceci/db migrate"
+    "db:migrate": "pnpm --filter @voiceci/db migrate",
+    "verify:hardening": "bash scripts/verify-hardening.sh"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

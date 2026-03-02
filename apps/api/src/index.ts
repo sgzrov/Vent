@@ -18,6 +18,14 @@ import { drainLoadTests } from "./services/test-runner.js";
 const port = parseInt(process.env["API_PORT"] ?? "3000", 10);
 const host = process.env["API_HOST"] ?? "0.0.0.0";
 
+function parseMsEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.floor(parsed);
+}
+
 async function main() {
   const app = Fastify({
     logger: {
@@ -25,8 +33,30 @@ async function main() {
     },
   });
 
+  const dashboardUrl = process.env["DASHBOARD_URL"];
+  const additionalDashboardUrls = (process.env["DASHBOARD_URLS"] ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  const devLocalOrigins =
+    process.env["NODE_ENV"] === "production"
+      ? []
+      : ["http://localhost:3000", "http://127.0.0.1:3000"];
+  const allowedOrigins = new Set<string>([
+    ...(dashboardUrl ? [dashboardUrl] : []),
+    ...additionalDashboardUrls,
+    ...devLocalOrigins,
+  ]);
+
   await app.register(cors, {
-    origin: process.env["DASHBOARD_URL"] ?? true,
+    origin: (origin, cb) => {
+      // Non-browser/system callers often omit Origin.
+      if (!origin) {
+        cb(null, true);
+        return;
+      }
+      cb(null, allowedOrigins.has(origin));
+    },
     credentials: true,
     exposedHeaders: ["Mcp-Session-Id", "Mcp-Protocol-Version"],
   });
@@ -43,22 +73,28 @@ async function main() {
   await app.register(mcpRoutes);
 
   // Stuck run cleanup
-  const CLEANUP_INTERVAL_MS = 60_000;
-  const STUCK_RUNNING_MS = 10 * 60_000;   // "running" for >10 min
-  const STUCK_QUEUED_MS = 5 * 60_000;     // "queued" + never activated for >5 min
-  let cleanupInterval: ReturnType<typeof setInterval>;
+  const cleanupEnabled = (process.env["RUN_CLEANUP_ENABLED"] ?? "true") !== "false";
+  const CLEANUP_INTERVAL_MS = parseMsEnv("RUN_CLEANUP_INTERVAL_MS", 60_000);
+  const STUCK_RUNNING_MS = parseMsEnv("RUN_STUCK_RUNNING_MS", 60 * 60_000);
+  const STUCK_QUEUED_RELAY_MS = parseMsEnv("RUN_STUCK_QUEUED_RELAY_MS", 5 * 60_000);
+  let cleanupInterval: ReturnType<typeof setInterval> | undefined;
 
   app.addHook("onClose", async () => {
-    clearInterval(cleanupInterval);
+    if (cleanupInterval) clearInterval(cleanupInterval);
     await drainLoadTests();
   });
 
   await app.listen({ port, host });
   console.log(`VoiceCI API listening on ${host}:${port}`);
 
+  if (!cleanupEnabled) {
+    console.log("Run cleanup disabled via RUN_CLEANUP_ENABLED=false");
+    return;
+  }
+
   cleanupInterval = setInterval(async () => {
     try {
-      // 1. Runs stuck in "running" for >10 minutes (server may have restarted)
+      // 1. Runs stuck in "running" for too long (likely worker crash/restart)
       const runningCutoff = new Date(Date.now() - STUCK_RUNNING_MS);
       const stuckRunning = await app.db
         .update(schema.runs)
@@ -79,8 +115,8 @@ async function main() {
         console.log(`Cleaned up ${stuckRunning.length} stuck running run(s): ${stuckRunning.map((r) => r.id).join(", ")}`);
       }
 
-      // 2. Runs stuck in "queued" that were never activated
-      const queuedCutoff = new Date(Date.now() - STUCK_QUEUED_MS);
+      // 2. Relay runs stuck in "queued" that were never activated by client
+      const queuedCutoff = new Date(Date.now() - STUCK_QUEUED_RELAY_MS);
       const stuckQueued = await app.db
         .update(schema.runs)
         .set({
@@ -91,6 +127,7 @@ async function main() {
         .where(
           and(
             eq(schema.runs.status, "queued"),
+            eq(schema.runs.source_type, "relay"),
             lt(schema.runs.created_at, queuedCutoff),
           )
         )
