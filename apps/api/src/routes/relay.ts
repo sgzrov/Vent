@@ -13,7 +13,7 @@ import type WebSocket from "ws";
 
 let relayClientBundle: string;
 try {
-  relayClientBundle = readFileSync(join(__dirname, "relay-client.mjs"), "utf-8");
+  relayClientBundle = readFileSync(join(__dirname, "..", "relay-client.mjs"), "utf-8");
 } catch {
   relayClientBundle = "// relay-client bundle not found — build packages/relay-client first";
 }

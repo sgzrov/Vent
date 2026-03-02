@@ -3,7 +3,6 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-MAIN_REPO_ROOT=$(git -C "$PROJECT_ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null | sed 's|/\.git$||' || echo "$PROJECT_ROOT")
 
 # Conductor layout: conductor/workspaces/<repo>/<name> → conductor/repos/<repo>
 WORKSPACES_DIR="$(dirname "$PROJECT_ROOT")"
@@ -33,17 +32,8 @@ copy_env_file() {
     return
   fi
 
-  # Priority 2: Git worktree main repo root
-  if [ "$MAIN_REPO_ROOT" != "$PROJECT_ROOT" ] && [ -f "$MAIN_REPO_ROOT/$filename" ]; then
-    cp "$MAIN_REPO_ROOT/$filename" "$filename"
-    echo "    Copied $filename from $MAIN_REPO_ROOT (main worktree)"
-    return
-  fi
-
-  # Priority 3: Any sibling Conductor workspace that has it
-  local workspaces_dir
-  workspaces_dir="$(dirname "$PROJECT_ROOT")"
-  for sibling in "$workspaces_dir"/*/; do
+  # Priority 2: Any sibling Conductor workspace that has it
+  for sibling in "$WORKSPACES_DIR"/*/; do
     sibling="${sibling%/}"
     if [ "$sibling" != "$PROJECT_ROOT" ] && [ -f "$sibling/$filename" ]; then
       cp "$sibling/$filename" "$filename"
@@ -51,17 +41,6 @@ copy_env_file() {
       return
     fi
   done
-
-  # Priority 4: Any git worktree that has it
-  while IFS= read -r line; do
-    local wt_path
-    wt_path="$(echo "$line" | awk '{print $1}')"
-    if [ "$wt_path" != "$PROJECT_ROOT" ] && [ -f "$wt_path/$filename" ]; then
-      cp "$wt_path/$filename" "$filename"
-      echo "    Copied $filename from $wt_path (git worktree)"
-      return
-    fi
-  done < <(git worktree list 2>/dev/null || true)
 
   # Last resort: create from example
   if [ -f ".env.example" ]; then
