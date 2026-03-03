@@ -3,7 +3,7 @@
 
 export type RunStatus = "queued" | "running" | "pass" | "fail";
 export type SourceType = "bundle" | "remote" | "relay";
-export type TestType = "audio" | "conversation";
+export type TestType = "audio" | "conversation" | "load_test";
 export type AudioTestName =
   | "echo"
   | "barge_in"
@@ -52,6 +52,13 @@ export interface TestSpec {
   audio_tests?: AudioTestName[];
   conversation_tests?: ConversationTestSpec[];
   red_team?: RedTeamAttack[];
+  load_test?: {
+    pattern: LoadPattern;
+    target_concurrency: number;
+    total_duration_s: number;
+    ramp_duration_s?: number;
+    caller_prompt: string;
+  };
 }
 
 // --- Run-level types ---
@@ -59,6 +66,7 @@ export interface TestSpec {
 export interface RunAggregateV2 {
   audio_tests: { total: number; passed: number; failed: number };
   conversation_tests: { total: number; passed: number; failed: number };
+  load_tests?: { total: number; passed: number; failed: number };
   total_duration_ms: number;
 }
 
@@ -100,7 +108,7 @@ export interface ScenarioResultRow {
   name: string;
   status: "pass" | "fail";
   test_type: TestType | null;
-  metrics_json: AudioTestResult | ConversationTestResult;
+  metrics_json: AudioTestResult | ConversationTestResult | LoadTestResult;
   trace_json: ConversationTurn[];
   created_at: string;
 }
@@ -318,6 +326,42 @@ export interface HarnessOverhead {
   mean_tts_ms: number;
   mean_stt_ms: number;
 }
+
+// --- Load test types ---
+
+export type LoadPattern = "ramp" | "spike" | "sustained" | "soak";
+
+export interface LoadTestTimepoint {
+  elapsed_s: number;
+  active_connections: number;
+  ttfb_p50_ms: number;
+  ttfb_p95_ms: number;
+  ttfb_p99_ms: number;
+  error_rate: number;
+  errors_cumulative: number;
+}
+
+export interface LoadTestResult {
+  status: "pass" | "fail";
+  pattern: LoadPattern;
+  target_concurrency: number;
+  actual_peak_concurrency: number;
+  total_calls: number;
+  successful_calls: number;
+  failed_calls: number;
+  timeline: LoadTestTimepoint[];
+  summary: {
+    ttfb_p50_ms: number;
+    ttfb_p95_ms: number;
+    ttfb_p99_ms: number;
+    error_rate: number;
+    breaking_point?: number;
+    mean_call_duration_ms: number;
+  };
+  duration_ms: number;
+}
+
+// --- Artifact types ---
 
 export interface ArtifactRow {
   id: string;

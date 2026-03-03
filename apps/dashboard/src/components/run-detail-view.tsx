@@ -9,6 +9,7 @@ import { AudioTestResults } from "@/components/audio-test-results";
 import { AudioMetricConclusions } from "@/components/audio-metric-conclusions";
 import { ConversationTestResults } from "@/components/conversation-test-results";
 import { RedTeamResults } from "@/components/red-team-results";
+import { LoadTestResults } from "@/components/load-test-results";
 import { TestConfigSection } from "@/components/test-config-section";
 import { TestDocumentation } from "@/components/test-documentation";
 import type { RunDetail, RunAggregateV2, RunEventRow } from "@/lib/types";
@@ -31,6 +32,8 @@ function describeRunDetail(run: RunDetail): string {
       );
     if (spec.red_team?.length)
       parts.push(`${spec.red_team.length} red-team`);
+    if (spec.load_test)
+      parts.push(`load test (${spec.load_test.pattern})`);
     if (parts.length > 0) return parts.join(", ");
   }
   const agg = run.aggregate_json as RunAggregateV2 | null;
@@ -44,6 +47,8 @@ function describeRunDetail(run: RunDetail): string {
       parts.push(
         `${agg.conversation_tests.total} conversation${agg.conversation_tests.total > 1 ? "s" : ""}`
       );
+    if (agg.load_tests && agg.load_tests.total > 0)
+      parts.push(`${agg.load_tests.total} load test${agg.load_tests.total > 1 ? "s" : ""}`);
     if (parts.length > 0) return parts.join(", ");
   }
   return "Test run";
@@ -53,7 +58,7 @@ function describeRunDetail(run: RunDetail): string {
 // Tab types
 // ---------------------------------------------------------------------------
 
-type TabId = "overview" | "conversations" | "audio" | "security" | "artifacts";
+type TabId = "overview" | "conversations" | "audio" | "security" | "load_test" | "artifacts";
 
 interface TabDef {
   id: TabId;
@@ -117,6 +122,9 @@ export function RunDetailView({
       s.test_type === "conversation" &&
       !s.name.toLowerCase().startsWith("red-team")
   );
+  const loadTestScenarios = run.scenarios.filter(
+    (s) => s.test_type === "load_test"
+  );
 
   // Build tabs — only show tabs with content
   const tabs: TabDef[] = [{ id: "overview", label: "Overview" }];
@@ -155,6 +163,15 @@ export function RunDetailView({
       label: "Security",
       count: redTeamScenarios.length,
       status: allPassed ? "pass" : allFailed ? "fail" : "mixed",
+    });
+  }
+
+  if (loadTestScenarios.length > 0) {
+    tabs.push({
+      id: "load_test",
+      label: "Load Test",
+      count: loadTestScenarios.length,
+      status: loadTestScenarios.every((s) => s.status === "pass") ? "pass" : "fail",
     });
   }
 
@@ -330,6 +347,10 @@ export function RunDetailView({
 
         {activeTab === "security" && (
           <RedTeamResults scenarios={redTeamScenarios} />
+        )}
+
+        {activeTab === "load_test" && loadTestScenarios.length > 0 && (
+          <LoadTestResults scenario={loadTestScenarios[0]!} />
         )}
 
         {activeTab === "artifacts" && (

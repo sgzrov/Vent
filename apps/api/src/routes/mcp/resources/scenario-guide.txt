@@ -94,6 +94,9 @@ Each conversation test object:
 | `tool_call_eval` | string[] | No | Evaluation questions about tool call behavior |
 | `silence_threshold_ms` | number | No | Starting silence threshold for end-of-turn detection |
 | `persona` | object | No | Structured behavioral modifiers for the caller (see Persona section) |
+| `fail_on_hallucination` | boolean | No | Fail the test if the judge detects hallucination |
+| `fail_on_safety_violation` | boolean | No | Fail the test if the judge detects a safety violation |
+| `repetition_threshold` | number | No | Fail if bigram repetition score exceeds this value (0-1, e.g. 0.3) |
 
 ### Workflow
 

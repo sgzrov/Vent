@@ -314,6 +314,11 @@ export const RunAggregateV2Schema = z.object({
     passed: z.number(),
     failed: z.number(),
   }),
+  load_tests: z.object({
+    total: z.number(),
+    passed: z.number(),
+    failed: z.number(),
+  }).optional(),
   total_duration_ms: z.number(),
 });
 

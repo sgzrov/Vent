@@ -22,8 +22,8 @@ function getDisplayStatus(run: RunRow): DisplayStatus {
 
   const agg = run.aggregate_json;
   if (agg) {
-    const totalFailed = agg.audio_tests.failed + agg.conversation_tests.failed;
-    const totalPassed = agg.audio_tests.passed + agg.conversation_tests.passed;
+    const totalFailed = agg.audio_tests.failed + agg.conversation_tests.failed + (agg.load_tests?.failed ?? 0);
+    const totalPassed = agg.audio_tests.passed + agg.conversation_tests.passed + (agg.load_tests?.passed ?? 0);
     if (totalFailed === 0) return "all-pass";
     if (totalPassed === 0) return "all-fail";
     return "partial";
@@ -76,6 +76,8 @@ function describeRun(run: RunRow): string {
       );
     if (spec.red_team?.length)
       parts.push(`${spec.red_team.length} red-team`);
+    if (spec.load_test)
+      parts.push(`load test (${spec.load_test.pattern})`);
     if (parts.length > 0) return parts.join(", ");
   }
   if (run.aggregate_json) {
@@ -89,6 +91,8 @@ function describeRun(run: RunRow): string {
       parts.push(
         `${agg.conversation_tests.total} conversation${agg.conversation_tests.total > 1 ? "s" : ""}`
       );
+    if (agg.load_tests && agg.load_tests.total > 0)
+      parts.push(`${agg.load_tests.total} load test${agg.load_tests.total > 1 ? "s" : ""}`);
     if (parts.length > 0) return parts.join(", ");
   }
   return "Test run";
@@ -105,6 +109,8 @@ function getIssues(agg: RunAggregateV2 | null): string | null {
     parts.push(
       `${agg.conversation_tests.failed} conversation${agg.conversation_tests.failed > 1 ? "s" : ""}`
     );
+  if (agg.load_tests?.failed && agg.load_tests.failed > 0)
+    parts.push("load test failed");
   return parts.length > 0 ? parts.join(", ") + " failed" : null;
 }
 
@@ -131,6 +137,11 @@ function getMetaTags(spec: TestSpec | null): string[] {
 
   if (spec.red_team?.length) {
     tags.push(`${spec.red_team.length} attack vectors`);
+  }
+
+  if (spec.load_test) {
+    tags.push(`${spec.load_test.pattern} pattern`);
+    tags.push(`${spec.load_test.target_concurrency} target concurrency`);
   }
 
   return tags;
@@ -168,7 +179,7 @@ function RunMeta({ spec }: { spec: TestSpec | null }) {
 // Filters
 // ---------------------------------------------------------------------------
 
-type TestTypeFilter = "all" | "audio" | "conversation" | "security";
+type TestTypeFilter = "all" | "audio" | "conversation" | "security" | "load_test";
 
 function hasTestType(run: RunRow, type: TestTypeFilter): boolean {
   if (type === "all") return true;
@@ -190,6 +201,12 @@ function hasTestType(run: RunRow, type: TestTypeFilter): boolean {
   }
   if (type === "security") {
     return (spec?.red_team?.length ?? 0) > 0;
+  }
+  if (type === "load_test") {
+    return (
+      spec?.load_test != null ||
+      (agg?.load_tests?.total ?? 0) > 0
+    );
   }
   return true;
 }
@@ -243,6 +260,7 @@ const typeFilters: { value: TestTypeFilter; label: string }[] = [
   { value: "audio", label: "Audio" },
   { value: "conversation", label: "Conversations" },
   { value: "security", label: "Security" },
+  { value: "load_test", label: "Load Test" },
 ];
 
 export default function RunsPage() {

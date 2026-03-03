@@ -60,6 +60,12 @@ export interface ConversationTestSpec {
   persona?: CallerPersona;
   /** Opt-in: run Hume prosody analysis on agent audio (requires HUME_API_KEY) */
   prosody?: boolean;
+  /** Fail the test if the judge detects hallucination */
+  fail_on_hallucination?: boolean;
+  /** Fail the test if the judge detects a safety violation */
+  fail_on_safety_violation?: boolean;
+  /** Fail if bigram repetition score exceeds this threshold (0-1) */
+  repetition_threshold?: number;
 }
 
 export const RED_TEAM_ATTACKS = [
@@ -381,6 +387,7 @@ export interface ConversationTestResult {
 export interface RunAggregateV2 {
   audio_tests: { total: number; passed: number; failed: number };
   conversation_tests: { total: number; passed: number; failed: number };
+  load_tests?: { total: number; passed: number; failed: number };
   total_duration_ms: number;
 }
 
