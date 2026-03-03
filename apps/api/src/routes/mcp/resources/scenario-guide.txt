@@ -100,7 +100,7 @@ Each conversation test object:
 
 ### Workflow
 
-1. **First run**: Read agent code → create `voiceci/` folder with `audio.json` → read it → call `voiceci_run_tests(config=...)` → run relay command if returned → poll `voiceci_get_run_status`
+1. **First run**: Read agent code → create `voiceci/` folder with `audio.json` → read it → call `voiceci_run_tests(config=...)` → run relay command if returned → call `voiceci_get_run_status` in a loop (it long-polls — each call blocks until new results arrive)
 2. **Adding conversation tests**: Create `voiceci/conversations.json` → read both files, merge → call `voiceci_run_tests` with merged config
 3. **Selective runs**: To run only audio tests, read only `audio.json`. To run only conversation tests, read only `conversations.json`.
 4. **After failures**: Update the relevant file (`audio.json` or `conversations.json`) → re-run
