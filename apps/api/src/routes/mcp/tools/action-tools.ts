@@ -377,7 +377,7 @@ export function registerActionTools(
   // --- Tool: voiceci_get_run_status ---
   server.registerTool("voiceci_get_run_status", {
     title: "Get Run Status",
-    description: "Get the current status and results of a test run by ID. Uses long-polling — when the run is still in progress, the server holds the request open until new results arrive (a test completes or the run finishes), then responds with fresh data. This eliminates unnecessary polling; just call this tool in a loop and each call will block until there's something new to report. Returns partial results as individual tests complete, so you can reason about early failures while other tests are still running. Once the run finishes, returns the full aggregate summary and all results. When failures exist, response includes `fix_plan` with prioritized failure packets and a `targeted_rerun_config`.",
+    description: "Get the current status and results of a test run. IMPORTANT: This tool uses long-polling — it blocks until new results arrive, so do NOT sleep or wait between calls. Just call it again immediately after each response. The server holds the connection open until a test completes or the run finishes, then returns fresh data. Returns partial results as tests complete so you can reason about early failures. Once finished, returns the full aggregate, all results, and a `fix_plan` with prioritized failure packets when failures exist.",
     inputSchema: {
       run_id: z.string().uuid().describe("The run ID returned by voiceci_run_tests."),
     },
