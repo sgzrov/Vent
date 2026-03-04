@@ -31,15 +31,15 @@ export function registerActionTools(
   // --- Tool: voiceci_run_tests ---
   server.registerTool("voiceci_run_tests", {
     title: "Run Tests",
-    description: "Run infrastructure probes and conversation tests against a voice agent using a layered test architecture.\n\n**Layered model:**\n- Layer 1 (Infrastructure): 3 quick probes (audio_quality, latency, echo) that return raw metrics — no pass/fail. Configure via `infrastructure` key with optional per-probe prompts.\n- Layers 2-4 (Conversation): CallerLLM-driven conversations with optional `audio_actions` (interrupt, silence, inject_noise, split_sentence, noise_on_caller) injected at specific turns. Configure via `conversation_tests` key.\n\nRead all JSON files in the `voiceci/` folder, merge them into one config object, then pass the merged object as the `config` parameter. For already-deployed agents (SIP, WebRTC, platform adapters, or agent_url), this queues immediately — no bash step. For local WebSocket agents with start_command, a relay command is returned to connect your local agent.\n\nThen poll voiceci_get_run_status with the run_id.",
+    description: "Run infrastructure probes and conversation tests against a voice agent using a layered test architecture.\n\n**Layered model:**\n- Layer 1 (Infrastructure): 3 quick probes (audio_quality, latency, echo) that return raw metrics — no pass/fail. Configure via `infrastructure` key.\n- Layers 2-4 (Conversation): CallerLLM-driven conversations with optional `audio_actions` (interrupt, silence, inject_noise, split_sentence, noise_on_caller) injected at specific turns. Configure via `conversation_tests` key.\n\nRead `voiceci-config.json` from the project root and pass its contents as the `config` parameter. For already-deployed agents (SIP, WebRTC, platform adapters, or agent_url), this queues immediately. For local WebSocket agents with start_command, a relay command is returned.\n\nAfter getting the run_id, spawn subagents to monitor results via voiceci_get_run_status.",
     inputSchema: {
       config: z
         .any()
-        .describe("Merged config from voiceci/ folder. Read all JSON files in voiceci/, merge them into one object, then pass it here."),
+        .describe("Config from voiceci-config.json. Read the file and pass its contents here."),
       project_root: z
         .string()
         .optional()
-        .describe("Absolute path to agent project root containing the voiceci/ folder. Defaults to current working directory."),
+        .describe("Absolute path to agent project root containing voiceci-config.json. Defaults to current working directory."),
       idempotency_key: z
         .string()
         .uuid()
@@ -123,7 +123,7 @@ export function registerActionTools(
       return {
         content: [{
           type: "text" as const,
-          text: "Error: config parameter is required. Read all JSON files from the voiceci/ folder, merge them, and pass the merged object as the config parameter.",
+          text: "Error: config parameter is required. Read voiceci-config.json and pass its contents as the config parameter.",
         }],
         isError: true,
       };
@@ -210,7 +210,7 @@ export function registerActionTools(
           text: JSON.stringify({
             run_id: runId,
             status: "queued",
-            message: "Run queued. For fastest results, spawn a separate subagent for each infrastructure probe (test_name filter: audio_quality, latency, echo) and one for conversation tests (test_type='conversation'). Each subagent calls voiceci_get_run_status with its filter and returns immediately when done. After all subagents return, call voiceci_get_run_status once without filters to get the fix_plan.",
+            message: "Run queued. Spawn one subagent per infrastructure probe (test_name: audio_quality, latency, echo) and one per conversation test. Each subagent calls voiceci_get_run_status with its filter and returns when done. After all subagents return, call voiceci_get_run_status once without filters for the full summary.",
           }, null, 2),
         }],
       };
@@ -261,7 +261,7 @@ export function registerActionTools(
     return {
       content: [{
         type: "text" as const,
-        text: `ACTION REQUIRED: Run this command in the project root to start your agent and connect to VoiceCI for testing. The run will NOT proceed until you execute this command.\n\n${relayCommand}\n\nThe relay client will start your agent, connect to VoiceCI, and tests will run against your local agent. After tests complete, poll voiceci_get_run_status with run_id: ${runId}`,
+        text: `ACTION REQUIRED: Run this command in the project root to start your agent and connect to VoiceCI for testing. The run will NOT proceed until you execute this command.\n\n${relayCommand}\n\nThe relay client will start your agent, connect to VoiceCI, and tests will run against your local agent. After executing, spawn subagents to monitor results via voiceci_get_run_status with run_id: ${runId}`,
       }],
     };
   });
@@ -375,7 +375,7 @@ export function registerActionTools(
   // --- Tool: voiceci_get_run_status ---
   server.registerTool("voiceci_get_run_status", {
     title: "Get Run Status",
-    description: "Get the current status and results of a test run. Uses long-polling — blocks until new results arrive, so call again immediately after each response (do NOT sleep).\n\nFor infrastructure probes: spawn a separate subagent for EACH probe (audio_quality, latency, echo) using the test_name filter. Each subagent polls independently and returns as soon as its probe completes. Infrastructure probes return raw metrics with status 'completed' or 'error' — they do NOT use pass/fail.\n\nFor conversation/load tests: use the test_type filter instead.\n\nOnce ALL subagents return, call once more without filters to get the fix_plan and baseline comparison.",
+    description: "Get the current status and results of a test run. Blocks until new results arrive — call again immediately after each response.\n\nUse filters to scope results for subagent monitoring:\n- `test_type=infrastructure` + `test_name=audio_quality|latency|echo` — one subagent per probe\n- `test_type=conversation` + `test_name={name}` — one subagent per conversation test\n\nInfrastructure probes return raw metrics with status 'completed' or 'error' — no pass/fail.\n\nAfter all subagents return, call once without filters for the full summary.",
     inputSchema: {
       run_id: z.string().uuid().describe("The run ID returned by voiceci_run_tests."),
       last_completed: z.number().int().min(0).optional().describe("Number of completed tests (of the filtered type) from your last status check. Pass the `completed` value from the previous response."),

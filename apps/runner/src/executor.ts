@@ -1,7 +1,7 @@
 /**
- * Test execution logic — Layer 1 infrastructure probes run first,
+ * Test execution logic — Layer 1 infrastructure probes run first
+ * (parallel for websocket/webrtc, sequential for platform adapters),
  * then conversation tests run in parallel with a concurrency limiter.
- * Each test creates its own AudioChannel for isolation.
  */
 
 import type {
@@ -75,62 +75,120 @@ export async function executeTests(opts: ExecuteTestsOpts): Promise<ExecuteTests
   } = opts;
 
   // =====================================================
-  // Phase 1: Layer 1 — Infrastructure probes (sequential, single channel)
+  // Phase 1: Layer 1 — Infrastructure probes
+  // Parallel (separate channels) for websocket/webrtc.
+  // Sequential (shared channel) for platform adapters (rate limits/cost).
   // =====================================================
   const infrastructureResults: AudioTestResult[] = [];
+  const isPlatformAdapter = ["vapi", "retell", "elevenlabs", "bland", "sip"].includes(channelConfig.adapter);
 
   if (testSpec.infrastructure) {
-    console.log("Running Layer 1 infrastructure probes...");
-    const channel = createAudioChannel(channelConfig);
-    try {
-      await channel.connect();
+    if (isPlatformAdapter) {
+      // Sequential — single channel, one probe at a time
+      console.log("Running Layer 1 infrastructure probes (sequential)...");
+      const channel = createAudioChannel(channelConfig);
+      try {
+        await channel.connect();
 
-      for (const probeName of PROBE_NAMES) {
-        onTestStart?.({ test_name: probeName, test_type: "infrastructure" });
-        console.log(`  Infrastructure: ${probeName}`);
+        for (const probeName of PROBE_NAMES) {
+          onTestStart?.({ test_name: probeName, test_type: "infrastructure" });
+          console.log(`  Infrastructure: ${probeName}`);
 
-        const result = await runInfrastructureProbe(probeName, channel, testSpec.infrastructure);
-        console.log(`    ${probeName}: ${result.status} (${result.duration_ms}ms)`);
-        console.log(JSON.stringify({
-          event: "test_complete", test_name: probeName, test_type: "infrastructure",
-          status: result.status, duration_ms: result.duration_ms,
-          error_origin: result.diagnostics?.error_origin ?? null,
-          error_detail: result.diagnostics?.error_detail ?? null,
-          channel: { bytes_sent: channel.stats.bytesSent, bytes_received: channel.stats.bytesReceived, errors: channel.stats.errorEvents },
-        }));
-        onTestComplete?.(result);
-        infrastructureResults.push(result);
-      }
-    } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      console.error(`  Infrastructure probe error: ${errorMsg}`);
-      // Create error results for remaining probes
-      for (const probeName of PROBE_NAMES) {
-        if (infrastructureResults.some((r) => r.test_name === probeName)) continue;
-        const result: AudioTestResult = {
-          test_name: probeName,
-          status: "error",
-          metrics: {},
-          transcriptions: {},
-          duration_ms: 0,
-          error: errorMsg,
-          diagnostics: {
-            error_origin: "platform",
-            error_detail: errorMsg,
-            timing: { channel_connect_ms: channel.stats.connectLatencyMs },
-            channel: {
-              connected: channel.connected,
-              error_events: channel.stats.errorEvents,
-              audio_bytes_sent: channel.stats.bytesSent,
-              audio_bytes_received: channel.stats.bytesReceived,
+          const result = await runInfrastructureProbe(probeName, channel, testSpec.infrastructure);
+          console.log(`    ${probeName}: ${result.status} (${result.duration_ms}ms)`);
+          console.log(JSON.stringify({
+            event: "test_complete", test_name: probeName, test_type: "infrastructure",
+            status: result.status, duration_ms: result.duration_ms,
+            error_origin: result.diagnostics?.error_origin ?? null,
+            error_detail: result.diagnostics?.error_detail ?? null,
+            channel: { bytes_sent: channel.stats.bytesSent, bytes_received: channel.stats.bytesReceived, errors: channel.stats.errorEvents },
+          }));
+          onTestComplete?.(result);
+          infrastructureResults.push(result);
+        }
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        console.error(`  Infrastructure probe error: ${errorMsg}`);
+        for (const probeName of PROBE_NAMES) {
+          if (infrastructureResults.some((r) => r.test_name === probeName)) continue;
+          const result: AudioTestResult = {
+            test_name: probeName,
+            status: "error",
+            metrics: {},
+            transcriptions: {},
+            duration_ms: 0,
+            error: errorMsg,
+            diagnostics: {
+              error_origin: "platform",
+              error_detail: errorMsg,
+              timing: { channel_connect_ms: channel.stats.connectLatencyMs },
+              channel: {
+                connected: channel.connected,
+                error_events: channel.stats.errorEvents,
+                audio_bytes_sent: channel.stats.bytesSent,
+                audio_bytes_received: channel.stats.bytesReceived,
+              },
             },
-          },
-        };
-        onTestComplete?.(result);
-        infrastructureResults.push(result);
+          };
+          onTestComplete?.(result);
+          infrastructureResults.push(result);
+        }
+      } finally {
+        await channel.disconnect().catch(() => {});
       }
-    } finally {
-      await channel.disconnect().catch(() => {});
+    } else {
+      // Parallel — separate channel per probe (websocket/webrtc)
+      console.log("Running Layer 1 infrastructure probes (parallel)...");
+
+      const probeResults = await Promise.all(
+        PROBE_NAMES.map(async (probeName) => {
+          onTestStart?.({ test_name: probeName, test_type: "infrastructure" });
+          console.log(`  Infrastructure: ${probeName}`);
+          const channel = createAudioChannel(channelConfig);
+          try {
+            await channel.connect();
+            const result = await runInfrastructureProbe(probeName, channel, testSpec.infrastructure!);
+            console.log(`    ${probeName}: ${result.status} (${result.duration_ms}ms)`);
+            console.log(JSON.stringify({
+              event: "test_complete", test_name: probeName, test_type: "infrastructure",
+              status: result.status, duration_ms: result.duration_ms,
+              error_origin: result.diagnostics?.error_origin ?? null,
+              error_detail: result.diagnostics?.error_detail ?? null,
+              channel: { bytes_sent: channel.stats.bytesSent, bytes_received: channel.stats.bytesReceived, errors: channel.stats.errorEvents },
+            }));
+            onTestComplete?.(result);
+            return result;
+          } catch (err) {
+            const errorMsg = err instanceof Error ? err.message : String(err);
+            console.error(`    ${probeName}: error — ${errorMsg}`);
+            const result: AudioTestResult = {
+              test_name: probeName,
+              status: "error",
+              metrics: {},
+              transcriptions: {},
+              duration_ms: 0,
+              error: errorMsg,
+              diagnostics: {
+                error_origin: "platform",
+                error_detail: errorMsg,
+                timing: { channel_connect_ms: channel.stats.connectLatencyMs },
+                channel: {
+                  connected: channel.connected,
+                  error_events: channel.stats.errorEvents,
+                  audio_bytes_sent: channel.stats.bytesSent,
+                  audio_bytes_received: channel.stats.bytesReceived,
+                },
+              },
+            };
+            onTestComplete?.(result);
+            return result;
+          } finally {
+            await channel.disconnect().catch(() => {});
+          }
+        }),
+      );
+
+      infrastructureResults.push(...probeResults);
     }
   }
 

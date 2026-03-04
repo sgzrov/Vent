@@ -127,7 +127,7 @@ Every conversation test includes `metrics.harness_overhead` — timing of VoiceC
 
 ## Iterative Testing Strategy
 
-Testing is NOT single-shot. You should iterate based on results. Update the test files in `voiceci/` between runs — it's your persistent test config.
+Testing is NOT single-shot. You should iterate based on results. Update `voiceci-config.json` between runs — it's your persistent test config.
 
 ### Workflow: Smoke → Analyze → Follow-up → Confirm
 
@@ -140,10 +140,10 @@ Testing is NOT single-shot. You should iterate based on results. Update the test
 - Borderline metrics (e.g., p95 TTFB of 2800ms passes at 3000ms threshold but is concerning) → re-run with tighter `audio_test_thresholds`
 - Conversation eval failures → read the judge's reasoning, then design a targeted follow-up scenario
 
-**3. Targeted follow-up** (update test files in `voiceci/`, then re-run):
-- Update the relevant file in `voiceci/` to include ONLY the failing or borderline tests, not the whole suite
-- For borderline audio: add `audio_test_thresholds` to `voiceci/audio.json` (e.g., `{ "ttfb": { "p95_threshold_ms": 1500 } }`)
-- For conversation failures: update the failing test in the relevant `voiceci/` file — increase `max_turns` to 15-20, write a more specific persona that reproduces the failure
+**3. Targeted follow-up** (update `voiceci-config.json`, then re-run):
+- Update `voiceci-config.json` to include ONLY the failing or borderline tests, not the whole suite
+- For borderline audio: tighten thresholds in `voiceci-config.json` (e.g., `{ "ttfb": { "p95_threshold_ms": 1500 } }`)
+- For conversation failures: update the failing test in `voiceci-config.json` — increase `max_turns` to 15-20, write a more specific persona that reproduces the failure
 - For flaky results: re-run the same test 2-3x to distinguish real failures from flakiness
 
 **4. Confirm** — stop iterating when:
@@ -168,7 +168,7 @@ When the user changes their agent's code, don't re-run the entire suite blindly.
 
 **Step 2: Run the targeted tests.** Use smoke depth (5 turns) first. If anything fails, follow up with standard depth.
 
-**Step 3: Add a regression scenario.** For any non-trivial code change, add at least one NEW scenario to `voiceci/conversations.json` that specifically tests the changed behavior. This scenario becomes part of the ongoing suite — it prevents the same issue from recurring.
+**Step 3: Add a regression scenario.** For any non-trivial code change, add at least one NEW scenario to `voiceci-config.json` that specifically tests the changed behavior. This scenario becomes part of the ongoing suite — it prevents the same issue from recurring.
 
 **Example:** User changes their booking agent to require email confirmation before finalizing:
 - Re-test: existing booking happy path (should now include email step), existing interruption scenario (does mid-flow cancel still work?)
@@ -184,7 +184,7 @@ When a test **fails**, don't just report the failure — **auto-generate a pinni
 - What did the agent do (or fail to do)?
 - Was it a specific turn, or a gradual drift?
 
-**Step 2: Create a pinning scenario.** Add a new conversation test to `voiceci/conversations.json` that:
+**Step 2: Create a pinning scenario.** Add a new conversation test to `voiceci-config.json` that:
 - Uses a `caller_prompt` that reproduces the exact conditions that caused the failure
 - Has `eval` questions targeting the specific behavior that failed
 - Uses enough `max_turns` to reach the failure point (check what turn it happened on)
@@ -204,7 +204,7 @@ When a test **fails**, don't just report the failure — **auto-generate a pinni
 }
 ```
 
-**When to add pinning scenarios to `voiceci/conversations.json`:**
+**When to add pinning scenarios to `voiceci-config.json`:**
 - Any `relevant: true, passed: false` eval result → always add a pinning scenario
 - Unexpected behavioral metrics (hallucination detected, low safety compliance) → add a targeted scenario
 - Flaky results that sometimes pass, sometimes fail → add a stricter scenario that forces the edge case
