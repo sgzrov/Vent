@@ -31,8 +31,8 @@ function getDisplayStatus(run: RunRow): DisplayStatus {
   const agg = run.aggregate_json;
   if (agg) {
     const infra = getInfraStats(agg);
-    const totalFailed = infra.errored + agg.conversation_tests.failed + (agg.load_tests?.failed ?? 0);
-    const totalPassed = infra.completed + agg.conversation_tests.passed + (agg.load_tests?.passed ?? 0);
+    const totalFailed = infra.errored + (agg.conversation_tests?.failed ?? 0) + (agg.load_tests?.failed ?? 0);
+    const totalPassed = infra.completed + (agg.conversation_tests?.passed ?? 0) + (agg.load_tests?.passed ?? 0);
     if (totalFailed === 0) return "all-pass";
     if (totalPassed === 0) return "all-fail";
     return "partial";
@@ -97,7 +97,7 @@ function describeRun(run: RunRow): string {
       parts.push(
         `${infra.total} infrastructure probe${infra.total > 1 ? "s" : ""}`
       );
-    if (agg.conversation_tests.total > 0)
+    if (agg.conversation_tests && agg.conversation_tests.total > 0)
       parts.push(
         `${agg.conversation_tests.total} conversation${agg.conversation_tests.total > 1 ? "s" : ""}`
       );
@@ -116,7 +116,7 @@ function getIssues(agg: RunAggregateV2 | null): string | null {
     parts.push(
       `${infra.errored} probe${infra.errored > 1 ? "s" : ""} errored`
     );
-  if (agg.conversation_tests.failed > 0)
+  if (agg.conversation_tests?.failed && agg.conversation_tests.failed > 0)
     parts.push(
       `${agg.conversation_tests.failed} conversation${agg.conversation_tests.failed > 1 ? "s" : ""} failed`
     );
@@ -207,7 +207,7 @@ function hasTestType(run: RunRow, type: TestTypeFilter): boolean {
   if (type === "conversation") {
     return (
       (spec?.conversation_tests?.length ?? 0) > 0 ||
-      (agg?.conversation_tests.total ?? 0) > 0
+      (agg?.conversation_tests?.total ?? 0) > 0
     );
   }
   if (type === "security") {
@@ -460,8 +460,8 @@ export default function RunsPage() {
 
                   {/* Conversation results */}
                   <CategoryResult
-                    passed={agg?.conversation_tests.passed ?? 0}
-                    total={agg?.conversation_tests.total ?? 0}
+                    passed={agg?.conversation_tests?.passed ?? 0}
+                    total={agg?.conversation_tests?.total ?? 0}
                   />
 
                   {/* Issues */}
@@ -532,7 +532,7 @@ export default function RunsPage() {
                         />
                       </div>
                     )}
-                    {agg && agg.conversation_tests.total > 0 && (
+                    {agg && agg.conversation_tests && agg.conversation_tests.total > 0 && (
                       <div className="flex items-center gap-2">
                         <span className="text-xs text-muted-foreground">
                           Conv

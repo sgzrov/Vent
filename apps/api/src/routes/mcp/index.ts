@@ -10,6 +10,7 @@ import {
 } from "./session.js";
 import { registerDocTools } from "./tools/doc-tools.js";
 import { registerActionTools } from "./tools/action-tools.js";
+import { SYSTEM_INSTRUCTIONS } from "./docs.js";
 
 export { transports, mcpServers } from "./session.js";
 
@@ -18,40 +19,7 @@ function createMcpServer(app: FastifyInstance, apiKeyId: string, userId: string)
     { name: "voiceci", version: "0.5.0" },
     {
       capabilities: {},
-      instructions: [
-        "VoiceCI — CI/CD testing for voice AI agents.",
-        "",
-        "## Workflow",
-        "",
-        "Test configuration lives in a `voiceci/` folder in the project root, with separate files for each test type:",
-        "- `voiceci/audio.json` — agent connection config + audio tests + thresholds (default)",
-        "- `voiceci/conversations.json` — conversation test scenarios",
-        "",
-        "Step 1: Check if the `voiceci/` folder exists in the project root.",
-        "  - If YES → read all JSON files inside it and skip to Step 2.",
-        "  - If NO → call voiceci_guide_test_authoring, read agent code, design tests, and create the `voiceci/` folder with both `audio.json` and `conversations.json`.",
-        "",
-        "Step 2: Read `voiceci/audio.json`, then call voiceci_run_tests with its contents as the `config` parameter. By default, only run audio tests.",
-        "  - To also run conversation tests: read `voiceci/conversations.json`, merge it into the config (spread/Object.assign), then call voiceci_run_tests with the merged config.",
-        "  - To run only conversation tests: read both files, merge them, but remove `audio_tests` from the merged config.",
-        "  - For remote/deployed agents: the run queues immediately — done.",
-        "  - For local WebSocket agents: run the returned relay command to start your agent and connect to VoiceCI.",
-        "",
-        "Step 3: Call voiceci_get_run_status with the run_id. This tool LONG-POLLS — it blocks until new results arrive, so call it again IMMEDIATELY after each response. Do NOT sleep, wait, or add delays between calls. The server holds the connection open and responds only when something changes.",
-        "  - Keep calling voiceci_get_run_status in a tight loop until status is 'pass' or 'fail'.",
-        "  - When `fix_plan` is present, use `fix_plan.prioritized_packets` evidence and re-run with `fix_plan.targeted_rerun_config`.",
-        "",
-        "On failure: update the failing tests in the relevant file (`audio.json` or `conversations.json`), then re-run from Step 2.",
-        "",
-        "## Important rules",
-        "- NEVER modify the user's agent source code, dependencies, or environment files. VoiceCI is a testing tool — it observes the agent, it does not change it. If tests fail due to auth errors, missing env vars, or crashes, report the error to the user. Do NOT install packages, edit .env files, add dotenv, or change package.json.",
-        "- VoiceCI automatically provides API keys (DEEPGRAM_API_KEY, ANTHROPIC_API_KEY) to the agent process via the relay tunnel. The user does NOT need their own keys for these services.",
-        "- ALWAYS read the `voiceci/` folder, merge the JSON files, and pass the merged config to voiceci_run_tests.",
-        "- Always create both `audio.json` and `conversations.json` during setup, but only include `audio.json` in the config by default. Include `conversations.json` only when the user explicitly asks to run conversation tests.",
-        "- For local WebSocket agents without agent_url, VoiceCI uses a relay tunnel. Execute the returned command to start your agent and connect it to VoiceCI. Your agent runs locally with file watching — code changes take effect immediately without re-uploading. You MUST execute the returned relay command.",
-        "- Only call voiceci_guide_test_authoring for first-time setup. Do NOT call multiple guide tools at once.",
-        "- voiceci_guide_results is an optional deep-dive — only call it when you need detailed result interpretation help.",
-      ].join("\n"),
+      instructions: SYSTEM_INSTRUCTIONS,
     },
   );
 

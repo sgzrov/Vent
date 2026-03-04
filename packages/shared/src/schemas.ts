@@ -321,12 +321,12 @@ export const RunAggregateV2Schema = z.object({
     total: z.number(),
     completed: z.number(),
     errored: z.number(),
-  }),
+  }).default({ total: 0, completed: 0, errored: 0 }),
   conversation_tests: z.object({
     total: z.number(),
     passed: z.number(),
     failed: z.number(),
-  }),
+  }).default({ total: 0, passed: 0, failed: 0 }),
   load_tests: z.object({
     total: z.number(),
     passed: z.number(),
@@ -338,8 +338,8 @@ export const RunAggregateV2Schema = z.object({
 export const RunnerCallbackV2Schema = z.object({
   run_id: z.string().uuid(),
   status: z.enum(["pass", "fail"]),
-  infrastructure_results: z.array(AudioTestResultSchema),
-  conversation_results: z.array(ConversationTestResultSchema),
+  infrastructure_results: z.array(AudioTestResultSchema).default([]),
+  conversation_results: z.array(ConversationTestResultSchema).default([]),
   aggregate: RunAggregateV2Schema,
   error_text: z.string().optional(),
 });

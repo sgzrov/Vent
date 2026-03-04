@@ -18,7 +18,7 @@ export function registerDocTools(server: McpServer) {
 
   server.registerTool("voiceci_guide_test_authoring", {
     title: "Test Authoring Guide",
-    description: "PRIMARY GUIDE — call this first when setting up tests. Covers voiceci/ folder format, field references, agent analysis methodology, code-to-scenario mapping, 7 persona archetypes, and conversation test authoring. For audio test details call voiceci_guide_audio_tests. For red-team and tool call patterns call voiceci_guide_security_and_tools.",
+    description: "PRIMARY GUIDE — call this first when setting up tests. Covers voiceci-config.json format, field references, agent analysis methodology, code-to-scenario mapping, 7 persona archetypes, and conversation test authoring. For audio test details call voiceci_guide_audio_tests. For red-team and tool call patterns call voiceci_guide_security_and_tools.",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
   }, async () => ({
     content: [{ type: "text" as const, text: SCENARIO_GUIDE }],
