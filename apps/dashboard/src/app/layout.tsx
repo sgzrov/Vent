@@ -7,8 +7,8 @@ import "./globals.css";
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "VoiceCI Dashboard",
-  description: "Behavioral regression testing for voice agents",
+  title: "LightMCP Dashboard",
+  description: "The first MCP that lets coding agents test voice agents in real time.",
 };
 
 export default async function RootLayout({

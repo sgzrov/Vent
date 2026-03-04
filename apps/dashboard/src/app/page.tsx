@@ -1,7 +1,13 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { withAuth, getSignInUrl, getSignUpUrl } from "@workos-inc/authkit-nextjs";
+import {
+  withAuth,
+  getSignInUrl,
+  getSignUpUrl,
+} from "@workos-inc/authkit-nextjs";
 import { Button } from "@/components/ui/button";
+import { CopyCommandButton } from "@/components/copy-command-button";
+import { HandDrawnUnderline } from "@/components/hand-drawn-underline";
 
 export default async function LandingPage() {
   const { user } = await withAuth();
@@ -14,11 +20,23 @@ export default async function LandingPage() {
   const signUpUrl = await getSignUpUrl();
 
   return (
-    <div className="min-h-screen flex flex-col bg-background">
-      <header className="border-b">
-        <div className="max-w-6xl mx-auto px-6">
-          <div className="flex items-center justify-between h-14">
-            <span className="text-[15px] font-semibold tracking-tight">VoiceCI</span>
+    <div className="min-h-screen flex flex-col bg-background relative overflow-hidden">
+      {/* Grid background */}
+      <div className="absolute inset-0 grid-bg" />
+      {/* Gradient overlay */}
+      <div className="absolute inset-0 bg-gradient-to-b from-background via-background/80 to-background pointer-events-none" />
+
+      <header className="relative z-10 border-b border-border/40">
+        <div className="max-w-7xl mx-auto px-6">
+          <div className="flex items-center justify-between h-16">
+            <div className="flex items-center gap-1">
+              <span className="font-cursive text-xl tracking-tight text-foreground">
+                Light
+              </span>
+              <span className="text-xl font-semibold tracking-tight text-foreground">
+                MCP
+              </span>
+            </div>
             <div className="flex items-center gap-3">
               <Button variant="ghost" size="sm" asChild>
                 <Link href={signInUrl}>Log in</Link>
@@ -31,21 +49,49 @@ export default async function LandingPage() {
         </div>
       </header>
 
-      <main className="flex-1 flex items-center justify-center">
-        <div className="max-w-2xl mx-auto px-4 text-center">
-          <h1 className="text-4xl sm:text-5xl font-bold tracking-tight">
-            Behavioral regression testing for voice agents
-          </h1>
-          <p className="mt-4 text-lg text-muted-foreground max-w-lg mx-auto">
-            Ship voice AI with confidence. Run audio and conversation tests against your agent on every change.
-          </p>
-          <div className="mt-8 flex items-center justify-center gap-4">
-            <Button size="lg" asChild>
-              <Link href={signUpUrl}>Get started</Link>
-            </Button>
-            <Button variant="outline" size="lg" asChild>
-              <Link href={signInUrl}>Log in</Link>
-            </Button>
+      <main className="relative z-10 flex-1 flex items-center">
+        <div className="max-w-7xl mx-auto px-6 w-full">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 lg:gap-16 items-center">
+            {/* Left side - Content */}
+            <div className="space-y-8">
+              <div>
+                <h1 className="text-5xl sm:text-6xl lg:text-7xl font-bold tracking-tight leading-[1.05]">
+                  <span className="relative inline-block">
+                    <span className="font-cursive font-normal">Light</span>
+                    <HandDrawnUnderline />
+                  </span>
+                  <span className="ml-1">MCP</span>
+                </h1>
+              </div>
+
+              <p className="text-lg sm:text-xl text-muted-foreground max-w-lg leading-relaxed">
+                The first MCP that lets coding agents test voice agents in real
+                time.
+              </p>
+
+              <div className="space-y-4">
+                <CopyCommandButton command="npx lightmcp@latest init" />
+
+                <div className="flex items-center gap-2 text-sm text-muted-foreground/70">
+                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-green-500" />
+                  Available with Claude Code and Cursor
+                </div>
+              </div>
+
+              <div className="flex items-center gap-4 pt-2">
+                <Button size="lg" asChild>
+                  <Link href={signUpUrl}>Get started</Link>
+                </Button>
+                <Button variant="outline" size="lg" asChild>
+                  <Link href={signInUrl}>Log in</Link>
+                </Button>
+              </div>
+            </div>
+
+            {/* Right side - Placeholder screen */}
+            <div className="flex items-center justify-center lg:justify-end">
+              <div className="w-[480px] h-[320px] bg-zinc-200/60 rounded-2xl border border-zinc-300/50" />
+            </div>
           </div>
         </div>
       </main>

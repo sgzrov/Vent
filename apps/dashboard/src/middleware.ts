@@ -16,6 +16,6 @@ export default function wrappedMiddleware(request: NextRequest, event: NextFetch
 
 export const config = {
   matcher: [
-    "/((?!_next/static|_next/image|favicon.ico|api/health|backend/).*)",
+    "/((?!_next/static|_next/image|favicon.ico|api/health|backend/|.*\\.png$|.*\\.jpg$|.*\\.svg$|.*\\.ico$).*)",
   ],
 };

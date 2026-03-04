@@ -123,3 +123,35 @@
 .stagger-children > *:nth-child(8) { animation-delay: 350ms; }
 .stagger-children > *:nth-child(9) { animation-delay: 400ms; }
 .stagger-children > *:nth-child(10) { animation-delay: 450ms; }
+
+/* Serif font for "Light" */
+.font-cursive {
+  font-family: 'Times New Roman', Times, serif;
+  font-style: italic;
+}
+
+/* Grid background */
+.grid-bg {
+  background-size: 60px 60px;
+  background-image:
+    linear-gradient(to right, hsl(var(--border) / 0.3) 1px, transparent 1px),
+    linear-gradient(to bottom, hsl(var(--border) / 0.3) 1px, transparent 1px);
+}
+
+/* Hand-drawn underline animation */
+@keyframes draw-underline {
+  0% {
+    stroke-dashoffset: 200;
+  }
+  100% {
+    stroke-dashoffset: 0;
+  }
+}
+
+.draw-underline {
+  stroke-dasharray: 200;
+  stroke-dashoffset: 200;
+  animation: draw-underline 1.2s ease-out 0.5s forwards;
+}
+
+
