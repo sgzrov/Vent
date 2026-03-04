@@ -8,6 +8,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { CopyCommandButton } from "@/components/copy-command-button";
 import { LightningBolt } from "@/components/lightning-bolt";
+import { HandDrawnUnderline } from "@/components/hand-drawn-underline";
 
 export default async function LandingPage() {
   const { user } = await withAuth();
@@ -63,7 +64,7 @@ export default async function LandingPage() {
                 <h1 className="text-5xl sm:text-6xl lg:text-7xl font-bold tracking-tight leading-[1.05]">
                   <span className="relative inline-block">
                     <span className="font-cursive font-normal">Light</span>
-                    <span className="absolute -bottom-1 left-0 right-0 h-[3px] bg-gradient-to-r from-yellow-400 via-amber-400 to-yellow-300 rounded-full energy-underline" />
+                    <HandDrawnUnderline />
                   </span>
                   <span className="ml-1">MCP</span>
                 </h1>

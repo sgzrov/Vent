@@ -124,9 +124,10 @@
 .stagger-children > *:nth-child(9) { animation-delay: 400ms; }
 .stagger-children > *:nth-child(10) { animation-delay: 450ms; }
 
-/* Cursive font utility */
+/* Serif font for "Light" */
 .font-cursive {
-  font-family: var(--font-cursive), 'Caveat', cursive;
+  font-family: 'Times New Roman', Times, serif;
+  font-style: italic;
 }
 
 /* Grid background */
@@ -137,20 +138,20 @@
     linear-gradient(to bottom, hsl(var(--border) / 0.3) 1px, transparent 1px);
 }
 
-/* Energy underline animation */
-@keyframes energy-pulse {
-  0%, 100% {
-    opacity: 0.8;
-    box-shadow: 0 0 4px rgba(250, 204, 21, 0.3);
+/* Hand-drawn underline animation */
+@keyframes draw-underline {
+  0% {
+    stroke-dashoffset: 200;
   }
-  50% {
-    opacity: 1;
-    box-shadow: 0 0 12px rgba(250, 204, 21, 0.6), 0 0 24px rgba(250, 204, 21, 0.2);
+  100% {
+    stroke-dashoffset: 0;
   }
 }
 
-.energy-underline {
-  animation: energy-pulse 2s ease-in-out infinite;
+.draw-underline {
+  stroke-dasharray: 200;
+  stroke-dashoffset: 200;
+  animation: draw-underline 1.2s ease-out 0.5s forwards;
 }
 
 /* Falling bolt animation */

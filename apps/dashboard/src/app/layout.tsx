@@ -1,11 +1,10 @@
 import type { Metadata } from "next";
-import { Inter, Caveat } from "next/font/google";
+import { Inter } from "next/font/google";
 import { withAuth, signOut } from "@workos-inc/authkit-nextjs";
 import { SidebarNav } from "@/components/sidebar-nav";
 import "./globals.css";
 
 const inter = Inter({ subsets: ["latin"] });
-const caveat = Caveat({ subsets: ["latin"], variable: "--font-cursive" });
 
 export const metadata: Metadata = {
   title: "LightMCP Dashboard",
@@ -27,7 +26,7 @@ export default async function RootLayout({
 
   return (
     <html lang="en" suppressHydrationWarning>
-      <body className={`${inter.className} ${caveat.variable} antialiased`}>
+      <body className={`${inter.className} antialiased`}>
         <div className="min-h-screen bg-background">
           {user && (
             <SidebarNav
