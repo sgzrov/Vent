@@ -1,22 +1,18 @@
 /**
- * Audio Quality test — analyzes the agent's output audio for signal-level issues.
+ * Audio Quality probe (Layer 1: Infrastructure)
  *
- * Checks:
- * - Clipping (samples near ±32767)
- * - RMS energy consistency (sudden drops/spikes)
- * - Clean start/end (no pops or clicks)
- * - Minimum duration (not truncated)
- * - Estimated SNR
+ * Analyzes the agent's output audio for signal-level issues:
+ * clipping, RMS consistency, drops/spikes, SNR, clean start/end, F0 estimation.
+ *
+ * Returns raw metrics + transcription — no pass/fail.
  */
 
 import type { AudioChannel } from "@voiceci/adapters";
-import type { AudioTestResult, AudioTestThresholds } from "@voiceci/shared";
+import type { AudioTestResult } from "@voiceci/shared";
 import { synthesize } from "@voiceci/voice";
-import { collectUntilEndOfTurn } from "./helpers.js";
+import { collectUntilEndOfTurn, transcribeAudio } from "./helpers.js";
 
-const DEFAULT_MAX_CLIPPING_RATIO = 0.005;
-const DEFAULT_MIN_DURATION_MS = 1000;
-const DEFAULT_MIN_ENERGY_CONSISTENCY = 0.4;
+const DEFAULT_PROMPT = "Please describe the process of making a cup of coffee in detail.";
 
 const SAMPLE_RATE = 24000;
 const CLIPPING_THRESHOLD = 32700;
@@ -24,23 +20,18 @@ const WINDOW_MS = 100;
 const WINDOW_SAMPLES = Math.floor((SAMPLE_RATE * WINDOW_MS) / 1000);
 const SILENCE_RMS_THRESHOLD = 100;
 const CLICK_THRESHOLD = 20000;
-const DROP_FACTOR = 0.05; // 95% drop = actual dropout, not natural inter-word pauses
+const DROP_FACTOR = 0.05;
 const SPIKE_FACTOR = 3.0;
-const DROP_CONSECUTIVE_MIN = 2; // Require 2+ consecutive low windows to count as a drop
-
-const PROMPT = "Please describe the process of making a cup of coffee in detail.";
+const DROP_CONSECUTIVE_MIN = 2;
 
 export async function runAudioQualityTest(
   channel: AudioChannel,
-  thresholds?: AudioTestThresholds,
+  config?: { prompt?: string },
 ): Promise<AudioTestResult> {
-  const MAX_CLIPPING = thresholds?.audio_quality?.max_clipping_ratio ?? DEFAULT_MAX_CLIPPING_RATIO;
-  const MIN_DURATION = thresholds?.audio_quality?.min_duration_ms ?? DEFAULT_MIN_DURATION_MS;
-  const MIN_CONSISTENCY = thresholds?.audio_quality?.min_energy_consistency ?? DEFAULT_MIN_ENERGY_CONSISTENCY;
+  const prompt = config?.prompt ?? DEFAULT_PROMPT;
   const startTime = performance.now();
 
-  // Elicit a response
-  const promptAudio = await synthesize(PROMPT);
+  const promptAudio = await synthesize(prompt);
   channel.sendAudio(promptAudio);
 
   const { audio: agentAudio } = await collectUntilEndOfTurn(channel, {
@@ -51,12 +42,16 @@ export async function runAudioQualityTest(
   if (agentAudio.length === 0) {
     return {
       test_name: "audio_quality",
-      status: "fail",
+      status: "error",
       metrics: { response_received: false },
+      transcriptions: { response: null },
       duration_ms: Math.round(performance.now() - startTime),
       error: "Agent did not produce any audio",
     };
   }
+
+  // Transcribe the response
+  const responseText = await transcribeAudio(agentAudio);
 
   const totalSamples = agentAudio.length / 2;
   const audioDurationMs = Math.round((totalSamples / SAMPLE_RATE) * 1000);
@@ -98,7 +93,6 @@ export async function runAudioQualityTest(
     const stddev = Math.sqrt(variance);
     energyConsistency = meanSpeechRms > 0 ? Math.max(0, 1 - stddev / meanSpeechRms) : 0;
 
-    // Detect sudden drops/spikes within speech region (debounced)
     let consecutiveDrops = 0;
     for (let i = 1; i < windowRms.length - 1; i++) {
       const prev = windowRms[i - 1]!;
@@ -121,7 +115,7 @@ export async function runAudioQualityTest(
   }
 
   // 3. Clean start/end (check first/last 10ms for clicks)
-  const edgeSamples = Math.floor((SAMPLE_RATE * 10) / 1000); // 240 samples
+  const edgeSamples = Math.floor((SAMPLE_RATE * 10) / 1000);
   let cleanStart = true;
   let cleanEnd = true;
 
@@ -139,10 +133,7 @@ export async function runAudioQualityTest(
     }
   }
 
-  // 4. Duration check
-  const durationOk = audioDurationMs >= MIN_DURATION;
-
-  // 5. SNR estimate
+  // 4. SNR estimate
   const noiseFloorRms =
     silenceWindows.length > 0
       ? silenceWindows.reduce((a, b) => a + b, 0) / silenceWindows.length
@@ -152,42 +143,41 @@ export async function runAudioQualityTest(
       ? Math.round(20 * Math.log10(meanSpeechRms / noiseFloorRms) * 10) / 10
       : -1;
 
-  // Pass/fail
-  const clippingOk = clippingRatio <= MAX_CLIPPING;
-  const consistencyOk = energyConsistency >= MIN_CONSISTENCY || speechWindows.length < 3;
-  const noArtifacts = suddenDrops === 0 && suddenSpikes === 0;
-
-  const passed = clippingOk && consistencyOk && noArtifacts && cleanStart && cleanEnd && durationOk;
-  const durationMs = Math.round(performance.now() - startTime);
-
-  const errors: string[] = [];
-  if (!clippingOk) errors.push(`clipping ratio ${clippingRatio.toFixed(4)} > ${MAX_CLIPPING}`);
-  if (!consistencyOk) errors.push(`energy consistency ${energyConsistency.toFixed(2)} < ${MIN_CONSISTENCY}`);
-  if (suddenDrops > 0) errors.push(`${suddenDrops} sudden volume drop(s)`);
-  if (suddenSpikes > 0) errors.push(`${suddenSpikes} sudden volume spike(s)`);
-  if (!cleanStart) errors.push("click/pop detected at audio start");
-  if (!cleanEnd) errors.push("click/pop detected at audio end");
-  if (!durationOk) errors.push(`audio duration ${audioDurationMs}ms < ${MIN_DURATION}ms`);
+  // 5. F0 estimation via zero-crossing rate on speech regions
+  let zeroCrossings = 0;
+  let speechSampleCount = 0;
+  for (let w = 0; w < windowCount; w++) {
+    if (windowRms[w]! < SILENCE_RMS_THRESHOLD) continue;
+    const offset = w * WINDOW_SAMPLES;
+    for (let i = 1; i < WINDOW_SAMPLES; i++) {
+      const prev = agentAudio.readInt16LE((offset + i - 1) * 2);
+      const curr = agentAudio.readInt16LE((offset + i) * 2);
+      if ((prev >= 0 && curr < 0) || (prev < 0 && curr >= 0)) zeroCrossings++;
+      speechSampleCount++;
+    }
+  }
+  const f0Hz = speechSampleCount > 0
+    ? Math.round((zeroCrossings / 2) * (SAMPLE_RATE / speechSampleCount))
+    : 0;
 
   return {
     test_name: "audio_quality",
-    status: passed ? "pass" : "fail",
+    status: "completed",
     metrics: {
       duration_ms_audio: audioDurationMs,
-      total_samples: totalSamples,
       clipping_ratio: Math.round(clippingRatio * 10000) / 10000,
-      clipped_samples: clippedSamples,
       energy_consistency: Math.round(energyConsistency * 1000) / 1000,
-      mean_speech_rms: Math.round(meanSpeechRms),
       sudden_drops: suddenDrops,
       sudden_spikes: suddenSpikes,
       clean_start: cleanStart,
       clean_end: cleanEnd,
       estimated_snr_db: estimatedSnrDb,
-      speech_windows: speechWindows.length,
-      silence_windows: silenceWindows.length,
+      f0_hz: f0Hz,
+      drop_detected: suddenDrops > 0,
     },
-    duration_ms: durationMs,
-    ...(!passed && { error: errors.join("; ") }),
+    transcriptions: {
+      response: responseText || null,
+    },
+    duration_ms: Math.round(performance.now() - startTime),
   };
 }

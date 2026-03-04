@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { randomUUID, createHash } from "node:crypto";
-import { eq, and } from "drizzle-orm";
+import { eq, and, desc, asc } from "drizzle-orm";
 import { schema } from "@voiceci/db";
 import { z } from "zod";
 import {
@@ -12,6 +12,7 @@ import {
 import { expandRedTeamTests } from "@voiceci/runner/executor";
 import { runLoadTestInProcess } from "../../../services/test-runner.js";
 import { buildFixPlan } from "./fix-plan.js";
+import { waitForRunEvent } from "../../../lib/run-subscribers.js";
 
 function hashIdempotencyKey(raw: string): string {
   return createHash("sha256").update(raw).digest("hex");
@@ -30,7 +31,7 @@ export function registerActionTools(
   // --- Tool: voiceci_run_tests ---
   server.registerTool("voiceci_run_tests", {
     title: "Run Tests",
-    description: "Run audio and conversation tests against a voice agent. Requires a `voiceci/` folder in the project root with `audio.json` and/or `conversations.json`.\n\nRead all JSON files in the `voiceci/` folder, merge them into one config object, then pass the merged object as the `config` parameter. For already-deployed agents (SIP, WebRTC, platform adapters, or agent_url), this queues immediately — no bash step. For local WebSocket agents with start_command, a relay command is returned to connect your local agent.\n\nThen poll voiceci_get_run_status with the run_id.",
+    description: "Run infrastructure probes and conversation tests against a voice agent using a layered test architecture.\n\n**Layered model:**\n- Layer 1 (Infrastructure): 3 quick probes (audio_quality, latency, echo) that return raw metrics — no pass/fail. Configure via `infrastructure` key with optional per-probe prompts.\n- Layers 2-4 (Conversation): CallerLLM-driven conversations with optional `audio_actions` (interrupt, silence, inject_noise, split_sentence, noise_on_caller) injected at specific turns. Configure via `conversation_tests` key.\n\nRead all JSON files in the `voiceci/` folder, merge them into one config object, then pass the merged object as the `config` parameter. For already-deployed agents (SIP, WebRTC, platform adapters, or agent_url), this queues immediately — no bash step. For local WebSocket agents with start_command, a relay command is returned to connect your local agent.\n\nThen poll voiceci_get_run_status with the run_id.",
     inputSchema: {
       config: z
         .any()
@@ -98,12 +99,11 @@ export function registerActionTools(
 
       return {
         testSpecJson: {
-          audio_tests: cfg.audio_tests ?? null,
+          infrastructure: cfg.infrastructure ?? null,
           conversation_tests: cfg.conversation_tests ?? null,
           red_team: cfg.red_team ?? null,
           adapter,
           voice_config: voiceConfig,
-          audio_test_thresholds: cfg.audio_test_thresholds ?? null,
           start_command: cfg.start_command ?? null,
           health_endpoint: cfg.health_endpoint ?? null,
           agent_url: agentUrl ?? null,
@@ -184,6 +184,7 @@ export function registerActionTools(
 
       const runId = run!.id;
 
+
       await app.getRunQueue(userId).add("execute-run", {
         run_id: runId,
         bundle_key: null,
@@ -191,13 +192,12 @@ export function registerActionTools(
         lockfile_hash: null,
         adapter,
         test_spec: {
-          audio_tests: cfg.audio_tests ?? null,
+          infrastructure: cfg.infrastructure ?? null,
           conversation_tests: cfg.conversation_tests ?? null,
           red_team: cfg.red_team ?? null,
         },
         target_phone_number: targetPhoneNumber,
         voice_config: voiceConfig,
-        audio_test_thresholds: cfg.audio_test_thresholds ?? null,
         start_command: cfg.start_command as string | undefined,
         health_endpoint: cfg.health_endpoint as string | undefined,
         agent_url: agentUrl,
@@ -210,7 +210,7 @@ export function registerActionTools(
           text: JSON.stringify({
             run_id: runId,
             status: "queued",
-            message: "Run queued. Poll voiceci_get_run_status with the run_id.",
+            message: "Run queued. For fastest results, spawn a separate subagent for each infrastructure probe (test_name filter: audio_quality, latency, echo) and one for conversation tests (test_type='conversation'). Each subagent calls voiceci_get_run_status with its filter and returns immediately when done. After all subagents return, call voiceci_get_run_status once without filters to get the fix_plan.",
           }, null, 2),
         }],
       };
@@ -236,6 +236,7 @@ export function registerActionTools(
       .returning();
 
     const runId = run!.id;
+
     const agentPort = 3001;
 
     const relayArgs = [
@@ -268,7 +269,7 @@ export function registerActionTools(
   // --- Tool: voiceci_run_load_test ---
   server.registerTool("voiceci_run_load_test", {
     title: "Run Load Test",
-    description: "Run a load/stress test against an already-deployed voice agent. Sends N concurrent calls with a traffic pattern (ramp, spike, sustained, soak). Measures TTFB percentiles, error rates, and auto-detects breaking point. Results pushed via SSE as timeline snapshots every second. Only works with already-deployed agents (SIP, WebRTC, or websocket with agent_url).",
+    description: "Run a load/stress test against an already-deployed voice agent. Sends N concurrent calls with a traffic pattern (ramp, spike, sustained, soak). Measures TTFB percentiles, error rates, and auto-detects breaking point. Returns a run_id immediately — then use voiceci_get_run_status to get results via long-polling (same as voiceci_run_tests). Only works with already-deployed agents (SIP, WebRTC, or websocket with agent_url).",
     inputSchema: {
       adapter: AdapterTypeSchema.describe("Transport: websocket, sip, or webrtc."),
       agent_url: z.string().describe("URL of the already-deployed agent to test."),
@@ -335,30 +336,36 @@ export function registerActionTools(
       voice,
     },
   ) => {
-    runLoadTestInProcess({
-      channelConfig: {
-        adapter,
-        agentUrl: agent_url,
-        targetPhoneNumber: target_phone_number,
-        voice,
+    const runId = await runLoadTestInProcess(
+      {
+        channelConfig: {
+          adapter,
+          agentUrl: agent_url,
+          targetPhoneNumber: target_phone_number,
+          voice,
+        },
+        pattern,
+        targetConcurrency: target_concurrency,
+        totalDurationS: total_duration_s,
+        rampDurationS: ramp_duration_s,
+        callerPrompt: caller_prompt,
       },
-      pattern,
-      targetConcurrency: target_concurrency,
-      totalDurationS: total_duration_s,
-      rampDurationS: ramp_duration_s,
-      callerPrompt: caller_prompt,
-    });
+      app,
+      apiKeyId,
+      userId,
+    );
 
     return {
       content: [
         {
           type: "text" as const,
           text: JSON.stringify({
-            status: "started",
+            run_id: runId,
+            status: "running",
             pattern,
             target_concurrency,
             total_duration_s,
-            message: "Load test running. Results will be pushed via SSE as timeline snapshots every second, with a final summary when complete.",
+            message: "Load test started. Use voiceci_get_run_status with this run_id and test_type='load_test' to get results via long-polling.",
           }, null, 2),
         },
       ],
@@ -368,13 +375,19 @@ export function registerActionTools(
   // --- Tool: voiceci_get_run_status ---
   server.registerTool("voiceci_get_run_status", {
     title: "Get Run Status",
-    description: "Get the current status and results of a test run by ID. Poll this to track progress — it returns partial results as individual tests complete, so you can reason about early failures while other tests are still running. Once the run finishes, returns the full aggregate summary and all results. When failures exist, response includes `fix_plan` with prioritized failure packets and a `targeted_rerun_config`.",
+    description: "Get the current status and results of a test run. Uses long-polling — blocks until new results arrive, so call again immediately after each response (do NOT sleep).\n\nFor infrastructure probes: spawn a separate subagent for EACH probe (audio_quality, latency, echo) using the test_name filter. Each subagent polls independently and returns as soon as its probe completes. Infrastructure probes return raw metrics with status 'completed' or 'error' — they do NOT use pass/fail.\n\nFor conversation/load tests: use the test_type filter instead.\n\nOnce ALL subagents return, call once more without filters to get the fix_plan and baseline comparison.",
     inputSchema: {
       run_id: z.string().uuid().describe("The run ID returned by voiceci_run_tests."),
+      last_completed: z.number().int().min(0).optional().describe("Number of completed tests (of the filtered type) from your last status check. Pass the `completed` value from the previous response."),
+      test_type: z.enum(["infrastructure", "conversation", "load_test"]).optional().describe("Filter results to a single test type. 'infrastructure' filters to Layer 1 probes (completed/error status). Use with subagents for conversation or load_test polling."),
+      test_name: z.string().optional().describe("Filter to a specific infrastructure probe by name (audio_quality, latency, echo). Spawn one subagent per test_name for parallel result streaming."),
     },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
-  }, async ({ run_id }) => {
-    const [run] = await app.db
+  }, async ({ run_id, last_completed, test_type: rawTestType, test_name }) => {
+    // Map user-facing "infrastructure" to DB enum "audio"
+    const test_type = rawTestType === "infrastructure" ? "audio" : rawTestType;
+
+    let [run] = await app.db
       .select()
       .from(schema.runs)
       .where(
@@ -392,18 +405,93 @@ export function registerActionTools(
       };
     }
 
-    // Still in progress — return partial results if available
+    // Build WHERE clause for scenario queries — scoped by test_name or test_type when filtered
+    const scenarioWhere = test_name
+      ? and(eq(schema.scenarioResults.run_id, run_id), eq(schema.scenarioResults.test_type, "audio"), eq(schema.scenarioResults.name, test_name))
+      : test_type
+        ? and(eq(schema.scenarioResults.run_id, run_id), eq(schema.scenarioResults.test_type, test_type))
+        : eq(schema.scenarioResults.run_id, run_id);
+
+    // Long-poll: block until meaningful state change (new results or status change).
+    // Returns immediately when new results exist (delta delivery via last_completed).
+    // When test_type is set, only counts results of that type — enabling parallel subagent polling.
     if (run.status === "queued" || run.status === "running") {
-      const partialResults = await app.db
+      const previousCount = last_completed ?? (await app.db
         .select()
         .from(schema.scenarioResults)
-        .where(eq(schema.scenarioResults.run_id, run_id));
+        .where(scenarioWhere)).length;
+      const startTime = Date.now();
+      const MAX_WAIT_MS = 60_000;
 
-      // Derive total test count from stored config
+      while (Date.now() - startTime < MAX_WAIT_MS) {
+        // Register waiter BEFORE checking DB (avoids race condition)
+        const { promise, cancel } = waitForRunEvent(run_id);
+
+        // Re-fetch run status
+        const [freshRun] = await app.db
+          .select()
+          .from(schema.runs)
+          .where(and(eq(schema.runs.id, run_id), eq(schema.runs.user_id, userId)))
+          .limit(1);
+        if (freshRun) run = freshRun;
+
+        // Status changed (completed/failed) — return immediately
+        if (run.status !== "queued" && run.status !== "running") {
+          cancel();
+          break;
+        }
+
+        // Check if new partial results arrived (filtered by test_type if set)
+        const currentPartials = await app.db
+          .select()
+          .from(schema.scenarioResults)
+          .where(scenarioWhere);
+        if (currentPartials.length > previousCount) {
+          cancel();
+          break;
+        }
+
+        // No meaningful change — wait for next event or 10s timeout
+        let timeoutId: ReturnType<typeof setTimeout>;
+        const timeout = new Promise<void>(r => { timeoutId = setTimeout(r, 10_000); });
+        await Promise.race([promise, timeout]);
+        cancel();
+        clearTimeout(timeoutId!);
+      }
+    }
+
+    // ---- Fetch results in creation order, compute delta ----
+    // When test_type is set, only fetches that type (parallel subagent mode).
+    const allScenarios = await app.db
+      .select()
+      .from(schema.scenarioResults)
+      .where(scenarioWhere)
+      .orderBy(asc(schema.scenarioResults.created_at));
+
+    const previouslySeen = last_completed ?? 0;
+    const newScenarios = allScenarios.slice(previouslySeen);
+    const totalCompleted = allScenarios.length;
+
+    // Categorize new results — when filtered by test_type, only that type is present
+    const infrastructureResults = newScenarios
+      .filter((s) => s.test_type === "audio")
+      .map((s) => s.metrics_json);
+    const conversationResults = newScenarios
+      .filter((s) => s.test_type === "conversation")
+      .map((s) => s.metrics_json);
+    const loadTestResults = newScenarios
+      .filter((s) => s.test_type === "load_test")
+      .map((s) => s.metrics_json);
+
+    const isFinished = run.status !== "queued" && run.status !== "running";
+
+    // Still in progress — return delta + progress info
+    if (!isFinished) {
       const spec = run.test_spec_json as {
-        audio_tests?: unknown[];
+        infrastructure?: Record<string, unknown>;
         conversation_tests?: unknown[];
         red_team?: RedTeamAttack[];
+        load_test?: unknown;
       } | null;
       let redTeamExpanded = 0;
       if (spec?.red_team) {
@@ -413,11 +501,20 @@ export function registerActionTools(
           redTeamExpanded = 0;
         }
       }
+      // When filtering by test_name, total is always 1; by test_type, count that type only
+      // Infrastructure always runs 3 probes (audio_quality, latency, echo) when configured
+      const infraCount = spec?.infrastructure ? 3 : 0;
+      const convCount = spec?.conversation_tests?.length ?? 0;
+      const loadCount = spec?.load_test ? 1 : 0;
       const totalTests = spec
-        ? (spec.audio_tests?.length ?? 0) + (spec.conversation_tests?.length ?? 0) + redTeamExpanded
+        ? test_name ? 1
+          : test_type === "audio" ? infraCount
+          : test_type === "conversation" ? convCount + redTeamExpanded
+          : test_type === "load_test" ? loadCount
+          : infraCount + convCount + redTeamExpanded + loadCount
         : undefined;
 
-      if (partialResults.length === 0) {
+      if (totalCompleted === 0) {
         return {
           content: [{
             type: "text" as const,
@@ -428,36 +525,12 @@ export function registerActionTools(
               total: totalTests ?? "unknown",
               started_at: run.started_at,
               message: run.status === "queued"
-                ? "Run is queued, waiting for execution."
-                : "Run is in progress. No test results yet. Poll again in a few seconds.",
+                ? "Run is queued, waiting for execution. Call again immediately — this tool long-polls."
+                : "Run is in progress. No test results yet. Call again immediately — this tool long-polls.",
             }, null, 2),
           }],
         };
       }
-
-      // Return completed tests so far
-      const audioResults = partialResults
-        .filter((s) => s.test_type === "audio")
-        .map((s) => s.metrics_json);
-      const conversationResults = partialResults
-        .filter((s) => s.test_type === "conversation")
-        .map((s) => s.metrics_json);
-      const fixPlan = buildFixPlan({
-        audioResults,
-        conversationResults,
-        testSpecJson: (run.test_spec_json as Record<string, unknown> | null) ?? null,
-      });
-      app.log.debug({
-        run_id: run.id,
-        run_status: run.status,
-        completed: partialResults.length,
-        total: totalTests ?? null,
-        audio_results: audioResults.length,
-        conversation_results: conversationResults.length,
-        fix_plan_present: fixPlan != null,
-        failing_tests: fixPlan?.failing_tests ?? 0,
-        top_priority: fixPlan?.top_priority ?? null,
-      }, "Generated fix_plan for in-progress run");
 
       return {
         content: [{
@@ -465,44 +538,144 @@ export function registerActionTools(
           text: JSON.stringify({
             run_id: run.id,
             status: run.status,
-            completed: partialResults.length,
+            completed: totalCompleted,
             total: totalTests ?? "unknown",
             started_at: run.started_at,
-            audio_results: audioResults,
+            infrastructure_results: infrastructureResults,
             conversation_results: conversationResults,
-            fix_plan: fixPlan,
-            message: `Run in progress: ${partialResults.length}${totalTests ? `/${totalTests}` : ""} tests completed. Poll again for more results.`,
+            load_test_results: loadTestResults,
+            message: `${newScenarios.length} new result(s) completed (${totalCompleted}${totalTests ? `/${totalTests}` : ""} total).${totalCompleted >= (totalTests ?? Infinity) ? "" : ` Call again with last_completed=${totalCompleted}.`}`,
           }, null, 2),
         }],
       };
     }
 
-    // Completed (pass or fail) — return full results
-    const scenarios = await app.db
+    // ---- Run completed — return delta + final summary ----
+
+    // When filtered by test_name or test_type (subagent mode), return just the scoped results.
+    // Fix plan + baseline are only computed for unfiltered calls (main agent).
+    if (test_name || test_type) {
+      const filterLabel = test_name ?? (rawTestType ?? test_type);
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({
+            run_id: run.id,
+            status: run.status,
+            completed: totalCompleted,
+            infrastructure_results: infrastructureResults,
+            conversation_results: conversationResults,
+            load_test_results: loadTestResults,
+            error_text: run.error_text ?? null,
+            duration_ms: run.duration_ms,
+            started_at: run.started_at,
+            finished_at: run.finished_at,
+            message: newScenarios.length > 0
+              ? `Run complete. ${newScenarios.length} ${filterLabel} result(s).`
+              : `Run complete. All ${totalCompleted} ${filterLabel} results already delivered.`,
+          }, null, 2),
+        }],
+      };
+    }
+
+    // Unfiltered (main agent) — build fix_plan over ALL results
+    const allInfrastructureResults = (await app.db
       .select()
       .from(schema.scenarioResults)
-      .where(eq(schema.scenarioResults.run_id, run_id));
-
-    const audioResults = scenarios
-      .filter((s) => s.test_type === "audio")
+      .where(and(eq(schema.scenarioResults.run_id, run_id), eq(schema.scenarioResults.test_type, "audio"))))
       .map((s) => s.metrics_json);
-    const conversationResults = scenarios
-      .filter((s) => s.test_type === "conversation")
+    const allConversationResults = (await app.db
+      .select()
+      .from(schema.scenarioResults)
+      .where(and(eq(schema.scenarioResults.run_id, run_id), eq(schema.scenarioResults.test_type, "conversation"))))
       .map((s) => s.metrics_json);
     const fixPlan = buildFixPlan({
-      audioResults,
-      conversationResults,
+      audioResults: allInfrastructureResults,
+      conversationResults: allConversationResults,
       testSpecJson: (run.test_spec_json as Record<string, unknown> | null) ?? null,
     });
+
+    // Baseline comparison — find most recent baseline and compute deltas
+    let baselineComparison: Record<string, unknown> | null = null;
+    try {
+      const [baseline] = await app.db
+        .select({ run_id: schema.baselines.run_id, created_at: schema.baselines.created_at })
+        .from(schema.baselines)
+        .where(eq(schema.baselines.user_id, userId))
+        .orderBy(desc(schema.baselines.created_at))
+        .limit(1);
+
+      if (baseline && baseline.run_id !== run_id) {
+        const baselineScenarios = await app.db
+          .select()
+          .from(schema.scenarioResults)
+          .where(eq(schema.scenarioResults.run_id, baseline.run_id));
+
+        const bInfra = baselineScenarios.filter((s) => s.test_type === "audio");
+        const bConv = baselineScenarios.filter((s) => s.test_type === "conversation");
+        const currentInfraScenarios = allScenarios.filter((s) => s.test_type === "audio");
+        const currentConvScenarios = allScenarios.filter((s) => s.test_type === "conversation");
+
+        // Infrastructure probes use completed/error, not pass/fail
+        const infraCompletedRate = currentInfraScenarios.length > 0
+          ? currentInfraScenarios.filter((s) => s.status === "completed").length / currentInfraScenarios.length
+          : null;
+        const bInfraCompletedRate = bInfra.length > 0
+          ? bInfra.filter((s) => s.status === "completed").length / bInfra.length
+          : null;
+        const convPassRate = currentConvScenarios.length > 0
+          ? currentConvScenarios.filter((s) => s.status === "pass").length / currentConvScenarios.length
+          : null;
+        const bConvPassRate = bConv.length > 0
+          ? bConv.filter((s) => s.status === "pass").length / bConv.length
+          : null;
+
+        const extractMeanTtfb = (results: unknown[]): number | null => {
+          const ttfbs = results
+            .filter((r): r is Record<string, unknown> => r != null && typeof r === "object")
+            .map((r) => (r as { metrics?: { mean_ttfb_ms?: number } }).metrics?.mean_ttfb_ms)
+            .filter((v): v is number => v != null && v > 0);
+          return ttfbs.length > 0 ? Math.round(ttfbs.reduce((a, b) => a + b, 0) / ttfbs.length) : null;
+        };
+
+        const currentTtfb = extractMeanTtfb(allConversationResults);
+        const baselineTtfb = extractMeanTtfb(bConv.map((s) => s.metrics_json));
+
+        const ttfbDelta = currentTtfb != null && baselineTtfb != null ? currentTtfb - baselineTtfb : null;
+        const infraCompletedDelta = infraCompletedRate != null && bInfraCompletedRate != null
+          ? Math.round((infraCompletedRate - bInfraCompletedRate) * 100) / 100
+          : null;
+        const convPassDelta = convPassRate != null && bConvPassRate != null
+          ? Math.round((convPassRate - bConvPassRate) * 100) / 100
+          : null;
+
+        const regressionDetected =
+          (ttfbDelta != null && ttfbDelta > 500) ||
+          (infraCompletedDelta != null && infraCompletedDelta < -0.1) ||
+          (convPassDelta != null && convPassDelta < -0.1);
+
+        baselineComparison = {
+          baseline_run_id: baseline.run_id,
+          baseline_created_at: baseline.created_at,
+          mean_ttfb_delta_ms: ttfbDelta,
+          infrastructure_completed_rate_delta: infraCompletedDelta,
+          conversation_pass_rate_delta: convPassDelta,
+          regression_detected: regressionDetected,
+        };
+      }
+    } catch {
+      // Best-effort — don't fail status retrieval if baseline comparison fails
+    }
+
     app.log.debug({
       run_id: run.id,
       run_status: run.status,
-      audio_results: audioResults.length,
-      conversation_results: conversationResults.length,
+      new_results: newScenarios.length,
+      total_completed: totalCompleted,
       fix_plan_present: fixPlan != null,
       failing_tests: fixPlan?.failing_tests ?? 0,
       top_priority: fixPlan?.top_priority ?? null,
-    }, "Generated fix_plan for completed run");
+    }, "Run completed — returning final delta");
 
     return {
       content: [{
@@ -510,14 +683,20 @@ export function registerActionTools(
         text: JSON.stringify({
           run_id: run.id,
           status: run.status,
+          completed: totalCompleted,
           aggregate: run.aggregate_json,
-          audio_results: audioResults,
+          infrastructure_results: infrastructureResults,
           conversation_results: conversationResults,
+          load_test_results: loadTestResults,
           fix_plan: fixPlan,
+          baseline_comparison: baselineComparison,
           error_text: run.error_text ?? null,
           duration_ms: run.duration_ms,
           started_at: run.started_at,
           finished_at: run.finished_at,
+          message: newScenarios.length > 0
+            ? `Run complete. ${newScenarios.length} final result(s).`
+            : `Run complete. All ${totalCompleted} results already delivered incrementally.`,
         }, null, 2),
       }],
     };

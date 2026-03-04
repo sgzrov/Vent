@@ -53,7 +53,8 @@ interface BuildFixPlanInput {
 export function buildFixPlan(input: BuildFixPlanInput): FixPlan | null {
   const audioResults = normalizeAudioResults(input.audioResults);
   const conversationResults = normalizeConversationResults(input.conversationResults);
-  const failedAudio = audioResults.filter((r) => r.status === "fail");
+  // Infrastructure probes use "error" status (not "fail") to indicate failure
+  const failedAudio = audioResults.filter((r) => r.status === "error");
   const failedConversation = conversationResults.filter((r) => r.status === "fail");
 
   if (failedAudio.length === 0 && failedConversation.length === 0) {
@@ -188,7 +189,7 @@ function buildConversationFixPacket(
   };
 }
 
-function numericThresholdPairs(metrics: Record<string, number | boolean>): Array<{
+function numericThresholdPairs(metrics: Record<string, number | boolean | number[]>): Array<{
   metricKey: string;
   metric: number;
   thresholdKey: string;
@@ -457,7 +458,7 @@ function roundMetric(value: number): number {
   return Number.isInteger(value) ? value : Math.round(value * 1000) / 1000;
 }
 
-function sortRecordKeys(record: Record<string, number | boolean>): Record<string, number | boolean> {
+function sortRecordKeys(record: Record<string, number | boolean | number[]>): Record<string, number | boolean | number[]> {
   return Object.fromEntries(
     Object.entries(record).sort(([a], [b]) => a.localeCompare(b)),
   );

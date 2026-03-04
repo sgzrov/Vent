@@ -23,6 +23,14 @@ const statusConfig: Record<string, { label: string; className: string }> = {
     label: "Fail",
     className: "bg-red-50 text-red-700 border-red-200",
   },
+  completed: {
+    label: "Completed",
+    className: "bg-emerald-50 text-emerald-700 border-emerald-200",
+  },
+  error: {
+    label: "Error",
+    className: "bg-red-50 text-red-700 border-red-200",
+  },
 };
 
 export function StatusBadge({ status, size = "sm" }: StatusBadgeProps) {

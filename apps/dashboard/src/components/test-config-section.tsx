@@ -61,7 +61,7 @@ export function TestConfigSection({ testSpec }: TestConfigSectionProps) {
         Test Configuration
         <span className="text-xs text-muted-foreground font-normal ml-auto">
           {[
-            hasAudio && `${testSpec.audio_tests!.length} audio`,
+            hasAudio && `${testSpec.audio_tests!.length} infrastructure`,
             hasConversation &&
               `${testSpec.conversation_tests!.length} conversation`,
             hasRedTeam && `${testSpec.red_team!.length} red-team`,
@@ -76,7 +76,7 @@ export function TestConfigSection({ testSpec }: TestConfigSectionProps) {
           {hasAudio && (
             <div className="pt-3">
               <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-2">
-                Audio Tests
+                Infrastructure Probes
               </p>
               <div className="flex flex-wrap gap-1.5">
                 {testSpec.audio_tests!.map((test) => (
@@ -84,7 +84,7 @@ export function TestConfigSection({ testSpec }: TestConfigSectionProps) {
                     key={test}
                     className="inline-flex items-center rounded-md bg-muted px-2 py-0.5 text-xs font-mono"
                   >
-                    {AUDIO_TEST_REGISTRY[test]?.label ?? test}
+                    {AUDIO_TEST_REGISTRY[test as keyof typeof AUDIO_TEST_REGISTRY]?.label ?? test}
                   </span>
                 ))}
               </div>

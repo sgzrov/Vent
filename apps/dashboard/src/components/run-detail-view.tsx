@@ -9,6 +9,7 @@ import { AudioTestResults } from "@/components/audio-test-results";
 import { AudioMetricConclusions } from "@/components/audio-metric-conclusions";
 import { ConversationTestResults } from "@/components/conversation-test-results";
 import { RedTeamResults } from "@/components/red-team-results";
+import { LoadTestResults } from "@/components/load-test-results";
 import { TestConfigSection } from "@/components/test-config-section";
 import { TestDocumentation } from "@/components/test-documentation";
 import type { RunDetail, RunAggregateV2, RunEventRow } from "@/lib/types";
@@ -23,7 +24,7 @@ function describeRunDetail(run: RunDetail): string {
     const parts: string[] = [];
     if (spec.audio_tests?.length)
       parts.push(
-        `${spec.audio_tests.length} audio test${spec.audio_tests.length > 1 ? "s" : ""}`
+        `${spec.audio_tests.length} infrastructure probe${spec.audio_tests.length > 1 ? "s" : ""}`
       );
     if (spec.conversation_tests?.length)
       parts.push(
@@ -31,19 +32,24 @@ function describeRunDetail(run: RunDetail): string {
       );
     if (spec.red_team?.length)
       parts.push(`${spec.red_team.length} red-team`);
+    if (spec.load_test)
+      parts.push(`load test (${spec.load_test.pattern})`);
     if (parts.length > 0) return parts.join(", ");
   }
   const agg = run.aggregate_json as RunAggregateV2 | null;
   if (agg) {
     const parts: string[] = [];
-    if (agg.audio_tests.total > 0)
+    const infraTotal = agg.infrastructure?.total ?? agg.audio_tests?.total ?? 0;
+    if (infraTotal > 0)
       parts.push(
-        `${agg.audio_tests.total} audio test${agg.audio_tests.total > 1 ? "s" : ""}`
+        `${infraTotal} infrastructure probe${infraTotal > 1 ? "s" : ""}`
       );
     if (agg.conversation_tests.total > 0)
       parts.push(
         `${agg.conversation_tests.total} conversation${agg.conversation_tests.total > 1 ? "s" : ""}`
       );
+    if (agg.load_tests && agg.load_tests.total > 0)
+      parts.push(`${agg.load_tests.total} load test${agg.load_tests.total > 1 ? "s" : ""}`);
     if (parts.length > 0) return parts.join(", ");
   }
   return "Test run";
@@ -53,7 +59,7 @@ function describeRunDetail(run: RunDetail): string {
 // Tab types
 // ---------------------------------------------------------------------------
 
-type TabId = "overview" | "conversations" | "audio" | "security" | "artifacts";
+type TabId = "overview" | "conversations" | "audio" | "security" | "load_test" | "artifacts";
 
 interface TabDef {
   id: TabId;
@@ -117,6 +123,9 @@ export function RunDetailView({
       s.test_type === "conversation" &&
       !s.name.toLowerCase().startsWith("red-team")
   );
+  const loadTestScenarios = run.scenarios.filter(
+    (s) => s.test_type === "load_test"
+  );
 
   // Build tabs — only show tabs with content
   const tabs: TabDef[] = [{ id: "overview", label: "Overview" }];
@@ -137,13 +146,14 @@ export function RunDetailView({
   }
 
   if (audioScenarios.length > 0) {
-    const allPassed = audioScenarios.every((s) => s.status === "pass");
-    const allFailed = audioScenarios.every((s) => s.status === "fail");
+    const hasErrors = audioScenarios.some(
+      (s) => s.status === "fail" || s.status === "error"
+    );
     tabs.push({
       id: "audio",
-      label: "Audio",
+      label: "Infrastructure",
       count: audioScenarios.length,
-      status: allPassed ? "pass" : allFailed ? "fail" : "mixed",
+      status: hasErrors ? "fail" : "pass",
     });
   }
 
@@ -155,6 +165,15 @@ export function RunDetailView({
       label: "Security",
       count: redTeamScenarios.length,
       status: allPassed ? "pass" : allFailed ? "fail" : "mixed",
+    });
+  }
+
+  if (loadTestScenarios.length > 0) {
+    tabs.push({
+      id: "load_test",
+      label: "Load Test",
+      count: loadTestScenarios.length,
+      status: loadTestScenarios.every((s) => s.status === "pass") ? "pass" : "fail",
     });
   }
 
@@ -330,6 +349,10 @@ export function RunDetailView({
 
         {activeTab === "security" && (
           <RedTeamResults scenarios={redTeamScenarios} />
+        )}
+
+        {activeTab === "load_test" && loadTestScenarios.length > 0 && (
+          <LoadTestResults scenario={loadTestScenarios[0]!} />
         )}
 
         {activeTab === "artifacts" && (

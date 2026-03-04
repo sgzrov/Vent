@@ -1,32 +1,20 @@
 /**
- * Audio test dispatcher — maps test names to executor functions.
+ * Infrastructure probe dispatcher — maps Layer 1 test names to executor functions.
  * Adds diagnostics (error origin classification + timing) to every result.
  */
 
 import type { AudioChannel } from "@voiceci/adapters";
-import type { AudioTestName, AudioTestResult, AudioTestThresholds, TestDiagnostics } from "@voiceci/shared";
-import { runEchoTest } from "./echo.js";
-import { runBargeInTest } from "./barge-in.js";
-import { runTtfbTest } from "./ttfb.js";
-import { runSilenceHandlingTest } from "./silence.js";
-import { runConnectionStabilityTest } from "./connection.js";
-import { runCompletenessTest } from "./completeness.js";
-import { runNoiseResilienceTest } from "./noise-resilience.js";
-import { runEndpointingTest } from "./endpointing.js";
+import type { AudioTestName, AudioTestResult, InfrastructureProbeConfig, TestDiagnostics } from "@voiceci/shared";
 import { runAudioQualityTest } from "./audio-quality.js";
+import { runLatencyTest } from "./latency.js";
+import { runEchoTest } from "./echo.js";
 
-type AudioTestExecutor = (channel: AudioChannel, thresholds?: AudioTestThresholds) => Promise<AudioTestResult>;
+type ProbeExecutor = (channel: AudioChannel, config?: Record<string, unknown>) => Promise<AudioTestResult>;
 
-const EXECUTORS: Record<AudioTestName, AudioTestExecutor> = {
-  echo: runEchoTest,
-  barge_in: runBargeInTest,
-  ttfb: runTtfbTest,
-  silence_handling: runSilenceHandlingTest,
-  connection_stability: runConnectionStabilityTest,
-  response_completeness: runCompletenessTest,
-  noise_resilience: runNoiseResilienceTest,
-  endpointing: runEndpointingTest,
-  audio_quality: runAudioQualityTest,
+const EXECUTORS: Record<AudioTestName, ProbeExecutor> = {
+  audio_quality: runAudioQualityTest as ProbeExecutor,
+  latency: runLatencyTest as ProbeExecutor,
+  echo: runEchoTest as ProbeExecutor,
 };
 
 /** Platform-side errors: TTS/STT provider failures, connection issues */
@@ -43,36 +31,36 @@ const PLATFORM_ERROR_PATTERNS = [
 ];
 
 function classifyErrorOrigin(result: AudioTestResult, channel: AudioChannel): TestDiagnostics["error_origin"] {
-  if (result.status === "pass") return null;
+  if (result.status === "completed") return null;
   if (!result.error) return "agent";
 
-  // Check if the error matches known platform failure patterns
   for (const pattern of PLATFORM_ERROR_PATTERNS) {
     if (pattern.test(result.error)) return "platform";
   }
 
-  // Channel-level errors indicate platform issues
   if (channel.stats.errorEvents.length > 0) return "platform";
-
-  // Connection lost = could be either, but lean toward agent issue
-  // (agent dropped the connection, not our infrastructure)
   return "agent";
 }
 
 /**
- * Run a single audio test by name against a connected AudioChannel.
- * Wraps the result with diagnostics for error classification.
+ * Run a single infrastructure probe by name against a connected AudioChannel.
  */
-export async function runAudioTest(
+export async function runInfrastructureProbe(
   testName: AudioTestName,
   channel: AudioChannel,
-  thresholds?: AudioTestThresholds,
+  config?: InfrastructureProbeConfig,
 ): Promise<AudioTestResult> {
   const executor = EXECUTORS[testName];
   const testStart = Date.now();
 
+  // Merge global prompt with per-probe config
+  const probeConfig: Record<string, unknown> = {
+    prompt: config?.prompt,
+    ...config?.[testName],
+  };
+
   try {
-    const result = await executor(channel, thresholds);
+    const result = await executor(channel, probeConfig);
 
     result.diagnostics = {
       error_origin: classifyErrorOrigin(result, channel),
@@ -94,8 +82,9 @@ export async function runAudioTest(
     const errorMsg = err instanceof Error ? err.message : String(err);
     return {
       test_name: testName,
-      status: "fail",
+      status: "error",
       metrics: {},
+      transcriptions: {},
       duration_ms: Date.now() - testStart,
       error: errorMsg,
       diagnostics: {

@@ -23,15 +23,9 @@ export interface VoiceConfig {
 // ============================================================
 
 export const AUDIO_TEST_NAMES = [
-  "echo",
-  "barge_in",
-  "ttfb",
-  "silence_handling",
-  "connection_stability",
-  "response_completeness",
-  "noise_resilience",
-  "endpointing",
   "audio_quality",
+  "latency",
+  "echo",
 ] as const;
 
 export type AudioTestName = (typeof AUDIO_TEST_NAMES)[number];
@@ -50,6 +44,54 @@ export interface CallerPersona {
   confirmation_style?: "explicit" | "vague";
 }
 
+// ============================================================
+// Audio actions — infrastructure challenges injected into conversation turns
+// ============================================================
+
+export const AUDIO_ACTION_TYPES = [
+  "interrupt",
+  "silence",
+  "inject_noise",
+  "split_sentence",
+  "noise_on_caller",
+] as const;
+
+export type AudioActionType = (typeof AUDIO_ACTION_TYPES)[number];
+
+export interface AudioAction {
+  at_turn: number;
+  action: AudioActionType;
+  /** What the caller says to interrupt (interrupt action) */
+  prompt?: string;
+  /** How long to stay silent in ms (silence action, default 8000) */
+  duration_ms?: number;
+  /** Noise type for inject_noise / noise_on_caller (default "babble") */
+  noise_type?: "babble" | "white" | "pink";
+  /** Signal-to-noise ratio in dB (default 10) */
+  snr_db?: number;
+  /** Split sentence config (split_sentence action) */
+  split?: { part_a: string; part_b: string; pause_ms: number };
+}
+
+export interface AudioActionResult {
+  at_turn: number;
+  action: string;
+  metrics: Record<string, number | boolean>;
+  transcriptions?: Record<string, string | null>;
+}
+
+// ============================================================
+// Infrastructure probe config (Layer 1)
+// ============================================================
+
+export interface InfrastructureProbeConfig {
+  /** Default prompt for all probes (overridable per-probe) */
+  prompt?: string;
+  audio_quality?: { prompt?: string };
+  latency?: { prompt?: string; caller_prompt?: string; turns?: number };
+  echo?: { prompt?: string; silence_duration_ms?: number };
+}
+
 export interface ConversationTestSpec {
   name?: string;
   caller_prompt: string;
@@ -58,8 +100,16 @@ export interface ConversationTestSpec {
   tool_call_eval?: string[];
   silence_threshold_ms?: number;
   persona?: CallerPersona;
+  /** Audio actions to inject at specific turns (barge-in, silence, noise, etc.) */
+  audio_actions?: AudioAction[];
   /** Opt-in: run Hume prosody analysis on agent audio (requires HUME_API_KEY) */
   prosody?: boolean;
+  /** Fail the test if the judge detects hallucination */
+  fail_on_hallucination?: boolean;
+  /** Fail the test if the judge detects a safety violation */
+  fail_on_safety_violation?: boolean;
+  /** Fail if bigram repetition score exceeds this threshold (0-1) */
+  repetition_threshold?: number;
 }
 
 export const RED_TEAM_ATTACKS = [
@@ -100,31 +150,6 @@ export interface PlatformConfig {
   agent_id?: string;
 }
 
-export interface AudioTestThresholds {
-  echo?: { loop_threshold?: number };
-  ttfb?: {
-    p95_threshold_ms?: number;
-    p95_complex_threshold_ms?: number;
-    p95_ttfw_threshold_ms?: number;
-  };
-  barge_in?: { stop_threshold_ms?: number };
-  silence_handling?: { silence_duration_ms?: number };
-  response_completeness?: { min_word_count?: number };
-  noise_resilience?: {
-    min_pass_snr_db?: number;
-    max_ttfb_degradation_ms?: number;
-  };
-  endpointing?: {
-    pause_duration_ms?: number;
-    min_pass_ratio?: number;
-  };
-  audio_quality?: {
-    max_clipping_ratio?: number;
-    min_duration_ms?: number;
-    min_energy_consistency?: number;
-  };
-  audio_analysis_grade?: AudioAnalysisGradeThresholds;
-}
 
 export interface AudioAnalysisGradeThresholds {
   agent_speech_ratio_min?: number;
@@ -195,7 +220,7 @@ export interface ProsodyWarning {
 }
 
 export interface TestSpec {
-  audio_tests?: AudioTestName[];
+  infrastructure?: InfrastructureProbeConfig;
   conversation_tests?: ConversationTestSpec[];
   red_team?: RedTeamAttack[];
 }
@@ -228,8 +253,10 @@ export interface ChannelStats {
 
 export interface AudioTestResult {
   test_name: AudioTestName;
-  status: "pass" | "fail";
-  metrics: Record<string, number | boolean>;
+  /** "completed" = probe ran successfully, "error" = probe failed to run. NOT pass/fail. */
+  status: "completed" | "error";
+  metrics: Record<string, number | boolean | number[]>;
+  transcriptions: Record<string, string | string[] | null>;
   duration_ms: number;
   error?: string;
   diagnostics?: TestDiagnostics;
@@ -372,6 +399,7 @@ export interface ConversationTestResult {
   eval_results: EvalResult[];
   tool_call_eval_results?: EvalResult[];
   observed_tool_calls?: ObservedToolCall[];
+  audio_action_results?: AudioActionResult[];
   duration_ms: number;
   metrics: ConversationMetrics;
   error?: string;
@@ -379,15 +407,16 @@ export interface ConversationTestResult {
 }
 
 export interface RunAggregateV2 {
-  audio_tests: { total: number; passed: number; failed: number };
+  infrastructure: { total: number; completed: number; errored: number };
   conversation_tests: { total: number; passed: number; failed: number };
+  load_tests?: { total: number; passed: number; failed: number };
   total_duration_ms: number;
 }
 
 export interface RunnerCallbackPayloadV2 {
   run_id: string;
   status: "pass" | "fail";
-  audio_results: AudioTestResult[];
+  infrastructure_results: AudioTestResult[];
   conversation_results: ConversationTestResult[];
   aggregate: RunAggregateV2;
   error_text?: string;

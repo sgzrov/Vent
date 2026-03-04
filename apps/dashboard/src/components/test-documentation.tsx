@@ -40,9 +40,9 @@ export function TestDocumentation() {
             ) : (
               <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
             )}
-            <span className="font-medium">Audio Tests</span>
+            <span className="font-medium">Infrastructure Probes</span>
             <span className="text-xs text-muted-foreground">
-              9 infrastructure-level tests
+              3 infrastructure-level probes
             </span>
           </button>
           {section === "audio" && (
@@ -61,12 +61,6 @@ export function TestDocumentation() {
                       How:
                     </span>{" "}
                     {test.methodology}
-                  </p>
-                  <p className="text-xs text-muted-foreground mt-1">
-                    <span className="font-medium text-foreground">
-                      Pass criteria:
-                    </span>{" "}
-                    {test.passCriteria}
                   </p>
                 </div>
               ))}
@@ -270,10 +264,11 @@ export function TestDocumentation() {
               <div className="rounded-md bg-muted/30 p-3 space-y-2">
                 <p className="text-xs text-muted-foreground leading-relaxed">
                   <span className="font-medium text-foreground">
-                    Audio tests
+                    Infrastructure probes
                   </span>{" "}
-                  pass or fail based on configurable thresholds (e.g., P95
-                  TTFB &lt; 1500ms, no echo detected). These are deterministic.
+                  complete or error. They measure raw infrastructure signals
+                  (audio quality, latency, echo) without pass/fail thresholds.
+                  Errors indicate the probe could not collect data.
                 </p>
                 <p className="text-xs text-muted-foreground leading-relaxed">
                   <span className="font-medium text-foreground">
@@ -287,8 +282,8 @@ export function TestDocumentation() {
                   <span className="font-medium text-foreground">
                     A run passes
                   </span>{" "}
-                  when every individual test passes. Any single failure marks
-                  the entire run as failed.
+                  when every conversation test passes and all infrastructure
+                  probes complete without errors.
                 </p>
               </div>
             </div>

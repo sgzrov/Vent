@@ -3,7 +3,8 @@
  */
 
 import type { AudioChannel } from "@voiceci/adapters";
-import { VoiceActivityDetector, type VADState } from "@voiceci/voice";
+import { VoiceActivityDetector, type VADState, transcribe as sttTranscribe } from "@voiceci/voice";
+import { generateSilence } from "./signals.js";
 
 /**
  * Stats about audio collection — used by adaptive threshold to tune silence detection.
@@ -212,4 +213,68 @@ export async function waitForSpeech(
   }
 
   return { detectedAt, timedOut };
+}
+
+/**
+ * Stream silence to the channel in 20ms chunks.
+ * Used by silence audio actions and echo probes.
+ */
+export async function streamSilence(
+  channel: AudioChannel,
+  durationMs: number,
+): Promise<void> {
+  const chunkMs = 20;
+  const chunk = generateSilence(chunkMs);
+  const chunks = Math.ceil(durationMs / chunkMs);
+
+  for (let i = 0; i < chunks; i++) {
+    channel.sendAudio(chunk);
+    // Pace at real-time to avoid buffer flooding
+    await new Promise((r) => setTimeout(r, chunkMs));
+  }
+}
+
+/**
+ * Transcribe a PCM audio buffer using Deepgram batch STT.
+ * Returns the transcribed text, or empty string if audio is too short.
+ */
+export async function transcribeAudio(audio: Buffer): Promise<string> {
+  if (audio.length < 4800) return ""; // < 100ms of audio
+  const { text } = await sttTranscribe(audio);
+  return text;
+}
+
+/**
+ * Jaccard token overlap similarity (0-1).
+ * Used to compare clean vs degraded responses.
+ */
+export function textSimilarity(a: string, b: string): number {
+  const tokenize = (s: string) => new Set(s.toLowerCase().split(/\s+/).filter(Boolean));
+  const setA = tokenize(a);
+  const setB = tokenize(b);
+  if (setA.size === 0 && setB.size === 0) return 1;
+  if (setA.size === 0 || setB.size === 0) return 0;
+
+  let intersection = 0;
+  for (const t of setA) if (setB.has(t)) intersection++;
+  return intersection / (setA.size + setB.size - intersection);
+}
+
+/**
+ * Simple linear regression slope for drift detection.
+ * Returns ms-per-turn drift rate.
+ */
+export function linearRegressionSlope(values: number[]): number {
+  if (values.length < 2) return 0;
+  const n = values.length;
+  let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
+  for (let i = 0; i < n; i++) {
+    sumX += i;
+    sumY += values[i]!;
+    sumXY += i * values[i]!;
+    sumX2 += i * i;
+  }
+  const denom = n * sumX2 - sumX * sumX;
+  if (denom === 0) return 0;
+  return (n * sumXY - sumX * sumY) / denom;
 }

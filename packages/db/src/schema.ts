@@ -20,9 +20,9 @@ export const runStatusEnum = pgEnum("run_status", [
 
 export const sourceTypeEnum = pgEnum("source_type", ["bundle", "remote", "relay"]);
 
-export const scenarioStatusEnum = pgEnum("scenario_status", ["pass", "fail"]);
+export const scenarioStatusEnum = pgEnum("scenario_status", ["pass", "fail", "completed", "error"]);
 
-export const testTypeEnum = pgEnum("test_type", ["audio", "conversation"]);
+export const testTypeEnum = pgEnum("test_type", ["audio", "conversation", "load_test"]);
 
 export const runs = pgTable(
   "runs",

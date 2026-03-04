@@ -3,17 +3,21 @@
 
 export type RunStatus = "queued" | "running" | "pass" | "fail";
 export type SourceType = "bundle" | "remote" | "relay";
-export type TestType = "audio" | "conversation";
+export type TestType = "audio" | "conversation" | "load_test";
 export type AudioTestName =
-  | "echo"
+  | "audio_quality"
+  | "latency"
+  | "echo";
+
+/** Legacy test names from historical runs (pre-layered architecture). */
+export type LegacyAudioTestName =
   | "barge_in"
   | "ttfb"
   | "silence_handling"
   | "connection_stability"
   | "response_completeness"
   | "noise_resilience"
-  | "endpointing"
-  | "audio_quality";
+  | "endpointing";
 
 // --- Test spec types ---
 
@@ -52,14 +56,24 @@ export interface TestSpec {
   audio_tests?: AudioTestName[];
   conversation_tests?: ConversationTestSpec[];
   red_team?: RedTeamAttack[];
+  load_test?: {
+    pattern: LoadPattern;
+    target_concurrency: number;
+    total_duration_s: number;
+    ramp_duration_s?: number;
+    caller_prompt: string;
+  };
 }
 
 // --- Run-level types ---
 
 export interface RunAggregateV2 {
-  audio_tests: { total: number; passed: number; failed: number };
+  infrastructure: { total: number; completed: number; errored: number };
   conversation_tests: { total: number; passed: number; failed: number };
+  load_tests?: { total: number; passed: number; failed: number };
   total_duration_ms: number;
+  /** @deprecated Use `infrastructure`. Present in historical runs only. */
+  audio_tests?: { total: number; passed: number; failed: number };
 }
 
 export interface RunRow {
@@ -98,9 +112,9 @@ export interface ScenarioResultRow {
   id: string;
   run_id: string;
   name: string;
-  status: "pass" | "fail";
+  status: "pass" | "fail" | "completed" | "error";
   test_type: TestType | null;
-  metrics_json: AudioTestResult | ConversationTestResult;
+  metrics_json: AudioTestResult | ConversationTestResult | LoadTestResult;
   trace_json: ConversationTurn[];
   created_at: string;
 }
@@ -126,12 +140,21 @@ export interface TestDiagnostics {
 }
 
 export interface AudioTestResult {
-  test_name: AudioTestName;
-  status: "pass" | "fail";
+  test_name: AudioTestName | LegacyAudioTestName | string;
+  status: "completed" | "error";
   metrics: Record<string, number | boolean>;
+  transcriptions?: Record<string, string | string[] | null>;
   duration_ms: number;
   error?: string;
   diagnostics?: TestDiagnostics;
+}
+
+/** Audio action results embedded in conversation test results. */
+export interface AudioActionResult {
+  at_turn: number;
+  action: string;
+  metrics: Record<string, number | boolean>;
+  transcriptions?: Record<string, string | null>;
 }
 
 // --- Conversation test types ---
@@ -173,6 +196,7 @@ export interface ConversationTestResult {
   eval_results: EvalResult[];
   tool_call_eval_results?: EvalResult[];
   observed_tool_calls?: ObservedToolCall[];
+  audio_action_results?: AudioActionResult[];
   duration_ms: number;
   metrics: ConversationMetrics;
   diagnostics?: TestDiagnostics;
@@ -318,6 +342,42 @@ export interface HarnessOverhead {
   mean_tts_ms: number;
   mean_stt_ms: number;
 }
+
+// --- Load test types ---
+
+export type LoadPattern = "ramp" | "spike" | "sustained" | "soak";
+
+export interface LoadTestTimepoint {
+  elapsed_s: number;
+  active_connections: number;
+  ttfb_p50_ms: number;
+  ttfb_p95_ms: number;
+  ttfb_p99_ms: number;
+  error_rate: number;
+  errors_cumulative: number;
+}
+
+export interface LoadTestResult {
+  status: "pass" | "fail";
+  pattern: LoadPattern;
+  target_concurrency: number;
+  actual_peak_concurrency: number;
+  total_calls: number;
+  successful_calls: number;
+  failed_calls: number;
+  timeline: LoadTestTimepoint[];
+  summary: {
+    ttfb_p50_ms: number;
+    ttfb_p95_ms: number;
+    ttfb_p99_ms: number;
+    error_rate: number;
+    breaking_point?: number;
+    mean_call_duration_ms: number;
+  };
+  duration_ms: number;
+}
+
+// --- Artifact types ---
 
 export interface ArtifactRow {
   id: string;

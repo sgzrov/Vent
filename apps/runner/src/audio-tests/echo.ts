@@ -1,77 +1,88 @@
 /**
- * Echo test — detects pipeline feedback loops where the agent's STT
- * picks up its own TTS output and responds to itself.
+ * Echo probe (Layer 1: Infrastructure)
  *
- * The bug: agent speaks → its own audio gets transcribed by STT → fed
- * back as user input → agent responds to its own words → loop.
+ * Detects pipeline feedback loops where the agent's STT picks up its own
+ * TTS output and responds to itself. Also checks silence recovery.
  *
- * Detection: two-channel VAD + loop counting.
- * We control the caller channel (we know when we're silent).
- * We observe the agent channel via VAD.
- * After our prompt, we go silent and count how many times the agent
- * speaks unprompted. A single response could be "are you still there?"
- * but 2+ unprompted responses is a feedback loop.
+ * Flow: prompt → collect response → go silent → count unprompted speech →
+ *       recovery prompt → check response.
+ *
+ * Returns raw metrics + transcriptions — no pass/fail.
  */
 
 import type { AudioChannel } from "@voiceci/adapters";
-import type { AudioTestResult, AudioTestThresholds } from "@voiceci/shared";
+import type { AudioTestResult } from "@voiceci/shared";
 import { synthesize } from "@voiceci/voice";
-import { collectUntilEndOfTurn, waitForSpeech } from "./helpers.js";
+import { collectUntilEndOfTurn, waitForSpeech, streamSilence, transcribeAudio } from "./helpers.js";
 
-const PROMPT = "Hi, can you tell me about your services?";
+const DEFAULT_PROMPT = "Hi, can you tell me about your services?";
+const DEFAULT_SILENCE_MS = 20000;
 const ECHO_WINDOW_MS = 3000;
-const MAX_DETECTION_MS = 15000;
-const DEFAULT_LOOP_THRESHOLD = 2;
+const RECOVERY_PROMPT = "Hello, are you still there? I had a quick question.";
 
 export async function runEchoTest(
   channel: AudioChannel,
-  thresholds?: AudioTestThresholds,
+  config?: { prompt?: string; silence_duration_ms?: number },
 ): Promise<AudioTestResult> {
-  const LOOP_THRESHOLD = thresholds?.echo?.loop_threshold ?? DEFAULT_LOOP_THRESHOLD;
+  const prompt = config?.prompt ?? DEFAULT_PROMPT;
+  const silenceDurationMs = config?.silence_duration_ms ?? DEFAULT_SILENCE_MS;
   const startTime = performance.now();
 
   // Phase 1: Send a real prompt and collect the agent's first response
-  const promptAudio = await synthesize(PROMPT);
+  const promptAudio = await synthesize(prompt);
   channel.sendAudio(promptAudio);
 
-  await collectUntilEndOfTurn(channel, { timeoutMs: 15000 });
+  const { audio: initialAudio } = await collectUntilEndOfTurn(channel, { timeoutMs: 15000 });
+  const initialText = await transcribeAudio(initialAudio);
 
   // Phase 2: Go silent — count unprompted agent responses
   const silenceStart = Date.now();
   let unpromptedCount = 0;
-  let firstResponseDelayMs = 0;
+  const unpromptedTexts: string[] = [];
 
-  while (Date.now() - silenceStart < MAX_DETECTION_MS) {
-    const { detectedAt, timedOut } = await waitForSpeech(
-      channel,
-      ECHO_WINDOW_MS
-    );
+  // Stream silence to keep the connection alive
+  const silencePromise = streamSilence(channel, silenceDurationMs);
 
+  while (Date.now() - silenceStart < silenceDurationMs) {
+    const remaining = silenceDurationMs - (Date.now() - silenceStart);
+    if (remaining < ECHO_WINDOW_MS) break;
+
+    const { timedOut } = await waitForSpeech(channel, Math.min(ECHO_WINDOW_MS, remaining));
     if (timedOut) break;
 
     unpromptedCount++;
-    if (unpromptedCount === 1) {
-      firstResponseDelayMs = detectedAt - silenceStart;
-    }
 
-    // Drain the utterance so we can wait for the next one
-    await collectUntilEndOfTurn(channel, { timeoutMs: 10000 });
+    // Drain and transcribe the unprompted utterance
+    const { audio: unpromptedAudio } = await collectUntilEndOfTurn(channel, { timeoutMs: 10000 });
+    const text = await transcribeAudio(unpromptedAudio);
+    if (text) unpromptedTexts.push(text);
   }
 
-  const echoDetected = unpromptedCount >= LOOP_THRESHOLD;
-  const durationMs = Math.round(performance.now() - startTime);
+  await silencePromise;
+
+  // Phase 3: Recovery — send a follow-up prompt to check if agent is responsive
+  const recoveryAudio = await synthesize(RECOVERY_PROMPT);
+  channel.sendAudio(recoveryAudio);
+
+  const { audio: recoveryResponseAudio, timedOut: recoveryTimedOut } = await collectUntilEndOfTurn(channel, {
+    timeoutMs: 15000,
+  });
+  const recoveryText = recoveryTimedOut ? null : await transcribeAudio(recoveryResponseAudio);
+  const recoveryResponded = !recoveryTimedOut && recoveryResponseAudio.length > 0;
 
   return {
     test_name: "echo",
-    status: echoDetected ? "fail" : "pass",
+    status: "completed",
     metrics: {
-      echo_detected: echoDetected,
-      unprompted_count: unpromptedCount,
-      first_response_delay_ms: firstResponseDelayMs,
+      unprompted_utterances: unpromptedCount,
+      silence_duration_ms: silenceDurationMs,
+      recovery_responded: recoveryResponded,
     },
-    duration_ms: durationMs,
-    ...(echoDetected && {
-      error: `Pipeline echo loop detected: agent responded ${unpromptedCount} times unprompted after going silent`,
-    }),
+    transcriptions: {
+      initial: initialText || null,
+      unprompted_texts: unpromptedTexts.length > 0 ? unpromptedTexts : null,
+      recovery: recoveryText,
+    },
+    duration_ms: Math.round(performance.now() - startTime),
   };
 }
