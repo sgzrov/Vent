@@ -1,14 +1,15 @@
 import type { Metadata } from "next";
-import { Inter } from "next/font/google";
+import { Inter, Caveat } from "next/font/google";
 import { withAuth, signOut } from "@workos-inc/authkit-nextjs";
 import { SidebarNav } from "@/components/sidebar-nav";
 import "./globals.css";
 
 const inter = Inter({ subsets: ["latin"] });
+const caveat = Caveat({ subsets: ["latin"], variable: "--font-cursive" });
 
 export const metadata: Metadata = {
-  title: "VoiceCI Dashboard",
-  description: "Behavioral regression testing for voice agents",
+  title: "LightMCP Dashboard",
+  description: "The first MCP that lets coding agents test voice agents in real time.",
 };
 
 export default async function RootLayout({
@@ -26,7 +27,7 @@ export default async function RootLayout({
 
   return (
     <html lang="en" suppressHydrationWarning>
-      <body className={`${inter.className} antialiased`}>
+      <body className={`${inter.className} ${caveat.variable} antialiased`}>
         <div className="min-h-screen bg-background">
           {user && (
             <SidebarNav

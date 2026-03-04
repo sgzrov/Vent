@@ -123,3 +123,69 @@
 .stagger-children > *:nth-child(8) { animation-delay: 350ms; }
 .stagger-children > *:nth-child(9) { animation-delay: 400ms; }
 .stagger-children > *:nth-child(10) { animation-delay: 450ms; }
+
+/* Cursive font utility */
+.font-cursive {
+  font-family: var(--font-cursive), 'Caveat', cursive;
+}
+
+/* Grid background */
+.grid-bg {
+  background-size: 60px 60px;
+  background-image:
+    linear-gradient(to right, hsl(var(--border) / 0.3) 1px, transparent 1px),
+    linear-gradient(to bottom, hsl(var(--border) / 0.3) 1px, transparent 1px);
+}
+
+/* Lightning bolt floating animation */
+@keyframes bolt-float {
+  0%, 100% {
+    transform: translateY(0) rotate(0deg);
+  }
+  25% {
+    transform: translateY(-12px) rotate(1deg);
+  }
+  50% {
+    transform: translateY(-6px) rotate(-0.5deg);
+  }
+  75% {
+    transform: translateY(-16px) rotate(0.5deg);
+  }
+}
+
+.bolt-float {
+  animation: bolt-float 4s ease-in-out infinite;
+}
+
+/* Lightning bolt glow */
+@keyframes bolt-glow {
+  0%, 100% {
+    opacity: 0.15;
+    transform: scale(0.85);
+  }
+  50% {
+    opacity: 0.3;
+    transform: scale(1);
+  }
+}
+
+.bolt-glow {
+  background: radial-gradient(circle, rgba(250, 204, 21, 0.4) 0%, transparent 70%);
+  animation: bolt-glow 3s ease-in-out infinite;
+}
+
+/* Energy underline animation */
+@keyframes energy-pulse {
+  0%, 100% {
+    opacity: 0.8;
+    box-shadow: 0 0 4px rgba(250, 204, 21, 0.3);
+  }
+  50% {
+    opacity: 1;
+    box-shadow: 0 0 12px rgba(250, 204, 21, 0.6), 0 0 24px rgba(250, 204, 21, 0.2);
+  }
+}
+
+.energy-underline {
+  animation: energy-pulse 2s ease-in-out infinite;
+}
