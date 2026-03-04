@@ -244,6 +244,16 @@ importers:
         specifier: ^5.7.0
         version: 5.9.3
 
+  packages/mcp:
+    dependencies:
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.10.0
+        version: 1.26.0(zod@3.25.76)
+    devDependencies:
+      esbuild:
+        specifier: ^0.24.0
+        version: 0.24.2
+
   packages/relay-client:
     devDependencies:
       esbuild:
