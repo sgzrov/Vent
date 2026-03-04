@@ -154,34 +154,4 @@
   animation: draw-underline 1.2s ease-out 0.5s forwards;
 }
 
-/* Bolt spin + scale animation — every 4s total, spin happens in the middle */
-@keyframes bolt-spin-scale {
-  0% {
-    transform: scale(1) rotate(0deg);
-  }
-  /* Idle for first half */
-  40% {
-    transform: scale(1) rotate(0deg);
-  }
-  /* Shrink into spin */
-  50% {
-    transform: scale(0.6) rotate(180deg);
-  }
-  /* Spin out to full size */
-  60% {
-    transform: scale(1.05) rotate(360deg);
-  }
-  /* Settle */
-  65% {
-    transform: scale(1) rotate(360deg);
-  }
-  /* Stay idle until next cycle */
-  100% {
-    transform: scale(1) rotate(360deg);
-  }
-}
-
-.bolt-spin-scale {
-  animation: bolt-spin-scale 4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
-}
 
