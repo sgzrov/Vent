@@ -13,6 +13,11 @@ import { expandRedTeamTests } from "@voiceci/runner/executor";
 import { runLoadTestInProcess } from "../../../services/test-runner.js";
 import { buildFixPlan } from "./fix-plan.js";
 import { waitForRunEvent } from "../../../lib/run-subscribers.js";
+import {
+  RUN_TESTS_DESCRIPTION,
+  RUN_LOAD_TEST_DESCRIPTION,
+  GET_RUN_STATUS_DESCRIPTION,
+} from "../docs.js";
 
 function hashIdempotencyKey(raw: string): string {
   return createHash("sha256").update(raw).digest("hex");
@@ -31,7 +36,7 @@ export function registerActionTools(
   // --- Tool: voiceci_run_tests ---
   server.registerTool("voiceci_run_tests", {
     title: "Run Tests",
-    description: "Run infrastructure probes and conversation tests against a voice agent using a layered test architecture.\n\n**Layered model:**\n- Layer 1 (Infrastructure): 3 quick probes (audio_quality, latency, echo) that return raw metrics — no pass/fail. Configure via `infrastructure` key.\n- Layers 2-4 (Conversation): CallerLLM-driven conversations with optional `audio_actions` (interrupt, silence, inject_noise, split_sentence, noise_on_caller) injected at specific turns. Configure via `conversation_tests` key.\n\nRead `voiceci-config.json` from the project root and pass its contents as the `config` parameter. For already-deployed agents (SIP, WebRTC, platform adapters, or agent_url), this queues immediately. For local WebSocket agents with start_command, a relay command is returned.\n\nAfter getting the run_id, spawn subagents to monitor results via voiceci_get_run_status.",
+    description: RUN_TESTS_DESCRIPTION,
     inputSchema: {
       config: z
         .any()
@@ -269,7 +274,7 @@ export function registerActionTools(
   // --- Tool: voiceci_run_load_test ---
   server.registerTool("voiceci_run_load_test", {
     title: "Run Load Test",
-    description: "Run a load/stress test against an already-deployed voice agent. Sends N concurrent calls with a traffic pattern (ramp, spike, sustained, soak). Measures TTFB percentiles, error rates, and auto-detects breaking point. Returns a run_id immediately — then use voiceci_get_run_status to get results via long-polling (same as voiceci_run_tests). Only works with already-deployed agents (SIP, WebRTC, or websocket with agent_url).",
+    description: RUN_LOAD_TEST_DESCRIPTION,
     inputSchema: {
       adapter: AdapterTypeSchema.describe("Transport: websocket, sip, or webrtc."),
       agent_url: z.string().describe("URL of the already-deployed agent to test."),
@@ -375,7 +380,7 @@ export function registerActionTools(
   // --- Tool: voiceci_get_run_status ---
   server.registerTool("voiceci_get_run_status", {
     title: "Get Run Status",
-    description: "Get the current status and results of a test run. Blocks until new results arrive — call again immediately after each response.\n\nUse filters to scope results for subagent monitoring:\n- `test_type=infrastructure` + `test_name=audio_quality|latency|echo` — one subagent per probe\n- `test_type=conversation` + `test_name={name}` — one subagent per conversation test\n\nInfrastructure probes return raw metrics with status 'completed' or 'error' — no pass/fail.\n\nAfter all subagents return, call once without filters for the full summary.",
+    description: GET_RUN_STATUS_DESCRIPTION,
     inputSchema: {
       run_id: z.string().uuid().describe("The run ID returned by voiceci_run_tests."),
       last_completed: z.number().int().min(0).optional().describe("Number of completed tests (of the filtered type) from your last status check. Pass the `completed` value from the previous response."),

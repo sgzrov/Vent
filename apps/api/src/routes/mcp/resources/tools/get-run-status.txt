@@ -1,0 +1,9 @@
+Get the current status and results of a test run. Blocks until new results arrive — call again immediately after each response.
+
+Use filters to scope results for subagent monitoring:
+- `test_type=infrastructure` + `test_name=audio_quality|latency|echo` — one subagent per probe
+- `test_type=conversation` + `test_name={name}` — one subagent per conversation test
+
+Infrastructure probes return raw metrics with status 'completed' or 'error' — no pass/fail.
+
+After all subagents return, call once without filters for the full summary.
