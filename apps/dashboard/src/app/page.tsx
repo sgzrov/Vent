@@ -1,6 +1,5 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import Image from "next/image";
 import {
   withAuth,
   getSignInUrl,
@@ -8,6 +7,7 @@ import {
 } from "@workos-inc/authkit-nextjs";
 import { Button } from "@/components/ui/button";
 import { CopyCommandButton } from "@/components/copy-command-button";
+import { LightningBolt } from "@/components/lightning-bolt";
 
 export default async function LandingPage() {
   const { user } = await withAuth();
@@ -90,17 +90,7 @@ export default async function LandingPage() {
 
             {/* Right side - Lightning bolt */}
             <div className="flex items-center justify-center lg:justify-end">
-              <div className="relative">
-                <div className="bolt-glow absolute inset-0 rounded-full blur-3xl" />
-                <Image
-                  src="/lightning-bolt.png"
-                  alt="LightMCP Lightning Bolt"
-                  width={500}
-                  height={500}
-                  className="relative z-10 bolt-float drop-shadow-2xl"
-                  priority
-                />
-              </div>
+              <LightningBolt />
             </div>
           </div>
         </div>
