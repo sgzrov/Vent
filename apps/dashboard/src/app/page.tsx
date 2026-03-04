@@ -52,8 +52,13 @@ export default async function LandingPage() {
       <main className="relative z-10 flex-1 flex items-center">
         <div className="max-w-7xl mx-auto px-6 w-full">
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 lg:gap-16 items-center">
-            {/* Left side - Content */}
-            <div className="space-y-8">
+            {/* Left side - Lightning bolt */}
+            <div className="flex items-center justify-center lg:justify-start">
+              <LightningBolt />
+            </div>
+
+            {/* Right side - Content */}
+            <div className="space-y-8 order-first lg:order-last">
               <div>
                 <h1 className="text-5xl sm:text-6xl lg:text-7xl font-bold tracking-tight leading-[1.05]">
                   <span className="relative inline-block">
@@ -86,11 +91,6 @@ export default async function LandingPage() {
                   <Link href={signInUrl}>Log in</Link>
                 </Button>
               </div>
-            </div>
-
-            {/* Right side - Lightning bolt */}
-            <div className="flex items-center justify-center lg:justify-end">
-              <LightningBolt />
             </div>
           </div>
         </div>
