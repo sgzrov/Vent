@@ -1,12 +1,21 @@
 "use client";
 
 import { Card, CardContent } from "@/components/ui/card";
-import { AUDIO_TEST_REGISTRY } from "@/lib/audio-test-registry";
+import { AUDIO_TEST_REGISTRY, LEGACY_AUDIO_TEST_LABELS } from "@/lib/audio-test-registry";
 import { cn } from "@/lib/utils";
 import type { ScenarioResultRow, AudioTestResult, AudioTestName } from "@/lib/types";
 
 interface AudioMetricConclusionsProps {
   scenarios: ScenarioResultRow[];
+}
+
+const CURRENT_TEST_NAMES = new Set<string>(["audio_quality", "latency", "echo"]);
+
+function getTestLabel(testName: string): string {
+  if (CURRENT_TEST_NAMES.has(testName)) {
+    return AUDIO_TEST_REGISTRY[testName as AudioTestName]?.label ?? testName;
+  }
+  return LEGACY_AUDIO_TEST_LABELS[testName] ?? testName;
 }
 
 function formatMetricKey(key: string): string {
@@ -45,37 +54,50 @@ export function AudioMetricConclusions({
       <CardContent className="py-4">
         <div className="mb-3">
           <p className="text-[11px] text-muted-foreground uppercase tracking-wider">
-            Audio Metric Conclusions
+            Infrastructure Probe Results
           </p>
           <p className="text-xs text-muted-foreground mt-1">
-            Key metric outcomes from each audio test.
+            Key metric outcomes from each infrastructure probe.
           </p>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           {scenarios.map((scenario) => {
             const result = scenario.metrics_json as AudioTestResult;
-            const meta = AUDIO_TEST_REGISTRY[result.test_name as AudioTestName];
-            const label = meta?.label ?? result.test_name;
+            const label = getTestLabel(result.test_name);
             const highlights = pickHighlightMetrics(result);
-            const isPassed = result.status === "pass";
+            const isCompleted = result.status === "completed" ||
+              (result.status as string) === "pass";
+            const isLegacy = !CURRENT_TEST_NAMES.has(result.test_name);
 
             return (
               <div
                 key={scenario.id}
-                className="rounded-md border bg-background px-3 py-2.5"
+                className={cn(
+                  "rounded-md border bg-background px-3 py-2.5",
+                  isLegacy && "opacity-80"
+                )}
               >
                 <div className="flex items-center justify-between gap-2">
-                  <p className="text-sm">{label}</p>
+                  <div className="flex items-center gap-1.5">
+                    <p className="text-sm">{label}</p>
+                    {isLegacy && (
+                      <span className="text-[9px] text-muted-foreground/50 bg-muted rounded px-1 py-0.5">
+                        legacy
+                      </span>
+                    )}
+                  </div>
                   <span
                     className={cn(
                       "text-[11px] font-medium px-1.5 py-0.5 rounded",
-                      isPassed
+                      isCompleted
                         ? "text-emerald-700 dark:text-emerald-400 bg-emerald-500/10"
                         : "text-red-700 dark:text-red-400 bg-red-500/10"
                     )}
                   >
-                    {isPassed ? "Pass" : "Fail"}
+                    {isLegacy
+                      ? isCompleted ? "Pass" : "Fail"
+                      : isCompleted ? "Completed" : "Error"}
                   </span>
                 </div>
 

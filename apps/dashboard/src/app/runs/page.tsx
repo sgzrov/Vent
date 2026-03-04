@@ -16,14 +16,23 @@ const API_URL = "/backend";
 
 type DisplayStatus = "queued" | "running" | "all-pass" | "partial" | "all-fail";
 
+function getInfraStats(agg: RunAggregateV2) {
+  if (agg.infrastructure) return agg.infrastructure;
+  if (agg.audio_tests) {
+    return { total: agg.audio_tests.total, completed: agg.audio_tests.passed, errored: agg.audio_tests.failed };
+  }
+  return { total: 0, completed: 0, errored: 0 };
+}
+
 function getDisplayStatus(run: RunRow): DisplayStatus {
   if (run.status === "queued") return "queued";
   if (run.status === "running") return "running";
 
   const agg = run.aggregate_json;
   if (agg) {
-    const totalFailed = agg.audio_tests.failed + agg.conversation_tests.failed + (agg.load_tests?.failed ?? 0);
-    const totalPassed = agg.audio_tests.passed + agg.conversation_tests.passed + (agg.load_tests?.passed ?? 0);
+    const infra = getInfraStats(agg);
+    const totalFailed = infra.errored + agg.conversation_tests.failed + (agg.load_tests?.failed ?? 0);
+    const totalPassed = infra.completed + agg.conversation_tests.passed + (agg.load_tests?.passed ?? 0);
     if (totalFailed === 0) return "all-pass";
     if (totalPassed === 0) return "all-fail";
     return "partial";
@@ -68,7 +77,7 @@ function describeRun(run: RunRow): string {
     const parts: string[] = [];
     if (spec.audio_tests?.length)
       parts.push(
-        `${spec.audio_tests.length} audio test${spec.audio_tests.length > 1 ? "s" : ""}`
+        `${spec.audio_tests.length} infrastructure probe${spec.audio_tests.length > 1 ? "s" : ""}`
       );
     if (spec.conversation_tests?.length)
       parts.push(
@@ -82,10 +91,11 @@ function describeRun(run: RunRow): string {
   }
   if (run.aggregate_json) {
     const agg = run.aggregate_json;
+    const infra = getInfraStats(agg);
     const parts: string[] = [];
-    if (agg.audio_tests.total > 0)
+    if (infra.total > 0)
       parts.push(
-        `${agg.audio_tests.total} audio test${agg.audio_tests.total > 1 ? "s" : ""}`
+        `${infra.total} infrastructure probe${infra.total > 1 ? "s" : ""}`
       );
     if (agg.conversation_tests.total > 0)
       parts.push(
@@ -100,18 +110,19 @@ function describeRun(run: RunRow): string {
 
 function getIssues(agg: RunAggregateV2 | null): string | null {
   if (!agg) return null;
+  const infra = getInfraStats(agg);
   const parts: string[] = [];
-  if (agg.audio_tests.failed > 0)
+  if (infra.errored > 0)
     parts.push(
-      `${agg.audio_tests.failed} audio test${agg.audio_tests.failed > 1 ? "s" : ""}`
+      `${infra.errored} probe${infra.errored > 1 ? "s" : ""} errored`
     );
   if (agg.conversation_tests.failed > 0)
     parts.push(
-      `${agg.conversation_tests.failed} conversation${agg.conversation_tests.failed > 1 ? "s" : ""}`
+      `${agg.conversation_tests.failed} conversation${agg.conversation_tests.failed > 1 ? "s" : ""} failed`
     );
   if (agg.load_tests?.failed && agg.load_tests.failed > 0)
     parts.push("load test failed");
-  return parts.length > 0 ? parts.join(", ") + " failed" : null;
+  return parts.length > 0 ? parts.join(", ") : null;
 }
 
 /** Extract voice-specific metadata tags from the test spec */
@@ -190,7 +201,7 @@ function hasTestType(run: RunRow, type: TestTypeFilter): boolean {
   if (type === "audio") {
     return (
       (spec?.audio_tests?.length ?? 0) > 0 ||
-      (agg?.audio_tests.total ?? 0) > 0
+      (agg?.infrastructure?.total ?? agg?.audio_tests?.total ?? 0) > 0
     );
   }
   if (type === "conversation") {
@@ -257,7 +268,7 @@ function CategoryResult({
 
 const typeFilters: { value: TestTypeFilter; label: string }[] = [
   { value: "all", label: "All" },
-  { value: "audio", label: "Audio" },
+  { value: "audio", label: "Infrastructure" },
   { value: "conversation", label: "Conversations" },
   { value: "security", label: "Security" },
   { value: "load_test", label: "Load Test" },
@@ -403,7 +414,7 @@ export default function RunsPage() {
           <div className="hidden md:grid grid-cols-[6.5rem_1fr_5rem_5rem_1fr_6.5rem] gap-x-4 items-center px-5 py-3 text-[10px] font-medium text-muted-foreground/55 uppercase tracking-[0.12em] border-b bg-muted">
             <span>Status</span>
             <span>Run</span>
-            <span>Audio</span>
+            <span>Infra</span>
             <span>Conv</span>
             <span>Issues</span>
             <span className="text-right">When</span>
@@ -441,10 +452,10 @@ export default function RunsPage() {
                     <RunMeta spec={run.test_spec_json} />
                   </div>
 
-                  {/* Audio results */}
+                  {/* Infrastructure results */}
                   <CategoryResult
-                    passed={agg?.audio_tests.passed ?? 0}
-                    total={agg?.audio_tests.total ?? 0}
+                    passed={agg ? getInfraStats(agg).completed : 0}
+                    total={agg ? getInfraStats(agg).total : 0}
                   />
 
                   {/* Conversation results */}
@@ -510,14 +521,14 @@ export default function RunsPage() {
                   </p>
                   <RunMeta spec={run.test_spec_json} />
                   <div className="flex items-center gap-5 mt-2">
-                    {agg && agg.audio_tests.total > 0 && (
+                    {agg && getInfraStats(agg).total > 0 && (
                       <div className="flex items-center gap-2">
                         <span className="text-xs text-muted-foreground">
-                          Audio
+                          Infra
                         </span>
                         <CategoryResult
-                          passed={agg.audio_tests.passed}
-                          total={agg.audio_tests.total}
+                          passed={getInfraStats(agg).completed}
+                          total={getInfraStats(agg).total}
                         />
                       </div>
                     )}

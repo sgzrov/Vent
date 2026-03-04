@@ -3,7 +3,6 @@ import { createDb, schema, type Database } from "@voiceci/db";
 import { RUNNER_CALLBACK_HEADER } from "@voiceci/shared";
 import type {
   TestSpec,
-  AudioTestThresholds,
   AdapterType,
   VoiceConfig,
   PlatformConfig,
@@ -49,7 +48,6 @@ interface RunJob {
   test_spec?: Record<string, unknown>;
   target_phone_number?: string;
   voice_config?: Record<string, unknown>;
-  audio_test_thresholds?: Record<string, unknown> | null;
   start_command?: string;
   health_endpoint?: string;
   agent_url?: string;
@@ -75,9 +73,6 @@ async function executeRemoteRun(db: Database, job: RunJob): Promise<void> {
     voiceConfig = (job.voice_config as { voice?: VoiceConfig }).voice ?? undefined;
   }
 
-  // Parse audio test thresholds
-  const audioTestThresholds = job.audio_test_thresholds as AudioTestThresholds | undefined;
-
   const channelConfig: AudioChannelConfig = {
     adapter: adapterType,
     agentUrl,
@@ -89,21 +84,21 @@ async function executeRemoteRun(db: Database, job: RunJob): Promise<void> {
   const testSpec = job.test_spec as TestSpec;
   const redTeamExpanded = testSpec.red_team ? expandRedTeamTests(testSpec.red_team).length : 0;
   const totalTests =
-    (testSpec.audio_tests?.length ?? 0) + (testSpec.conversation_tests?.length ?? 0) + redTeamExpanded;
+    (testSpec.infrastructure ? 3 : 0) + (testSpec.conversation_tests?.length ?? 0) + redTeamExpanded;
   let completedTests = 0;
 
   try {
-    const { status, audioResults, conversationResults, aggregate } = await executeTests({
+    const { status, infrastructureResults, conversationResults, aggregate } = await executeTests({
       testSpec,
       channelConfig,
-      audioTestThresholds,
       onTestComplete: async (result) => {
         completedTests++;
-        const isAudio = "test_name" in result;
-        const testName = isAudio
+        const isInfrastructure = "test_name" in result;
+        const testName = isInfrastructure
           ? (result as { test_name: string }).test_name
           : (result as { name?: string }).name ?? "conversation";
-        const testType = isAudio ? "audio" : "conversation";
+        // DB stores "audio" for infrastructure probes (legacy enum value)
+        const dbTestType = isInfrastructure ? "audio" as const : "conversation" as const;
 
         // Insert partial result directly (worker has DB access)
         try {
@@ -111,15 +106,16 @@ async function executeRemoteRun(db: Database, job: RunJob): Promise<void> {
             run_id: job.run_id,
             name: testName,
             status: result.status,
-            test_type: testType,
+            test_type: dbTestType,
             metrics_json: result as unknown as Record<string, unknown>,
-            trace_json: isAudio ? [] : (result as unknown as { transcript?: unknown }).transcript ?? [],
+            trace_json: isInfrastructure ? [] : (result as unknown as { transcript?: unknown }).transcript ?? [],
           });
         } catch {
           // Best-effort
         }
 
         // Notify API for SSE/MCP push (lightweight, no result to avoid double-insert)
+        const eventTestType = isInfrastructure ? "infrastructure" : "conversation";
         void fetch(`${apiUrl}/internal/test-progress`, {
           method: "POST",
           headers: {
@@ -130,7 +126,7 @@ async function executeRemoteRun(db: Database, job: RunJob): Promise<void> {
             run_id: job.run_id,
             completed: completedTests,
             total: totalTests,
-            test_type: testType,
+            test_type: eventTestType,
             test_name: testName,
             status: result.status,
             duration_ms: result.duration_ms,
@@ -149,7 +145,7 @@ async function executeRemoteRun(db: Database, job: RunJob): Promise<void> {
       body: JSON.stringify({
         run_id: job.run_id,
         status,
-        audio_results: audioResults,
+        infrastructure_results: infrastructureResults,
         conversation_results: conversationResults,
         aggregate,
       }),
@@ -196,35 +192,36 @@ async function executeRelayRun(db: Database, job: RunJob): Promise<void> {
   const testSpec = job.test_spec as TestSpec;
   const redTeamExpanded = testSpec.red_team ? expandRedTeamTests(testSpec.red_team).length : 0;
   const totalTests =
-    (testSpec.audio_tests?.length ?? 0) + (testSpec.conversation_tests?.length ?? 0) + redTeamExpanded;
+    (testSpec.infrastructure ? 3 : 0) + (testSpec.conversation_tests?.length ?? 0) + redTeamExpanded;
   let completedTests = 0;
 
   try {
-    const { status, audioResults, conversationResults, aggregate } = await executeTests({
+    const { status, infrastructureResults, conversationResults, aggregate } = await executeTests({
       testSpec,
       channelConfig,
-      audioTestThresholds: job.audio_test_thresholds as AudioTestThresholds | undefined,
       onTestComplete: async (result) => {
         completedTests++;
-        const isAudio = "test_name" in result;
-        const testName = isAudio
+        const isInfrastructure = "test_name" in result;
+        const testName = isInfrastructure
           ? (result as { test_name: string }).test_name
           : (result as { name?: string }).name ?? "conversation";
-        const testType = isAudio ? "audio" : "conversation";
+        // DB stores "audio" for infrastructure probes (legacy enum value)
+        const dbTestType = isInfrastructure ? "audio" as const : "conversation" as const;
 
         try {
           await db.insert(schema.scenarioResults).values({
             run_id: job.run_id,
             name: testName,
             status: result.status,
-            test_type: testType,
+            test_type: dbTestType,
             metrics_json: result as unknown as Record<string, unknown>,
-            trace_json: isAudio ? [] : (result as unknown as { transcript?: unknown }).transcript ?? [],
+            trace_json: isInfrastructure ? [] : (result as unknown as { transcript?: unknown }).transcript ?? [],
           });
         } catch {
           // Best-effort
         }
 
+        const eventTestType = isInfrastructure ? "infrastructure" : "conversation";
         void fetch(`${apiUrl}/internal/test-progress`, {
           method: "POST",
           headers: {
@@ -235,7 +232,7 @@ async function executeRelayRun(db: Database, job: RunJob): Promise<void> {
             run_id: job.run_id,
             completed: completedTests,
             total: totalTests,
-            test_type: testType,
+            test_type: eventTestType,
             test_name: testName,
             status: result.status,
             duration_ms: result.duration_ms,
@@ -263,7 +260,7 @@ async function executeRelayRun(db: Database, job: RunJob): Promise<void> {
       body: JSON.stringify({
         run_id: job.run_id,
         status,
-        audio_results: audioResults,
+        infrastructure_results: infrastructureResults,
         conversation_results: conversationResults,
         aggregate,
       }),

@@ -28,8 +28,8 @@ export interface LoadTestInProcessOpts {
 
 /**
  * Run load test in-process with full persistence.
- * Creates a run record, broadcasts SSE events, and stores final results.
- * Returns the run ID immediately — the test executes in the background.
+ * Creates a run record, fires the test in the background, and returns the run ID immediately.
+ * Results are persisted when the test completes and streamed via SSE + long-poll.
  */
 export async function runLoadTestInProcess(
   opts: LoadTestInProcessOpts,
@@ -75,13 +75,13 @@ export async function runLoadTestInProcess(
     metadata_json: { pattern: opts.pattern, target_concurrency: opts.targetConcurrency },
   });
 
-  // Execute load test in background
+  // Execute load test in background — non-blocking
   const promise = (async () => {
     try {
       const result = await runLoadTest({
         ...opts,
         onTimepoint: (tp: LoadTestTimepoint) => {
-          // Broadcast via SSE for live clients (don't persist to avoid bloat)
+          // Broadcast via SSE for live dashboard clients
           broadcast(runId, {
             run_id: runId,
             event_type: "load_test_timepoint",
@@ -93,7 +93,7 @@ export async function runLoadTestInProcess(
 
       // Persist final result
       const aggregate: RunAggregateV2 = {
-        audio_tests: { total: 0, passed: 0, failed: 0 },
+        infrastructure: { total: 0, completed: 0, errored: 0 },
         conversation_tests: { total: 0, passed: 0, failed: 0 },
         load_tests: {
           total: 1,

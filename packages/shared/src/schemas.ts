@@ -1,11 +1,46 @@
 import { z } from "zod";
-import { AUDIO_TEST_NAMES, RED_TEAM_ATTACKS } from "./types.js";
+import { AUDIO_TEST_NAMES, AUDIO_ACTION_TYPES, RED_TEAM_ATTACKS } from "./types.js";
 
 // ============================================================
 // V2 Schemas — Dynamic voice agent testing
 // ============================================================
 
 export const AudioTestNameSchema = z.enum(AUDIO_TEST_NAMES);
+
+export const AudioActionSchema = z.object({
+  at_turn: z.number().int().min(0),
+  action: z.enum(AUDIO_ACTION_TYPES),
+  prompt: z.string().optional(),
+  duration_ms: z.number().int().min(1000).max(30000).optional(),
+  noise_type: z.enum(["babble", "white", "pink"]).optional(),
+  snr_db: z.number().min(0).max(40).optional(),
+  split: z.object({
+    part_a: z.string().min(1),
+    part_b: z.string().min(1),
+    pause_ms: z.number().int().min(500).max(5000),
+  }).optional(),
+});
+
+export const AudioActionResultSchema = z.object({
+  at_turn: z.number().int().min(0),
+  action: z.string(),
+  metrics: z.record(z.union([z.number(), z.boolean()])),
+  transcriptions: z.record(z.union([z.string(), z.null()])).optional(),
+});
+
+export const InfrastructureProbeConfigSchema = z.object({
+  prompt: z.string().optional(),
+  audio_quality: z.object({ prompt: z.string().optional() }).optional(),
+  latency: z.object({
+    prompt: z.string().optional(),
+    caller_prompt: z.string().optional(),
+    turns: z.number().int().min(3).max(20).optional(),
+  }).optional(),
+  echo: z.object({
+    prompt: z.string().optional(),
+    silence_duration_ms: z.number().int().min(5000).max(60000).optional(),
+  }).optional(),
+}).optional();
 
 export const CallerPersonaSchema = z.object({
   pace: z.enum(["slow", "normal", "fast"]).optional(),
@@ -27,6 +62,7 @@ export const ConversationTestSpecSchema = z.object({
   tool_call_eval: z.array(z.string().min(1)).optional(),
   silence_threshold_ms: z.number().int().min(200).max(10000).optional(),
   persona: CallerPersonaSchema,
+  audio_actions: z.array(AudioActionSchema).optional(),
   prosody: z.boolean().optional(),
 });
 
@@ -34,16 +70,16 @@ export const RedTeamAttackSchema = z.enum(RED_TEAM_ATTACKS);
 
 export const TestSpecSchema = z
   .object({
-    audio_tests: z.array(AudioTestNameSchema).optional(),
+    infrastructure: InfrastructureProbeConfigSchema,
     conversation_tests: z.array(ConversationTestSpecSchema).optional(),
     red_team: z.array(RedTeamAttackSchema).optional(),
   })
   .refine(
     (d) =>
-      (d.audio_tests?.length ?? 0) +
+      (d.infrastructure ? 1 : 0) +
       (d.conversation_tests?.length ?? 0) +
       (d.red_team?.length ?? 0) > 0,
-    { message: "At least one audio_test, conversation_test, or red_team attack is required" }
+    { message: "At least one of infrastructure, conversation_tests, or red_team is required" }
   );
 
 export const AdapterTypeSchema = z.enum(["websocket", "sip", "webrtc", "vapi", "retell", "elevenlabs", "bland"]);
@@ -93,31 +129,6 @@ export const AudioAnalysisWarningSchema = z.object({
   message: z.string(),
 });
 
-export const AudioTestThresholdsSchema = z.object({
-  echo: z.object({ loop_threshold: z.number().int().min(1).optional() }).optional(),
-  ttfb: z.object({
-    p95_threshold_ms: z.number().min(100).optional(),
-    p95_complex_threshold_ms: z.number().min(100).optional(),
-    p95_ttfw_threshold_ms: z.number().min(100).optional(),
-  }).optional(),
-  barge_in: z.object({ stop_threshold_ms: z.number().min(100).optional() }).optional(),
-  silence_handling: z.object({ silence_duration_ms: z.number().min(1000).optional() }).optional(),
-  response_completeness: z.object({ min_word_count: z.number().int().min(1).optional() }).optional(),
-  noise_resilience: z.object({
-    min_pass_snr_db: z.number().min(0).max(40).optional(),
-    max_ttfb_degradation_ms: z.number().min(0).optional(),
-  }).optional(),
-  endpointing: z.object({
-    pause_duration_ms: z.number().min(500).max(5000).optional(),
-    min_pass_ratio: z.number().min(0).max(1).optional(),
-  }).optional(),
-  audio_quality: z.object({
-    max_clipping_ratio: z.number().min(0).max(1).optional(),
-    min_duration_ms: z.number().min(0).optional(),
-    min_energy_consistency: z.number().min(0).max(1).optional(),
-  }).optional(),
-  audio_analysis_grade: AudioAnalysisGradeThresholdsSchema,
-}).optional();
 
 export const TestDiagnosticsSchema = z.object({
   error_origin: z.enum(["platform", "agent"]).nullable(),
@@ -282,8 +293,9 @@ export const ConversationMetricsSchema = z.object({
 
 export const AudioTestResultSchema = z.object({
   test_name: AudioTestNameSchema,
-  status: z.enum(["pass", "fail"]),
-  metrics: z.record(z.union([z.number(), z.boolean()])),
+  status: z.enum(["completed", "error"]),
+  metrics: z.record(z.union([z.number(), z.boolean(), z.array(z.number())])),
+  transcriptions: z.record(z.union([z.string(), z.array(z.string()), z.null()])),
   duration_ms: z.number(),
   error: z.string().optional(),
   diagnostics: TestDiagnosticsSchema.optional(),
@@ -297,6 +309,7 @@ export const ConversationTestResultSchema = z.object({
   eval_results: z.array(EvalResultSchema),
   tool_call_eval_results: z.array(EvalResultSchema).optional(),
   observed_tool_calls: z.array(ObservedToolCallSchema).optional(),
+  audio_action_results: z.array(AudioActionResultSchema).optional(),
   duration_ms: z.number(),
   metrics: ConversationMetricsSchema,
   error: z.string().optional(),
@@ -304,10 +317,10 @@ export const ConversationTestResultSchema = z.object({
 });
 
 export const RunAggregateV2Schema = z.object({
-  audio_tests: z.object({
+  infrastructure: z.object({
     total: z.number(),
-    passed: z.number(),
-    failed: z.number(),
+    completed: z.number(),
+    errored: z.number(),
   }),
   conversation_tests: z.object({
     total: z.number(),
@@ -325,7 +338,7 @@ export const RunAggregateV2Schema = z.object({
 export const RunnerCallbackV2Schema = z.object({
   run_id: z.string().uuid(),
   status: z.enum(["pass", "fail"]),
-  audio_results: z.array(AudioTestResultSchema),
+  infrastructure_results: z.array(AudioTestResultSchema),
   conversation_results: z.array(ConversationTestResultSchema),
   aggregate: RunAggregateV2Schema,
   error_text: z.string().optional(),

@@ -24,7 +24,7 @@ function describeRunDetail(run: RunDetail): string {
     const parts: string[] = [];
     if (spec.audio_tests?.length)
       parts.push(
-        `${spec.audio_tests.length} audio test${spec.audio_tests.length > 1 ? "s" : ""}`
+        `${spec.audio_tests.length} infrastructure probe${spec.audio_tests.length > 1 ? "s" : ""}`
       );
     if (spec.conversation_tests?.length)
       parts.push(
@@ -39,9 +39,10 @@ function describeRunDetail(run: RunDetail): string {
   const agg = run.aggregate_json as RunAggregateV2 | null;
   if (agg) {
     const parts: string[] = [];
-    if (agg.audio_tests.total > 0)
+    const infraTotal = agg.infrastructure?.total ?? agg.audio_tests?.total ?? 0;
+    if (infraTotal > 0)
       parts.push(
-        `${agg.audio_tests.total} audio test${agg.audio_tests.total > 1 ? "s" : ""}`
+        `${infraTotal} infrastructure probe${infraTotal > 1 ? "s" : ""}`
       );
     if (agg.conversation_tests.total > 0)
       parts.push(
@@ -145,13 +146,14 @@ export function RunDetailView({
   }
 
   if (audioScenarios.length > 0) {
-    const allPassed = audioScenarios.every((s) => s.status === "pass");
-    const allFailed = audioScenarios.every((s) => s.status === "fail");
+    const hasErrors = audioScenarios.some(
+      (s) => s.status === "fail" || s.status === "error"
+    );
     tabs.push({
       id: "audio",
-      label: "Audio",
+      label: "Infrastructure",
       count: audioScenarios.length,
-      status: allPassed ? "pass" : allFailed ? "fail" : "mixed",
+      status: hasErrors ? "fail" : "pass",
     });
   }
 

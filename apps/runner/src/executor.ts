@@ -1,8 +1,6 @@
 /**
- * Extracted test execution logic — can be called from the Fly Machine entrypoint
- * OR directly from the API process (for already-deployed agents).
- *
- * All tests run in parallel with a concurrency limiter.
+ * Test execution logic — Layer 1 infrastructure probes run first,
+ * then conversation tests run in parallel with a concurrency limiter.
  * Each test creates its own AudioChannel for isolation.
  */
 
@@ -11,11 +9,12 @@ import type {
   AudioTestResult,
   ConversationTestResult,
   RunAggregateV2,
-  AudioTestThresholds,
-  TestDiagnostics,
+  InfrastructureProbeConfig,
+  AudioTestName,
+  AUDIO_TEST_NAMES,
 } from "@voiceci/shared";
 import { createAudioChannel, type AudioChannelConfig } from "@voiceci/adapters";
-import { runAudioTest } from "./audio-tests/index.js";
+import { runInfrastructureProbe } from "./audio-tests/index.js";
 import { runConversationTest, expandRedTeamTests } from "./conversation/index.js";
 
 // Re-export for consumers that import from @voiceci/runner/executor
@@ -23,13 +22,12 @@ export { expandRedTeamTests };
 
 export interface TestStartInfo {
   test_name: string;
-  test_type: "audio" | "conversation";
+  test_type: "infrastructure" | "conversation";
 }
 
 export interface ExecuteTestsOpts {
   testSpec: TestSpec;
   channelConfig: AudioChannelConfig;
-  audioTestThresholds?: AudioTestThresholds;
   concurrencyLimit?: number;
   onTestStart?: (info: TestStartInfo) => void;
   onTestComplete?: (result: AudioTestResult | ConversationTestResult) => void;
@@ -37,7 +35,7 @@ export interface ExecuteTestsOpts {
 
 export interface ExecuteTestsResult {
   status: "pass" | "fail";
-  audioResults: AudioTestResult[];
+  infrastructureResults: AudioTestResult[];
   conversationResults: ConversationTestResult[];
   aggregate: RunAggregateV2;
 }
@@ -64,70 +62,83 @@ async function runWithConcurrency<T>(
   return results;
 }
 
+/** All Layer 1 probe names */
+const PROBE_NAMES: AudioTestName[] = ["audio_quality", "latency", "echo"];
+
 export async function executeTests(opts: ExecuteTestsOpts): Promise<ExecuteTestsResult> {
   const {
     testSpec,
     channelConfig,
-    audioTestThresholds,
     concurrencyLimit = ["sip", "retell", "bland"].includes(channelConfig.adapter) ? 5 : 10,
     onTestStart,
     onTestComplete,
   } = opts;
 
-  // Expand red_team attacks into conversation tests
-  const redTeamTests = testSpec.red_team ? expandRedTeamTests(testSpec.red_team) : [];
-  const allConversationTests = [...(testSpec.conversation_tests ?? []), ...redTeamTests];
+  // =====================================================
+  // Phase 1: Layer 1 — Infrastructure probes (sequential, single channel)
+  // =====================================================
+  const infrastructureResults: AudioTestResult[] = [];
 
-  const audioTasks = (testSpec.audio_tests ?? []).map((testName) => async () => {
-    onTestStart?.({ test_name: testName, test_type: "audio" });
-    console.log(`  Audio test: ${testName}`);
+  if (testSpec.infrastructure) {
+    console.log("Running Layer 1 infrastructure probes...");
     const channel = createAudioChannel(channelConfig);
-    const start = Date.now();
     try {
       await channel.connect();
-      const result = await runAudioTest(testName, channel, audioTestThresholds);
-      console.log(`    ${testName}: ${result.status} (${result.duration_ms}ms)`);
-      console.log(JSON.stringify({
-        event: "test_complete", test_name: testName, test_type: "audio",
-        status: result.status, duration_ms: result.duration_ms,
-        error_origin: result.diagnostics?.error_origin ?? null,
-        error_detail: result.diagnostics?.error_detail ?? null,
-        channel: { bytes_sent: channel.stats.bytesSent, bytes_received: channel.stats.bytesReceived, errors: channel.stats.errorEvents },
-      }));
-      onTestComplete?.(result);
-      return result;
+
+      for (const probeName of PROBE_NAMES) {
+        onTestStart?.({ test_name: probeName, test_type: "infrastructure" });
+        console.log(`  Infrastructure: ${probeName}`);
+
+        const result = await runInfrastructureProbe(probeName, channel, testSpec.infrastructure);
+        console.log(`    ${probeName}: ${result.status} (${result.duration_ms}ms)`);
+        console.log(JSON.stringify({
+          event: "test_complete", test_name: probeName, test_type: "infrastructure",
+          status: result.status, duration_ms: result.duration_ms,
+          error_origin: result.diagnostics?.error_origin ?? null,
+          error_detail: result.diagnostics?.error_detail ?? null,
+          channel: { bytes_sent: channel.stats.bytesSent, bytes_received: channel.stats.bytesReceived, errors: channel.stats.errorEvents },
+        }));
+        onTestComplete?.(result);
+        infrastructureResults.push(result);
+      }
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
-      console.error(`    ${testName}: error — ${errorMsg}`);
-      const result: AudioTestResult = {
-        test_name: testName,
-        status: "fail",
-        metrics: {},
-        duration_ms: Date.now() - start,
-        error: errorMsg,
-        diagnostics: {
-          error_origin: "platform",
-          error_detail: errorMsg,
-          timing: { channel_connect_ms: channel.stats.connectLatencyMs },
-          channel: {
-            connected: channel.connected,
-            error_events: channel.stats.errorEvents,
-            audio_bytes_sent: channel.stats.bytesSent,
-            audio_bytes_received: channel.stats.bytesReceived,
+      console.error(`  Infrastructure probe error: ${errorMsg}`);
+      // Create error results for remaining probes
+      for (const probeName of PROBE_NAMES) {
+        if (infrastructureResults.some((r) => r.test_name === probeName)) continue;
+        const result: AudioTestResult = {
+          test_name: probeName,
+          status: "error",
+          metrics: {},
+          transcriptions: {},
+          duration_ms: 0,
+          error: errorMsg,
+          diagnostics: {
+            error_origin: "platform",
+            error_detail: errorMsg,
+            timing: { channel_connect_ms: channel.stats.connectLatencyMs },
+            channel: {
+              connected: channel.connected,
+              error_events: channel.stats.errorEvents,
+              audio_bytes_sent: channel.stats.bytesSent,
+              audio_bytes_received: channel.stats.bytesReceived,
+            },
           },
-        },
-      };
-      console.log(JSON.stringify({
-        event: "test_complete", test_name: testName, test_type: "audio",
-        status: "fail", duration_ms: result.duration_ms,
-        error_origin: "platform", error_detail: errorMsg,
-      }));
-      onTestComplete?.(result);
-      return result;
+        };
+        onTestComplete?.(result);
+        infrastructureResults.push(result);
+      }
     } finally {
       await channel.disconnect().catch(() => {});
     }
-  });
+  }
+
+  // =====================================================
+  // Phase 2: Layers 2-4 — Conversation tests (concurrent)
+  // =====================================================
+  const redTeamTests = testSpec.red_team ? expandRedTeamTests(testSpec.red_team) : [];
+  const allConversationTests = [...(testSpec.conversation_tests ?? []), ...redTeamTests];
 
   const conversationTasks = allConversationTests.map((spec) => async () => {
     const testName = spec.name ?? `conversation:${spec.caller_prompt.slice(0, 50)}`;
@@ -183,48 +194,38 @@ export async function executeTests(opts: ExecuteTestsOpts): Promise<ExecuteTests
     }
   });
 
-  const totalTests = audioTasks.length + conversationTasks.length;
-  console.log(`Running ${totalTests} tests in parallel (concurrency: ${concurrencyLimit})...`);
+  if (conversationTasks.length > 0) {
+    console.log(`Running ${conversationTasks.length} conversation tests (concurrency: ${concurrencyLimit})...`);
+  }
 
-  // Merge into a single pool so the concurrency limit is truly shared
-  type TaggedResult =
-    | { type: "audio"; result: AudioTestResult }
-    | { type: "conversation"; result: ConversationTestResult };
+  const conversationResults = conversationTasks.length > 0
+    ? await runWithConcurrency(conversationTasks, concurrencyLimit)
+    : [];
 
-  const allTasks: (() => Promise<TaggedResult>)[] = [
-    ...audioTasks.map((task) => async (): Promise<TaggedResult> => ({ type: "audio", result: await task() })),
-    ...conversationTasks.map((task) => async (): Promise<TaggedResult> => ({ type: "conversation", result: await task() })),
-  ];
-
-  const allResults = await runWithConcurrency(allTasks, concurrencyLimit);
-
-  const audioResults = allResults
-    .filter((r): r is Extract<TaggedResult, { type: "audio" }> => r.type === "audio")
-    .map((r) => r.result);
-  const conversationResults = allResults
-    .filter((r): r is Extract<TaggedResult, { type: "conversation" }> => r.type === "conversation")
-    .map((r) => r.result);
-
-  const audioPassed = audioResults.filter((r) => r.status === "pass").length;
-  const audioFailed = audioResults.filter((r) => r.status === "fail").length;
+  // =====================================================
+  // Aggregate results
+  // =====================================================
+  const infraCompleted = infrastructureResults.filter((r) => r.status === "completed").length;
+  const infraErrored = infrastructureResults.filter((r) => r.status === "error").length;
   const convPassed = conversationResults.filter((r) => r.status === "pass").length;
   const convFailed = conversationResults.filter((r) => r.status === "fail").length;
 
   const totalDurationMs =
-    audioResults.reduce((sum, r) => sum + r.duration_ms, 0) +
+    infrastructureResults.reduce((sum, r) => sum + r.duration_ms, 0) +
     conversationResults.reduce((sum, r) => sum + r.duration_ms, 0);
 
   const aggregate: RunAggregateV2 = {
-    audio_tests: { total: audioResults.length, passed: audioPassed, failed: audioFailed },
+    infrastructure: { total: infrastructureResults.length, completed: infraCompleted, errored: infraErrored },
     conversation_tests: { total: conversationResults.length, passed: convPassed, failed: convFailed },
     total_duration_ms: totalDurationMs,
   };
 
-  const status = audioFailed + convFailed === 0 ? "pass" : "fail";
+  // Status: fail if any conversation test failed (infrastructure doesn't affect pass/fail)
+  const status = convFailed === 0 ? "pass" : "fail";
 
   console.log(
-    `Run complete: ${status} (audio: ${audioPassed}/${audioResults.length}, conversation: ${convPassed}/${conversationResults.length})`,
+    `Run complete: ${status} (infrastructure: ${infraCompleted}/${infrastructureResults.length}, conversation: ${convPassed}/${conversationResults.length})`,
   );
 
-  return { status, audioResults, conversationResults, aggregate };
+  return { status, infrastructureResults, conversationResults, aggregate };
 }
