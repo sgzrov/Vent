@@ -1,257 +1,370 @@
 "use client";
 
+import { useEffect, useRef, useCallback } from "react";
+
 export function LightningBolt() {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const frameRef = useRef<number>(0);
+
+  const draw = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d")!;
+    const W = canvas.width;
+    const H = canvas.height;
+
+    // Lightning state
+    interface Bolt {
+      segments: { x: number; y: number }[];
+      progress: number; // 0-1 how far drawn
+      opacity: number;
+      width: number;
+      phase: "strike" | "hold" | "fade";
+      holdTime: number;
+      fadeTime: number;
+      branches: Branch[];
+      color: string;
+    }
+
+    interface Branch {
+      segments: { x: number; y: number }[];
+      startIndex: number;
+      progress: number;
+      opacity: number;
+      width: number;
+    }
+
+    function generateBoltPath(
+      startX: number,
+      startY: number,
+      endY: number,
+      jag: number,
+      segments: number
+    ): { x: number; y: number }[] {
+      const points: { x: number; y: number }[] = [{ x: startX, y: startY }];
+      const stepY = (endY - startY) / segments;
+      let x = startX;
+
+      for (let i = 1; i <= segments; i++) {
+        const isLast = i === segments;
+        x += (Math.random() - 0.5) * jag * 2;
+        // Keep within bounds
+        x = Math.max(W * 0.2, Math.min(W * 0.8, x));
+        points.push({
+          x: isLast ? startX + (Math.random() - 0.5) * 30 : x,
+          y: startY + stepY * i,
+        });
+      }
+      return points;
+    }
+
+    function generateBranch(
+      parentSegments: { x: number; y: number }[],
+      startIdx: number,
+      direction: number
+    ): { x: number; y: number }[] {
+      const start = parentSegments[startIdx];
+      if (!start) return [];
+      const points: { x: number; y: number }[] = [{ x: start.x, y: start.y }];
+      const len = 3 + Math.floor(Math.random() * 4);
+      let x = start.x;
+      let y = start.y;
+      for (let i = 0; i < len; i++) {
+        x += direction * (15 + Math.random() * 25);
+        y += 15 + Math.random() * 20;
+        points.push({ x, y });
+      }
+      return points;
+    }
+
+    // State management
+    let bolts: Bolt[] = [];
+    let timer = 0;
+    let nextStrikeAt = 0;
+    const sparkParticles: {
+      x: number;
+      y: number;
+      vx: number;
+      vy: number;
+      life: number;
+      maxLife: number;
+      size: number;
+    }[] = [];
+
+    function createBolt(): Bolt {
+      const startX = W * 0.35 + Math.random() * W * 0.3;
+      const segments = generateBoltPath(startX, -10, H + 10, 45, 14);
+      const branches: Branch[] = [];
+
+      // Add 2-4 branches
+      const branchCount = 2 + Math.floor(Math.random() * 3);
+      for (let i = 0; i < branchCount; i++) {
+        const idx = 2 + Math.floor(Math.random() * 8);
+        const dir = Math.random() > 0.5 ? 1 : -1;
+        branches.push({
+          segments: generateBranch(segments, idx, dir),
+          startIndex: idx,
+          progress: 0,
+          opacity: 0.6 + Math.random() * 0.3,
+          width: 1 + Math.random() * 1.5,
+        });
+      }
+
+      return {
+        segments,
+        progress: 0,
+        opacity: 1,
+        width: 2.5 + Math.random() * 1.5,
+        phase: "strike",
+        holdTime: 0,
+        fadeTime: 0,
+        branches,
+        color: Math.random() > 0.3 ? "#FFD93D" : "#FFFFFF",
+      };
+    }
+
+    function drawBoltPath(
+      ctx: CanvasRenderingContext2D,
+      segments: { x: number; y: number }[],
+      progress: number,
+      width: number,
+      opacity: number,
+      color: string
+    ) {
+      const count = Math.floor(segments.length * progress);
+      if (count < 2) return;
+
+      // Outer glow
+      ctx.save();
+      ctx.globalAlpha = opacity * 0.4;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = width + 12;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.shadowColor = color;
+      ctx.shadowBlur = 30;
+      ctx.beginPath();
+      ctx.moveTo(segments[0].x, segments[0].y);
+      for (let i = 1; i < count; i++) {
+        ctx.lineTo(segments[i].x, segments[i].y);
+      }
+      ctx.stroke();
+      ctx.restore();
+
+      // Mid glow
+      ctx.save();
+      ctx.globalAlpha = opacity * 0.6;
+      ctx.strokeStyle = "#FFF3B0";
+      ctx.lineWidth = width + 4;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.shadowColor = "#FFD93D";
+      ctx.shadowBlur = 15;
+      ctx.beginPath();
+      ctx.moveTo(segments[0].x, segments[0].y);
+      for (let i = 1; i < count; i++) {
+        ctx.lineTo(segments[i].x, segments[i].y);
+      }
+      ctx.stroke();
+      ctx.restore();
+
+      // Core white
+      ctx.save();
+      ctx.globalAlpha = opacity;
+      ctx.strokeStyle = "#FFFFFF";
+      ctx.lineWidth = width;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.beginPath();
+      ctx.moveTo(segments[0].x, segments[0].y);
+      for (let i = 1; i < count; i++) {
+        ctx.lineTo(segments[i].x, segments[i].y);
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    function spawnSparks(x: number, y: number, count: number) {
+      for (let i = 0; i < count; i++) {
+        const angle = Math.random() * Math.PI * 2;
+        const speed = 1 + Math.random() * 4;
+        sparkParticles.push({
+          x,
+          y,
+          vx: Math.cos(angle) * speed,
+          vy: Math.sin(angle) * speed - 2,
+          life: 1,
+          maxLife: 0.3 + Math.random() * 0.5,
+          size: 1 + Math.random() * 2.5,
+        });
+      }
+    }
+
+    // Animation loop
+    let lastTime = 0;
+    function animate(time: number) {
+      const dt = Math.min((time - lastTime) / 1000, 0.05);
+      lastTime = time;
+      timer += dt;
+
+      ctx.clearRect(0, 0, W, H);
+
+      // Ambient glow behind everything
+      const ambientGrad = ctx.createRadialGradient(
+        W * 0.5, H * 0.4, 0,
+        W * 0.5, H * 0.4, W * 0.45
+      );
+      const ambientPulse = 0.03 + Math.sin(timer * 1.5) * 0.015;
+      ambientGrad.addColorStop(0, `rgba(255, 217, 61, ${ambientPulse})`);
+      ambientGrad.addColorStop(1, "rgba(255, 217, 61, 0)");
+      ctx.fillStyle = ambientGrad;
+      ctx.fillRect(0, 0, W, H);
+
+      // Trigger new strikes
+      if (timer >= nextStrikeAt) {
+        bolts.push(createBolt());
+        nextStrikeAt = timer + 0.8 + Math.random() * 1.5;
+      }
+
+      // Update and draw bolts
+      for (let b = bolts.length - 1; b >= 0; b--) {
+        const bolt = bolts[b];
+
+        if (bolt.phase === "strike") {
+          bolt.progress += dt * 4.5; // Fast strike down
+          if (bolt.progress >= 1) {
+            bolt.progress = 1;
+            bolt.phase = "hold";
+            bolt.holdTime = 0;
+            // Sparks at the tip
+            const tip = bolt.segments[bolt.segments.length - 1];
+            spawnSparks(tip.x, tip.y, 12);
+            // Sparks at branch tips
+            for (const branch of bolt.branches) {
+              if (branch.segments.length > 0) {
+                const btip = branch.segments[branch.segments.length - 1];
+                spawnSparks(btip.x, btip.y, 5);
+              }
+            }
+          }
+          // Update branches that should have started
+          for (const branch of bolt.branches) {
+            const triggerAt = branch.startIndex / bolt.segments.length;
+            if (bolt.progress > triggerAt) {
+              branch.progress = Math.min(
+                1,
+                (bolt.progress - triggerAt) / (1 - triggerAt) * 1.5
+              );
+            }
+          }
+        } else if (bolt.phase === "hold") {
+          bolt.holdTime += dt;
+          // Flicker during hold
+          bolt.opacity = 0.7 + Math.random() * 0.3;
+          if (bolt.holdTime > 0.1 + Math.random() * 0.15) {
+            bolt.phase = "fade";
+            bolt.fadeTime = 0;
+          }
+        } else if (bolt.phase === "fade") {
+          bolt.fadeTime += dt;
+          bolt.opacity = Math.max(0, 1 - bolt.fadeTime / 0.35);
+          if (bolt.opacity <= 0) {
+            bolts.splice(b, 1);
+            continue;
+          }
+        }
+
+        // Flash effect during strike
+        if (bolt.phase === "strike" || bolt.phase === "hold") {
+          const flashAlpha =
+            bolt.phase === "hold"
+              ? 0.06 * bolt.opacity
+              : 0.03 * bolt.progress;
+          ctx.save();
+          ctx.globalAlpha = flashAlpha;
+          ctx.fillStyle = "#FFD93D";
+          ctx.fillRect(0, 0, W, H);
+          ctx.restore();
+        }
+
+        // Draw main bolt
+        drawBoltPath(
+          ctx,
+          bolt.segments,
+          bolt.progress,
+          bolt.width,
+          bolt.opacity,
+          bolt.color
+        );
+
+        // Draw branches
+        for (const branch of bolt.branches) {
+          if (branch.progress > 0) {
+            drawBoltPath(
+              ctx,
+              branch.segments,
+              branch.progress,
+              branch.width,
+              bolt.opacity * branch.opacity,
+              bolt.color
+            );
+          }
+        }
+      }
+
+      // Update and draw sparks
+      for (let i = sparkParticles.length - 1; i >= 0; i--) {
+        const s = sparkParticles[i];
+        s.x += s.vx;
+        s.y += s.vy;
+        s.vy += 5 * dt; // gravity
+        s.life -= dt / s.maxLife;
+
+        if (s.life <= 0) {
+          sparkParticles.splice(i, 1);
+          continue;
+        }
+
+        ctx.save();
+        ctx.globalAlpha = s.life;
+        ctx.fillStyle = "#FFD93D";
+        ctx.shadowColor = "#FFD93D";
+        ctx.shadowBlur = 8;
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, s.size * s.life, 0, Math.PI * 2);
+        ctx.fill();
+        // White center
+        ctx.fillStyle = "#FFFFFF";
+        ctx.shadowBlur = 0;
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, s.size * s.life * 0.4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+
+      frameRef.current = requestAnimationFrame(animate);
+    }
+
+    // Start with an initial strike
+    nextStrikeAt = 0.2;
+    frameRef.current = requestAnimationFrame(animate);
+
+    return () => cancelAnimationFrame(frameRef.current);
+  }, []);
+
+  useEffect(() => {
+    const cleanup = draw();
+    return cleanup;
+  }, [draw]);
+
   return (
     <div className="relative w-[420px] h-[520px] select-none">
-      <svg
-        viewBox="0 0 400 500"
-        fill="none"
-        xmlns="http://www.w3.org/2000/svg"
+      <canvas
+        ref={canvasRef}
+        width={420}
+        height={520}
         className="w-full h-full"
-      >
-        <defs>
-          {/* Main bolt gradient */}
-          <linearGradient id="boltGrad" x1="0.3" y1="0" x2="0.7" y2="1">
-            <stop offset="0%" stopColor="#FFF7CC" />
-            <stop offset="30%" stopColor="#FFD93D" />
-            <stop offset="60%" stopColor="#F5A623" />
-            <stop offset="100%" stopColor="#FF8C00" />
-          </linearGradient>
-
-          {/* Inner glow gradient */}
-          <linearGradient id="innerGlow" x1="0.5" y1="0" x2="0.5" y2="1">
-            <stop offset="0%" stopColor="#FFFFFF" />
-            <stop offset="50%" stopColor="#FFF3B0" />
-            <stop offset="100%" stopColor="#FFD93D" />
-          </linearGradient>
-
-          {/* Outer glow filter */}
-          <filter id="boltGlow" x="-50%" y="-50%" width="200%" height="200%">
-            <feGaussianBlur stdDeviation="8" result="blur1" />
-            <feFlood floodColor="#FFD93D" floodOpacity="0.6" result="color" />
-            <feComposite in="color" in2="blur1" operator="in" result="glow" />
-            <feMerge>
-              <feMergeNode in="glow" />
-              <feMergeNode in="glow" />
-              <feMergeNode in="SourceGraphic" />
-            </feMerge>
-          </filter>
-
-          {/* Intense inner glow */}
-          <filter id="innerBoltGlow" x="-30%" y="-30%" width="160%" height="160%">
-            <feGaussianBlur stdDeviation="3" result="blur" />
-            <feFlood floodColor="#FFFFFF" floodOpacity="0.8" result="white" />
-            <feComposite in="white" in2="blur" operator="in" result="glow" />
-            <feMerge>
-              <feMergeNode in="glow" />
-              <feMergeNode in="SourceGraphic" />
-            </feMerge>
-          </filter>
-
-          {/* Spark glow */}
-          <filter id="sparkGlow" x="-100%" y="-100%" width="300%" height="300%">
-            <feGaussianBlur stdDeviation="2" result="blur" />
-            <feFlood floodColor="#FFD93D" floodOpacity="0.9" result="color" />
-            <feComposite in="color" in2="blur" operator="in" result="glow" />
-            <feMerge>
-              <feMergeNode in="glow" />
-              <feMergeNode in="glow" />
-              <feMergeNode in="SourceGraphic" />
-            </feMerge>
-          </filter>
-
-          {/* Ambient glow */}
-          <radialGradient id="ambientGlow" cx="0.5" cy="0.45" r="0.5">
-            <stop offset="0%" stopColor="#FFD93D" stopOpacity="0.15">
-              <animate attributeName="stopOpacity" values="0.15;0.25;0.15" dur="2s" repeatCount="indefinite" />
-            </stop>
-            <stop offset="100%" stopColor="#FFD93D" stopOpacity="0" />
-          </radialGradient>
-        </defs>
-
-        {/* Ambient background glow */}
-        <ellipse cx="200" cy="230" rx="180" ry="220" fill="url(#ambientGlow)">
-          <animate attributeName="rx" values="180;195;180" dur="3s" repeatCount="indefinite" />
-          <animate attributeName="ry" values="220;235;220" dur="3s" repeatCount="indefinite" />
-        </ellipse>
-
-        {/* === MAIN BOLT SHAPE === */}
-        <g filter="url(#boltGlow)">
-          {/* Outer bolt body */}
-          <path
-            d="M 230 20 L 150 195 L 205 195 L 130 380 L 175 380 L 115 480 L 300 260 L 240 260 L 320 100 L 255 100 Z"
-            fill="url(#boltGrad)"
-            stroke="#E8A317"
-            strokeWidth="2"
-            strokeLinejoin="round"
-          >
-            <animate attributeName="opacity" values="1;0.85;1;0.95;1" dur="0.15s" repeatCount="indefinite" />
-          </path>
-
-          {/* Inner bright core */}
-          <path
-            d="M 225 40 L 160 190 L 205 190 L 145 360 L 180 360 L 135 450 L 280 265 L 238 265 L 305 115 L 253 115 Z"
-            fill="url(#innerGlow)"
-            filter="url(#innerBoltGlow)"
-            opacity="0.7"
-          >
-            <animate attributeName="opacity" values="0.7;0.5;0.8;0.6;0.7" dur="0.2s" repeatCount="indefinite" />
-          </path>
-
-          {/* White-hot center line */}
-          <path
-            d="M 222 55 L 168 188 L 203 188 L 155 345 L 182 345 L 150 430 L 265 268 L 237 268 L 295 125 L 252 125 Z"
-            fill="white"
-            opacity="0.35"
-          >
-            <animate attributeName="opacity" values="0.35;0.15;0.4;0.2;0.35" dur="0.12s" repeatCount="indefinite" />
-          </path>
-        </g>
-
-        {/* === CRACKLING ENERGY BRANCHES === */}
-        <g filter="url(#sparkGlow)" opacity="0.8">
-          {/* Top-right branch */}
-          <polyline
-            points="280,85 310,65 325,75 345,50"
-            stroke="#FFD93D"
-            strokeWidth="2.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            fill="none"
-          >
-            <animate attributeName="opacity" values="0;0.9;0;0.7;0;0.5;0" dur="0.8s" repeatCount="indefinite" />
-            <animate attributeName="stroke-width" values="2.5;1;2.5" dur="0.4s" repeatCount="indefinite" />
-          </polyline>
-
-          {/* Top-left branch */}
-          <polyline
-            points="195,120 170,100 155,110 135,85"
-            stroke="#FFE066"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            fill="none"
-          >
-            <animate attributeName="opacity" values="0.6;0;0.8;0;0.3;0" dur="0.6s" repeatCount="indefinite" />
-          </polyline>
-
-          {/* Mid-right branch */}
-          <polyline
-            points="260,230 290,220 305,235 330,215"
-            stroke="#FFD93D"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            fill="none"
-          >
-            <animate attributeName="opacity" values="0;0.5;0;0.9;0;0.3;0" dur="0.9s" repeatCount="indefinite" />
-          </polyline>
-
-          {/* Mid-left branch */}
-          <polyline
-            points="170,280 140,275 130,290 105,280"
-            stroke="#FFE066"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            fill="none"
-          >
-            <animate attributeName="opacity" values="0.4;0;0.7;0;0;0.6;0" dur="0.7s" repeatCount="indefinite" />
-          </polyline>
-
-          {/* Bottom-right branch */}
-          <polyline
-            points="220,340 245,355 260,340 280,360"
-            stroke="#FFD93D"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            fill="none"
-          >
-            <animate attributeName="opacity" values="0;0.8;0;0;0.6;0" dur="1s" repeatCount="indefinite" />
-          </polyline>
-
-          {/* Bottom-left branch */}
-          <polyline
-            points="155,400 130,410 120,395 95,405"
-            stroke="#FFE066"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            fill="none"
-          >
-            <animate attributeName="opacity" values="0.3;0;0;0.9;0;0.4;0" dur="0.85s" repeatCount="indefinite" />
-          </polyline>
-        </g>
-
-        {/* === SPARKS / PARTICLES === */}
-        <g filter="url(#sparkGlow)">
-          {/* Spark 1 - top */}
-          <circle cx="310" cy="60" r="2.5" fill="#FFFFFF">
-            <animate attributeName="cx" values="310;320;310" dur="1.5s" repeatCount="indefinite" />
-            <animate attributeName="cy" values="60;45;60" dur="1.5s" repeatCount="indefinite" />
-            <animate attributeName="opacity" values="0;1;0" dur="1.5s" repeatCount="indefinite" />
-            <animate attributeName="r" values="2.5;1;2.5" dur="1.5s" repeatCount="indefinite" />
-          </circle>
-
-          {/* Spark 2 - right */}
-          <circle cx="340" cy="140" r="2" fill="#FFD93D">
-            <animate attributeName="cx" values="340;355;340" dur="1.2s" repeatCount="indefinite" begin="0.3s" />
-            <animate attributeName="cy" values="140;130;140" dur="1.2s" repeatCount="indefinite" begin="0.3s" />
-            <animate attributeName="opacity" values="0;0.8;0" dur="1.2s" repeatCount="indefinite" begin="0.3s" />
-          </circle>
-
-          {/* Spark 3 - left */}
-          <circle cx="100" cy="200" r="2" fill="#FFFFFF">
-            <animate attributeName="cx" values="100;85;100" dur="1.8s" repeatCount="indefinite" begin="0.6s" />
-            <animate attributeName="cy" values="200;190;200" dur="1.8s" repeatCount="indefinite" begin="0.6s" />
-            <animate attributeName="opacity" values="0;1;0" dur="1.8s" repeatCount="indefinite" begin="0.6s" />
-          </circle>
-
-          {/* Spark 4 - mid right */}
-          <circle cx="335" cy="230" r="1.5" fill="#FFE066">
-            <animate attributeName="cx" values="335;348;335" dur="1.4s" repeatCount="indefinite" begin="0.1s" />
-            <animate attributeName="cy" values="230;218;230" dur="1.4s" repeatCount="indefinite" begin="0.1s" />
-            <animate attributeName="opacity" values="0;0.9;0" dur="1.4s" repeatCount="indefinite" begin="0.1s" />
-          </circle>
-
-          {/* Spark 5 - bottom */}
-          <circle cx="130" cy="430" r="2" fill="#FFD93D">
-            <animate attributeName="cx" values="130;115;130" dur="1.6s" repeatCount="indefinite" begin="0.8s" />
-            <animate attributeName="cy" values="430;418;430" dur="1.6s" repeatCount="indefinite" begin="0.8s" />
-            <animate attributeName="opacity" values="0;0.7;0" dur="1.6s" repeatCount="indefinite" begin="0.8s" />
-          </circle>
-
-          {/* Spark 6 - top left */}
-          <circle cx="145" cy="90" r="1.5" fill="#FFFFFF">
-            <animate attributeName="cx" values="145;130;145" dur="1.3s" repeatCount="indefinite" begin="0.4s" />
-            <animate attributeName="cy" values="90;78;90" dur="1.3s" repeatCount="indefinite" begin="0.4s" />
-            <animate attributeName="opacity" values="0;1;0" dur="1.3s" repeatCount="indefinite" begin="0.4s" />
-          </circle>
-
-          {/* Spark 7 - mid */}
-          <circle cx="260" cy="310" r="2" fill="#FFE066">
-            <animate attributeName="cx" values="260;275;260" dur="1.1s" repeatCount="indefinite" begin="0.5s" />
-            <animate attributeName="cy" values="310;298;310" dur="1.1s" repeatCount="indefinite" begin="0.5s" />
-            <animate attributeName="opacity" values="0;0.85;0" dur="1.1s" repeatCount="indefinite" begin="0.5s" />
-          </circle>
-        </g>
-
-        {/* === ELECTRIC ARC FLASHES === */}
-        <g opacity="0.6">
-          {/* Flash 1 */}
-          <ellipse cx="220" cy="150" rx="40" ry="15" fill="white" opacity="0">
-            <animate attributeName="opacity" values="0;0.3;0" dur="3s" repeatCount="indefinite" begin="0s" />
-            <animate attributeName="rx" values="40;55;40" dur="3s" repeatCount="indefinite" begin="0s" />
-          </ellipse>
-
-          {/* Flash 2 */}
-          <ellipse cx="180" cy="320" rx="30" ry="10" fill="#FFD93D" opacity="0">
-            <animate attributeName="opacity" values="0;0.25;0" dur="2.5s" repeatCount="indefinite" begin="1.2s" />
-            <animate attributeName="rx" values="30;45;30" dur="2.5s" repeatCount="indefinite" begin="1.2s" />
-          </ellipse>
-        </g>
-      </svg>
+      />
     </div>
   );
 }
