@@ -1,0 +1,37 @@
+{
+  "name": "@voiceci/mcp",
+  "version": "0.5.0",
+  "type": "module",
+  "description": "VoiceCI MCP server — CI/CD for voice AI agents",
+  "bin": {
+    "voiceci-mcp": "dist/index.mjs"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "node scripts/bundle.mjs",
+    "clean": "rm -rf dist"
+  },
+  "keywords": [
+    "voiceci",
+    "mcp",
+    "voice",
+    "agent",
+    "testing",
+    "ci-cd"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/voiceci/voiceci",
+    "directory": "packages/mcp"
+  },
+  "homepage": "https://voiceci.dev",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.10.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0"
+  }
+}
