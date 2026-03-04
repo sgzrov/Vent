@@ -28,7 +28,7 @@ const healthEndpoint = getArg("health-endpoint", "/health");
 // Port cleanup — kill any existing process on the agent port
 // ---------------------------------------------------------------------------
 
-function killPort(port: number): void {
+async function killPort(port: number): Promise<void> {
   try {
     const pids = execSync(`lsof -ti:${port} 2>/dev/null`, { encoding: "utf-8" }).trim();
     if (pids) {
@@ -40,6 +40,18 @@ function killPort(port: number): void {
         }
       }
       console.error(`[relay] Killed existing process(es) on port ${port}`);
+
+      // Wait for the OS to release the port after SIGKILL
+      const deadline = Date.now() + 5_000;
+      while (Date.now() < deadline) {
+        try {
+          const check = execSync(`lsof -ti:${port} 2>/dev/null`, { encoding: "utf-8" }).trim();
+          if (!check) break;
+        } catch {
+          break; // No process on port — good
+        }
+        await new Promise((r) => setTimeout(r, 200));
+      }
     }
   } catch {
     // lsof not found or no process — fine
@@ -94,7 +106,7 @@ async function main() {
 
   // 2. Start agent if --start-command provided, with VoiceCI env vars injected
   if (startCommand) {
-    killPort(agentPort);
+    await killPort(agentPort);
     console.error(`[relay] Starting agent: ${startCommand}`);
     agentProcess = spawn(startCommand, {
       shell: true,

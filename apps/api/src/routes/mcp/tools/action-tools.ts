@@ -261,7 +261,7 @@ export function registerActionTools(
       relayArgs.push("--health-endpoint", String(cfg.health_endpoint));
     }
 
-    const relayCommand = `curl -sS ${shellEscape(`${apiUrl}/relay/client.mjs`)} -o /tmp/voiceci-relay.mjs && node /tmp/voiceci-relay.mjs ${relayArgs.map((arg) => shellEscape(arg)).join(" ")}`;
+    const relayCommand = `lsof -ti:${agentPort} | xargs kill -9 2>/dev/null; curl -sS ${shellEscape(`${apiUrl}/relay/client.mjs`)} -o /tmp/voiceci-relay.mjs && node /tmp/voiceci-relay.mjs ${relayArgs.map((arg) => shellEscape(arg)).join(" ")}`;
 
     return {
       content: [{
