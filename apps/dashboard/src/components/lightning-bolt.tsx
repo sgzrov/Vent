@@ -1,360 +1,97 @@
 "use client";
 
+import Image from "next/image";
+
 export function LightningBolt() {
   return (
-    <div className="relative w-[420px] h-[520px] select-none">
+    <div className="relative w-[420px] h-[420px] select-none">
+      {/* Wind woosh lines — coming from bottom-right (direction bolt flies toward) */}
       <svg
-        viewBox="0 0 400 500"
+        viewBox="0 0 420 420"
         fill="none"
         xmlns="http://www.w3.org/2000/svg"
-        className="w-full h-full"
+        className="absolute inset-0 w-full h-full z-0"
       >
         <defs>
-          {/* Main bolt gradient */}
-          <linearGradient id="boltGrad" x1="0.3" y1="0" x2="0.7" y2="1">
-            <stop offset="0%" stopColor="#FFF7CC" />
-            <stop offset="30%" stopColor="#FFD93D" />
-            <stop offset="60%" stopColor="#F5A623" />
-            <stop offset="100%" stopColor="#FF8C00" />
+          <linearGradient id="w1" x1="1" y1="1" x2="0" y2="0">
+            <stop offset="0%" stopColor="transparent" />
+            <stop offset="50%" stopColor="rgba(200,200,200,0.3)" />
+            <stop offset="100%" stopColor="transparent" />
           </linearGradient>
-
-          {/* Inner glow gradient */}
-          <linearGradient id="innerGlow" x1="0.5" y1="0" x2="0.5" y2="1">
-            <stop offset="0%" stopColor="#FFFFFF" />
-            <stop offset="50%" stopColor="#FFF3B0" />
-            <stop offset="100%" stopColor="#FFD93D" />
+          <linearGradient id="w2" x1="1" y1="1" x2="0" y2="0">
+            <stop offset="0%" stopColor="transparent" />
+            <stop offset="50%" stopColor="rgba(255,217,61,0.2)" />
+            <stop offset="100%" stopColor="transparent" />
           </linearGradient>
-
-          {/* Outer glow filter */}
-          <filter id="boltGlow" x="-50%" y="-50%" width="200%" height="200%">
-            <feGaussianBlur stdDeviation="8" result="blur1" />
-            <feFlood floodColor="#FFD93D" floodOpacity="0.6" result="color" />
-            <feComposite in="color" in2="blur1" operator="in" result="glow" />
-            <feMerge>
-              <feMergeNode in="glow" />
-              <feMergeNode in="glow" />
-              <feMergeNode in="SourceGraphic" />
-            </feMerge>
-          </filter>
-
-          {/* Intense inner glow */}
-          <filter id="innerBoltGlow" x="-30%" y="-30%" width="160%" height="160%">
-            <feGaussianBlur stdDeviation="3" result="blur" />
-            <feFlood floodColor="#FFFFFF" floodOpacity="0.8" result="white" />
-            <feComposite in="white" in2="blur" operator="in" result="glow" />
-            <feMerge>
-              <feMergeNode in="glow" />
-              <feMergeNode in="SourceGraphic" />
-            </feMerge>
-          </filter>
-
-          {/* Spark glow */}
-          <filter id="sparkGlow" x="-100%" y="-100%" width="300%" height="300%">
-            <feGaussianBlur stdDeviation="2" result="blur" />
-            <feFlood floodColor="#FFD93D" floodOpacity="0.9" result="color" />
-            <feComposite in="color" in2="blur" operator="in" result="glow" />
-            <feMerge>
-              <feMergeNode in="glow" />
-              <feMergeNode in="glow" />
-              <feMergeNode in="SourceGraphic" />
-            </feMerge>
-          </filter>
-
-          {/* Whirl glow */}
-          <filter id="whirlGlow" x="-50%" y="-50%" width="200%" height="200%">
-            <feGaussianBlur stdDeviation="1.5" result="blur" />
-            <feFlood floodColor="#FFD93D" floodOpacity="0.5" result="color" />
-            <feComposite in="color" in2="blur" operator="in" result="glow" />
-            <feMerge>
-              <feMergeNode in="glow" />
-              <feMergeNode in="SourceGraphic" />
-            </feMerge>
-          </filter>
-
-          {/* Ambient glow */}
-          <radialGradient id="ambientGlow" cx="0.5" cy="0.45" r="0.5">
-            <stop offset="0%" stopColor="#FFD93D" stopOpacity="0.15">
-              <animate attributeName="stopOpacity" values="0.15;0.25;0.15" dur="2s" repeatCount="indefinite" />
-            </stop>
-            <stop offset="100%" stopColor="#FFD93D" stopOpacity="0" />
-          </radialGradient>
         </defs>
 
-        {/* Ambient background glow */}
-        <ellipse cx="200" cy="230" rx="180" ry="220" fill="url(#ambientGlow)">
-          <animate attributeName="rx" values="180;195;180" dur="3s" repeatCount="indefinite" />
-          <animate attributeName="ry" values="220;235;220" dur="3s" repeatCount="indefinite" />
-        </ellipse>
+        {/* Long swooping wind arcs — trailing behind the bolt */}
+        <path d="M 380 350 C 340 320, 280 310, 220 280" stroke="url(#w1)" strokeWidth="2" strokeLinecap="round" fill="none" opacity="0">
+          <animate attributeName="opacity" values="0;0.7;0" dur="1.6s" repeatCount="indefinite" begin="0s" />
+          <animateTransform attributeName="transform" type="translate" values="20,20;-40,-40" dur="1.6s" repeatCount="indefinite" begin="0s" />
+        </path>
 
-        {/* === WIND WHIRLS === */}
-        <g filter="url(#whirlGlow)">
-          {/* Whirl 1 — large clockwise arc, top-right */}
-          <path
-            d="M 290 60 C 350 80, 360 150, 310 180"
-            stroke="#FFD93D"
-            strokeWidth="2"
-            strokeLinecap="round"
-            fill="none"
-            strokeDasharray="120"
-            strokeDashoffset="120"
-          >
-            <animate attributeName="stroke-dashoffset" values="120;0;-120" dur="2s" repeatCount="indefinite" begin="0s" />
-            <animate attributeName="opacity" values="0;0.6;0.6;0" dur="2s" repeatCount="indefinite" begin="0s" />
-          </path>
+        <path d="M 400 280 C 360 260, 310 240, 260 210" stroke="url(#w1)" strokeWidth="1.5" strokeLinecap="round" fill="none" opacity="0">
+          <animate attributeName="opacity" values="0;0.5;0" dur="1.8s" repeatCount="indefinite" begin="0.3s" />
+          <animateTransform attributeName="transform" type="translate" values="15,15;-35,-35" dur="1.8s" repeatCount="indefinite" begin="0.3s" />
+        </path>
 
-          {/* Whirl 2 — counter-clockwise arc, left */}
-          <path
-            d="M 110 120 C 60 140, 50 210, 100 250"
-            stroke="#FFE066"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            fill="none"
-            strokeDasharray="130"
-            strokeDashoffset="130"
-          >
-            <animate attributeName="stroke-dashoffset" values="130;0;-130" dur="2.4s" repeatCount="indefinite" begin="0.5s" />
-            <animate attributeName="opacity" values="0;0.5;0.5;0" dur="2.4s" repeatCount="indefinite" begin="0.5s" />
-          </path>
+        <path d="M 350 400 C 310 370, 260 350, 200 330" stroke="url(#w2)" strokeWidth="2.5" strokeLinecap="round" fill="none" opacity="0">
+          <animate attributeName="opacity" values="0;0.6;0" dur="1.4s" repeatCount="indefinite" begin="0.6s" />
+          <animateTransform attributeName="transform" type="translate" values="18,18;-36,-36" dur="1.4s" repeatCount="indefinite" begin="0.6s" />
+        </path>
 
-          {/* Whirl 3 — tight spiral, mid-right */}
-          <path
-            d="M 320 220 C 355 240, 340 290, 300 300 C 270 310, 260 280, 280 265"
-            stroke="#FFD93D"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            fill="none"
-            strokeDasharray="160"
-            strokeDashoffset="160"
-          >
-            <animate attributeName="stroke-dashoffset" values="160;0;-160" dur="2.8s" repeatCount="indefinite" begin="0.3s" />
-            <animate attributeName="opacity" values="0;0.5;0.4;0" dur="2.8s" repeatCount="indefinite" begin="0.3s" />
-          </path>
+        <path d="M 410 200 C 370 185, 320 170, 270 145" stroke="url(#w1)" strokeWidth="1.5" strokeLinecap="round" fill="none" opacity="0">
+          <animate attributeName="opacity" values="0;0.4;0" dur="2s" repeatCount="indefinite" begin="0.2s" />
+          <animateTransform attributeName="transform" type="translate" values="12,12;-30,-30" dur="2s" repeatCount="indefinite" begin="0.2s" />
+        </path>
 
-          {/* Whirl 4 — swooping arc, bottom-left */}
-          <path
-            d="M 80 340 C 50 370, 70 420, 120 430"
-            stroke="#FFE066"
-            strokeWidth="2"
-            strokeLinecap="round"
-            fill="none"
-            strokeDasharray="110"
-            strokeDashoffset="110"
-          >
-            <animate attributeName="stroke-dashoffset" values="110;0;-110" dur="2.2s" repeatCount="indefinite" begin="0.8s" />
-            <animate attributeName="opacity" values="0;0.55;0.55;0" dur="2.2s" repeatCount="indefinite" begin="0.8s" />
-          </path>
+        {/* Shorter speed streaks */}
+        <line x1="370" y1="310" x2="320" y2="270" stroke="rgba(180,180,180,0.35)" strokeWidth="1.5" strokeLinecap="round">
+          <animate attributeName="opacity" values="0;0.6;0" dur="1.1s" repeatCount="indefinite" begin="0.1s" />
+          <animateTransform attributeName="transform" type="translate" values="10,10;-25,-25" dur="1.1s" repeatCount="indefinite" begin="0.1s" />
+        </line>
 
-          {/* Whirl 5 — large sweeping arc, top-left */}
-          <path
-            d="M 160 40 C 120 20, 70 50, 65 100"
-            stroke="#FFD93D"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            fill="none"
-            strokeDasharray="100"
-            strokeDashoffset="100"
-          >
-            <animate attributeName="stroke-dashoffset" values="100;0;-100" dur="1.8s" repeatCount="indefinite" begin="1.2s" />
-            <animate attributeName="opacity" values="0;0.45;0.45;0" dur="1.8s" repeatCount="indefinite" begin="1.2s" />
-          </path>
+        <line x1="390" y1="240" x2="345" y2="205" stroke="rgba(180,180,180,0.3)" strokeWidth="1" strokeLinecap="round">
+          <animate attributeName="opacity" values="0;0.5;0" dur="1.3s" repeatCount="indefinite" begin="0.5s" />
+          <animateTransform attributeName="transform" type="translate" values="8,8;-22,-22" dur="1.3s" repeatCount="indefinite" begin="0.5s" />
+        </line>
 
-          {/* Whirl 6 — bottom-right curl */}
-          <path
-            d="M 280 380 C 330 390, 350 430, 310 460"
-            stroke="#FFE066"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            fill="none"
-            strokeDasharray="100"
-            strokeDashoffset="100"
-          >
-            <animate attributeName="stroke-dashoffset" values="100;0;-100" dur="2.6s" repeatCount="indefinite" begin="0.2s" />
-            <animate attributeName="opacity" values="0;0.4;0.4;0" dur="2.6s" repeatCount="indefinite" begin="0.2s" />
-          </path>
-        </g>
+        <line x1="320" y1="380" x2="275" y2="345" stroke="rgba(255,217,61,0.25)" strokeWidth="1.5" strokeLinecap="round">
+          <animate attributeName="opacity" values="0;0.5;0" dur="1.5s" repeatCount="indefinite" begin="0.8s" />
+          <animateTransform attributeName="transform" type="translate" values="10,10;-28,-28" dur="1.5s" repeatCount="indefinite" begin="0.8s" />
+        </line>
 
-        {/* === SPEED LINES (upward, showing downward motion) === */}
-        <g opacity="0.35">
-          <line x1="95" y1="100" x2="110" y2="60" stroke="#c4c4c4" strokeWidth="1.5" strokeLinecap="round">
-            <animate attributeName="opacity" values="0;0.5;0" dur="1.2s" repeatCount="indefinite" begin="0s" />
-            <animateTransform attributeName="transform" type="translate" values="0,20;0,-30" dur="1.2s" repeatCount="indefinite" begin="0s" />
-          </line>
-          <line x1="320" y1="130" x2="340" y2="85" stroke="#c4c4c4" strokeWidth="1.5" strokeLinecap="round">
-            <animate attributeName="opacity" values="0;0.4;0" dur="1.5s" repeatCount="indefinite" begin="0.3s" />
-            <animateTransform attributeName="transform" type="translate" values="0,15;0,-35" dur="1.5s" repeatCount="indefinite" begin="0.3s" />
-          </line>
-          <line x1="70" y1="280" x2="85" y2="240" stroke="#c4c4c4" strokeWidth="1" strokeLinecap="round">
-            <animate attributeName="opacity" values="0;0.4;0" dur="1.3s" repeatCount="indefinite" begin="0.7s" />
-            <animateTransform attributeName="transform" type="translate" values="0,15;0,-25" dur="1.3s" repeatCount="indefinite" begin="0.7s" />
-          </line>
-          <line x1="340" y1="330" x2="355" y2="290" stroke="#c4c4c4" strokeWidth="1" strokeLinecap="round">
-            <animate attributeName="opacity" values="0;0.35;0" dur="1.7s" repeatCount="indefinite" begin="0.5s" />
-            <animateTransform attributeName="transform" type="translate" values="0,12;0,-28" dur="1.7s" repeatCount="indefinite" begin="0.5s" />
-          </line>
-        </g>
+        <line x1="400" y1="150" x2="360" y2="120" stroke="rgba(180,180,180,0.25)" strokeWidth="1" strokeLinecap="round">
+          <animate attributeName="opacity" values="0;0.4;0" dur="1.7s" repeatCount="indefinite" begin="0.4s" />
+          <animateTransform attributeName="transform" type="translate" values="8,8;-20,-20" dur="1.7s" repeatCount="indefinite" begin="0.4s" />
+        </line>
 
-        {/* === MAIN BOLT SHAPE === */}
-        <g filter="url(#boltGlow)">
-          {/* Outer bolt body */}
-          <path
-            d="M 230 20 L 150 195 L 205 195 L 130 380 L 175 380 L 115 480 L 300 260 L 240 260 L 320 100 L 255 100 Z"
-            fill="url(#boltGrad)"
-            stroke="#E8A317"
-            strokeWidth="2"
-            strokeLinejoin="round"
-          >
-            <animate attributeName="opacity" values="1;0.88;1;0.92;1" dur="0.15s" repeatCount="indefinite" />
-          </path>
+        {/* Tiny fast dashes */}
+        <line x1="340" y1="340" x2="325" y2="328" stroke="rgba(200,200,200,0.3)" strokeWidth="1" strokeLinecap="round">
+          <animate attributeName="opacity" values="0;0.7;0" dur="0.7s" repeatCount="indefinite" begin="0s" />
+          <animateTransform attributeName="transform" type="translate" values="5,5;-15,-15" dur="0.7s" repeatCount="indefinite" begin="0s" />
+        </line>
 
-          {/* Inner bright core */}
-          <path
-            d="M 225 40 L 160 190 L 205 190 L 145 360 L 180 360 L 135 450 L 280 265 L 238 265 L 305 115 L 253 115 Z"
-            fill="url(#innerGlow)"
-            filter="url(#innerBoltGlow)"
-            opacity="0.7"
-          >
-            <animate attributeName="opacity" values="0.7;0.5;0.8;0.6;0.7" dur="0.2s" repeatCount="indefinite" />
-          </path>
-
-          {/* White-hot center line */}
-          <path
-            d="M 222 55 L 168 188 L 203 188 L 155 345 L 182 345 L 150 430 L 265 268 L 237 268 L 295 125 L 252 125 Z"
-            fill="white"
-            opacity="0.35"
-          >
-            <animate attributeName="opacity" values="0.35;0.15;0.4;0.2;0.35" dur="0.12s" repeatCount="indefinite" />
-          </path>
-        </g>
-
-        {/* === CRACKLING ENERGY BRANCHES === */}
-        <g filter="url(#sparkGlow)" opacity="0.8">
-          <polyline
-            points="280,85 310,65 325,75 345,50"
-            stroke="#FFD93D"
-            strokeWidth="2.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            fill="none"
-          >
-            <animate attributeName="opacity" values="0;0.9;0;0.7;0;0.5;0" dur="0.8s" repeatCount="indefinite" />
-            <animate attributeName="stroke-width" values="2.5;1;2.5" dur="0.4s" repeatCount="indefinite" />
-          </polyline>
-
-          <polyline
-            points="195,120 170,100 155,110 135,85"
-            stroke="#FFE066"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            fill="none"
-          >
-            <animate attributeName="opacity" values="0.6;0;0.8;0;0.3;0" dur="0.6s" repeatCount="indefinite" />
-          </polyline>
-
-          <polyline
-            points="260,230 290,220 305,235 330,215"
-            stroke="#FFD93D"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            fill="none"
-          >
-            <animate attributeName="opacity" values="0;0.5;0;0.9;0;0.3;0" dur="0.9s" repeatCount="indefinite" />
-          </polyline>
-
-          <polyline
-            points="170,280 140,275 130,290 105,280"
-            stroke="#FFE066"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            fill="none"
-          >
-            <animate attributeName="opacity" values="0.4;0;0.7;0;0;0.6;0" dur="0.7s" repeatCount="indefinite" />
-          </polyline>
-
-          <polyline
-            points="220,340 245,355 260,340 280,360"
-            stroke="#FFD93D"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            fill="none"
-          >
-            <animate attributeName="opacity" values="0;0.8;0;0;0.6;0" dur="1s" repeatCount="indefinite" />
-          </polyline>
-
-          <polyline
-            points="155,400 130,410 120,395 95,405"
-            stroke="#FFE066"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            fill="none"
-          >
-            <animate attributeName="opacity" values="0.3;0;0;0.9;0;0.4;0" dur="0.85s" repeatCount="indefinite" />
-          </polyline>
-        </g>
-
-        {/* === SPARKS / PARTICLES === */}
-        <g filter="url(#sparkGlow)">
-          <circle cx="310" cy="60" r="2.5" fill="#FFFFFF">
-            <animate attributeName="cx" values="310;320;310" dur="1.5s" repeatCount="indefinite" />
-            <animate attributeName="cy" values="60;45;60" dur="1.5s" repeatCount="indefinite" />
-            <animate attributeName="opacity" values="0;1;0" dur="1.5s" repeatCount="indefinite" />
-            <animate attributeName="r" values="2.5;1;2.5" dur="1.5s" repeatCount="indefinite" />
-          </circle>
-
-          <circle cx="340" cy="140" r="2" fill="#FFD93D">
-            <animate attributeName="cx" values="340;355;340" dur="1.2s" repeatCount="indefinite" begin="0.3s" />
-            <animate attributeName="cy" values="140;130;140" dur="1.2s" repeatCount="indefinite" begin="0.3s" />
-            <animate attributeName="opacity" values="0;0.8;0" dur="1.2s" repeatCount="indefinite" begin="0.3s" />
-          </circle>
-
-          <circle cx="100" cy="200" r="2" fill="#FFFFFF">
-            <animate attributeName="cx" values="100;85;100" dur="1.8s" repeatCount="indefinite" begin="0.6s" />
-            <animate attributeName="cy" values="200;190;200" dur="1.8s" repeatCount="indefinite" begin="0.6s" />
-            <animate attributeName="opacity" values="0;1;0" dur="1.8s" repeatCount="indefinite" begin="0.6s" />
-          </circle>
-
-          <circle cx="335" cy="230" r="1.5" fill="#FFE066">
-            <animate attributeName="cx" values="335;348;335" dur="1.4s" repeatCount="indefinite" begin="0.1s" />
-            <animate attributeName="cy" values="230;218;230" dur="1.4s" repeatCount="indefinite" begin="0.1s" />
-            <animate attributeName="opacity" values="0;0.9;0" dur="1.4s" repeatCount="indefinite" begin="0.1s" />
-          </circle>
-
-          <circle cx="130" cy="430" r="2" fill="#FFD93D">
-            <animate attributeName="cx" values="130;115;130" dur="1.6s" repeatCount="indefinite" begin="0.8s" />
-            <animate attributeName="cy" values="430;418;430" dur="1.6s" repeatCount="indefinite" begin="0.8s" />
-            <animate attributeName="opacity" values="0;0.7;0" dur="1.6s" repeatCount="indefinite" begin="0.8s" />
-          </circle>
-
-          <circle cx="145" cy="90" r="1.5" fill="#FFFFFF">
-            <animate attributeName="cx" values="145;130;145" dur="1.3s" repeatCount="indefinite" begin="0.4s" />
-            <animate attributeName="cy" values="90;78;90" dur="1.3s" repeatCount="indefinite" begin="0.4s" />
-            <animate attributeName="opacity" values="0;1;0" dur="1.3s" repeatCount="indefinite" begin="0.4s" />
-          </circle>
-
-          <circle cx="260" cy="310" r="2" fill="#FFE066">
-            <animate attributeName="cx" values="260;275;260" dur="1.1s" repeatCount="indefinite" begin="0.5s" />
-            <animate attributeName="cy" values="310;298;310" dur="1.1s" repeatCount="indefinite" begin="0.5s" />
-            <animate attributeName="opacity" values="0;0.85;0" dur="1.1s" repeatCount="indefinite" begin="0.5s" />
-          </circle>
-        </g>
-
-        {/* === ELECTRIC ARC FLASHES === */}
-        <g opacity="0.6">
-          <ellipse cx="220" cy="150" rx="40" ry="15" fill="white" opacity="0">
-            <animate attributeName="opacity" values="0;0.3;0" dur="3s" repeatCount="indefinite" begin="0s" />
-            <animate attributeName="rx" values="40;55;40" dur="3s" repeatCount="indefinite" begin="0s" />
-          </ellipse>
-
-          <ellipse cx="180" cy="320" rx="30" ry="10" fill="#FFD93D" opacity="0">
-            <animate attributeName="opacity" values="0;0.25;0" dur="2.5s" repeatCount="indefinite" begin="1.2s" />
-            <animate attributeName="rx" values="30;45;30" dur="2.5s" repeatCount="indefinite" begin="1.2s" />
-          </ellipse>
-        </g>
+        <line x1="380" y1="180" x2="365" y2="168" stroke="rgba(255,217,61,0.2)" strokeWidth="1" strokeLinecap="round">
+          <animate attributeName="opacity" values="0;0.5;0" dur="0.9s" repeatCount="indefinite" begin="0.7s" />
+          <animateTransform attributeName="transform" type="translate" values="5,5;-12,-12" dur="0.9s" repeatCount="indefinite" begin="0.7s" />
+        </line>
       </svg>
+
+      {/* The bolt image with spin + scale animation */}
+      <div className="absolute inset-0 flex items-center justify-center z-10">
+        <div className="bolt-spin-scale">
+          <Image
+            src="/lightning-bolt.png"
+            alt="LightMCP"
+            width={320}
+            height={320}
+            className="drop-shadow-[0_4px_20px_rgba(255,200,0,0.25)]"
+            priority
+          />
+        </div>
+      </div>
     </div>
   );
 }
