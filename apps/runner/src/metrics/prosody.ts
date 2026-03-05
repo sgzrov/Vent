@@ -161,14 +161,14 @@ function buildTurnProfile(
     avgScores.push({ name, score: sum / count });
   }
 
-  const top_emotions = [...avgScores]
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 5)
-    .map((e) => ({ name: e.name, score: round3(e.score) }));
+  const emotions: Record<string, number> = {};
+  for (const e of avgScores) {
+    emotions[e.name] = round3(e.score);
+  }
 
   return {
     turn_index: turnIndex,
-    top_emotions,
+    emotions,
     calmness: avgEmotions(avgScores, CALMNESS_EMOTIONS),
     confidence: avgEmotions(avgScores, CONFIDENCE_EMOTIONS),
     frustration: avgEmotions(avgScores, FRUSTRATION_EMOTIONS),
@@ -205,7 +205,10 @@ function computeAggregates(
   );
 
   // Emotion consistency: low std dev of dominant emotion = consistent
-  const dominantScores = perTurn.map((t) => t.top_emotions[0]?.score ?? 0);
+  const dominantScores = perTurn.map((t) => {
+    const scores = Object.values(t.emotions);
+    return scores.length > 0 ? Math.max(...scores) : 0;
+  });
   const meanDominant =
     dominantScores.reduce((a, b) => a + b, 0) / dominantScores.length;
   const variance =

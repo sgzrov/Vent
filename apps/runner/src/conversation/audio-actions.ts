@@ -6,13 +6,14 @@
  */
 
 import type { AudioChannel } from "@voiceci/adapters";
-import type { AudioAction, AudioActionResult } from "@voiceci/shared";
+import type { AudioAction, AudioActionResult, CallerAudioEffects } from "@voiceci/shared";
 import {
   synthesize,
   generateBabbleNoise,
   generateWhiteNoise,
   generatePinkNoise,
   mixAudio,
+  applyEffects,
 } from "@voiceci/voice";
 import {
   collectUntilEndOfTurn,
@@ -26,6 +27,8 @@ interface ActionContext {
   channel: AudioChannel;
   vad: VoiceActivityDetector;
   transcriber: StreamingTranscriber;
+  callerAudioEffects?: CallerAudioEffects;
+  ttsVoiceId?: string;
 }
 
 /**
@@ -63,7 +66,10 @@ async function executeInterrupt(
   ctx: ActionContext,
 ): Promise<{ result: AudioActionResult; agentText: string }> {
   const interruptPrompt = action.prompt ?? "Actually, I have a different question.";
-  const interruptAudio = await synthesize(interruptPrompt);
+  let interruptAudio = await synthesize(interruptPrompt, ctx.ttsVoiceId ? { voiceId: ctx.ttsVoiceId } : undefined);
+  if (ctx.callerAudioEffects) {
+    interruptAudio = applyEffects(interruptAudio, ctx.callerAudioEffects);
+  }
 
   // We need to be mid-agent-speech, so first wait for agent to start
   // Note: the caller's normal utterance should already have been sent for this turn
@@ -251,7 +257,12 @@ async function executeSplitSentence(
   const { part_a, part_b, pause_ms } = action.split;
 
   // Synthesize both parts
-  const [audioA, audioB] = await Promise.all([synthesize(part_a), synthesize(part_b)]);
+  const ttsOpts = ctx.ttsVoiceId ? { voiceId: ctx.ttsVoiceId } : undefined;
+  let [audioA, audioB] = await Promise.all([synthesize(part_a, ttsOpts), synthesize(part_b, ttsOpts)]);
+  if (ctx.callerAudioEffects) {
+    audioA = applyEffects(audioA, ctx.callerAudioEffects);
+    audioB = applyEffects(audioB, ctx.callerAudioEffects);
+  }
 
   // Send part A
   ctx.channel.sendAudio(audioA);

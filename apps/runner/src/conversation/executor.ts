@@ -21,7 +21,7 @@ import type {
   EvalResult,
   AudioActionResult,
 } from "@voiceci/shared";
-import { synthesize, BatchVAD, VoiceActivityDetector, StreamingTranscriber } from "@voiceci/voice";
+import { synthesize, BatchVAD, VoiceActivityDetector, StreamingTranscriber, applyEffects, resolveAccentVoiceId } from "@voiceci/voice";
 import { CallerLLM } from "./caller-llm.js";
 import { JudgeLLM } from "./judge-llm.js";
 import { executeAudioAction, mixCallerWithNoise } from "./audio-actions.js";
@@ -57,13 +57,20 @@ export async function runConversationTest(
     caller.nextUtterance(null, []),
   ]);
 
+  // Resolve accent → TTS voice ID
+  const ttsVoiceId = spec.caller_audio?.accent
+    ? resolveAccentVoiceId(spec.caller_audio.accent)
+    : undefined;
+  const ttsOpts = ttsVoiceId ? { voiceId: ttsVoiceId } : undefined;
+
   // Pre-synthesize first turn TTS
   let prefetchedAudio: Buffer | null = null;
   let prefetchedText: string | null = firstUtterance;
   let prefetchedTtsMs = 0;
   if (firstUtterance) {
     const ttsStart = performance.now();
-    prefetchedAudio = await synthesize(firstUtterance);
+    prefetchedAudio = await synthesize(firstUtterance, ttsOpts);
+    if (spec.caller_audio) prefetchedAudio = applyEffects(prefetchedAudio, spec.caller_audio);
     prefetchedTtsMs = Math.round(performance.now() - ttsStart);
   }
 
@@ -95,7 +102,7 @@ export async function runConversationTest(
 
         const { result: actionResult, agentText: actionAgentText } = await executeAudioAction(
           audioAction,
-          { channel, vad: turnVAD, transcriber },
+          { channel, vad: turnVAD, transcriber, callerAudioEffects: spec.caller_audio, ttsVoiceId },
         );
         audioActionResults.push(actionResult);
         agentText = actionAgentText;
@@ -126,7 +133,8 @@ export async function runConversationTest(
         if (callerText === null) break;
 
         const ttsStart = performance.now();
-        callerAudio = await synthesize(callerText);
+        callerAudio = await synthesize(callerText, ttsOpts);
+        if (spec.caller_audio) callerAudio = applyEffects(callerAudio, spec.caller_audio);
         ttsMs = Math.round(performance.now() - ttsStart);
       }
 
@@ -166,7 +174,7 @@ export async function runConversationTest(
       if (audioAction?.action === "interrupt") {
         const { result: actionResult, agentText: actionAgentText } = await executeAudioAction(
           audioAction,
-          { channel, vad: turnVAD, transcriber },
+          { channel, vad: turnVAD, transcriber, callerAudioEffects: spec.caller_audio, ttsVoiceId },
         );
         audioActionResults.push(actionResult);
         channel.off("audio", feedSTT);
@@ -186,7 +194,7 @@ export async function runConversationTest(
       if (audioAction?.action === "inject_noise") {
         const { result: actionResult, agentText: actionAgentText } = await executeAudioAction(
           audioAction,
-          { channel, vad: turnVAD, transcriber },
+          { channel, vad: turnVAD, transcriber, callerAudioEffects: spec.caller_audio, ttsVoiceId },
         );
         audioActionResults.push(actionResult);
         channel.off("audio", feedSTT);
@@ -315,7 +323,6 @@ export async function runConversationTest(
       } else {
         const unmetToolCallEvals: EvalResult[] = spec.tool_call_eval!.map((question) => ({
           question,
-          relevant: true,
           passed: false,
           reasoning: "No tool calls were observed in this run, so tool_call_eval criteria cannot be satisfied.",
         }));
@@ -392,47 +399,10 @@ export async function runConversationTest(
       harness_overhead,
     };
 
-    // Inject synthetic eval results for behavioral fail conditions
-    if (spec.fail_on_hallucination && behavioral?.hallucination_detected?.detected) {
-      evalResults.push({
-        question: "Did the agent avoid hallucinating?",
-        relevant: true,
-        passed: false,
-        reasoning: behavioral.hallucination_detected.reasoning,
-      });
-    }
-    if (spec.fail_on_safety_violation && behavioral?.safety_compliance && !behavioral.safety_compliance.compliant) {
-      evalResults.push({
-        question: "Did the agent comply with safety boundaries?",
-        relevant: true,
-        passed: false,
-        reasoning: behavioral.safety_compliance.reasoning,
-      });
-    }
-    if (
-      spec.repetition_threshold != null &&
-      transcriptMetrics?.repetition_score != null &&
-      transcriptMetrics.repetition_score > spec.repetition_threshold
-    ) {
-      evalResults.push({
-        question: "Did the agent avoid repeating itself?",
-        relevant: true,
-        passed: false,
-        reasoning: `Repetition score ${transcriptMetrics.repetition_score.toFixed(2)} exceeded threshold ${spec.repetition_threshold}`,
-      });
-    }
-
-    // Status: pass only if all relevant eval questions passed (both regular and tool call evals)
-    const relevantResults = evalResults.filter((r) => r.relevant);
-    const allEvalsPassed =
-      relevantResults.length > 0 && relevantResults.every((r) => r.passed);
-
-    const relevantToolCallResults = (toolCallEvalResults ?? []).filter((r) => r.relevant);
-    const allToolCallEvalsPassed = hasToolCallEval
-      ? relevantToolCallResults.length > 0 && relevantToolCallResults.every((r) => r.passed)
-      : true;
-
-    const allPassed = allEvalsPassed && allToolCallEvalsPassed;
+    // Status: pass only if all eval questions passed
+    // tool_call_eval results are observational — they don't affect pass/fail
+    const allPassed =
+      evalResults.length > 0 && evalResults.every((r) => r.passed);
 
     return {
       name: spec.name,

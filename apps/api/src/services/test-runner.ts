@@ -5,7 +5,7 @@
 
 import type { FastifyInstance } from "fastify";
 import type { AudioChannelConfig } from "@voiceci/adapters";
-import type { LoadPattern, LoadTestTimepoint, RunAggregateV2 } from "@voiceci/shared";
+import type { LoadTestTierResult, LoadTestThresholds, RunAggregateV2, CallerAudioPool } from "@voiceci/shared";
 import { runLoadTest } from "@voiceci/runner/load-test";
 import { schema } from "@voiceci/db";
 import { eq } from "drizzle-orm";
@@ -19,11 +19,12 @@ const activeLoadTests = new Set<Promise<void>>();
 
 export interface LoadTestInProcessOpts {
   channelConfig: AudioChannelConfig;
-  pattern: LoadPattern;
   targetConcurrency: number;
-  totalDurationS: number;
-  rampDurationS?: number;
   callerPrompt: string;
+  maxTurns?: number;
+  evalQuestions?: string[];
+  thresholds?: Partial<LoadTestThresholds>;
+  callerAudioPool?: CallerAudioPool;
 }
 
 /**
@@ -48,11 +49,10 @@ export async function runLoadTestInProcess(
       started_at: new Date(),
       test_spec_json: {
         load_test: {
-          pattern: opts.pattern,
           target_concurrency: opts.targetConcurrency,
-          total_duration_s: opts.totalDurationS,
-          ramp_duration_s: opts.rampDurationS,
           caller_prompt: opts.callerPrompt,
+          max_turns: opts.maxTurns,
+          eval: opts.evalQuestions,
         },
       },
     })
@@ -64,15 +64,15 @@ export async function runLoadTestInProcess(
   await app.db.insert(schema.runEvents).values({
     run_id: runId,
     event_type: "run_started",
-    message: `Load test started: ${opts.pattern} pattern, target ${opts.targetConcurrency} concurrent`,
-    metadata_json: { pattern: opts.pattern, target_concurrency: opts.targetConcurrency },
+    message: `Load test started: target ${opts.targetConcurrency} concurrent`,
+    metadata_json: { target_concurrency: opts.targetConcurrency },
   });
 
   broadcast(runId, {
     run_id: runId,
     event_type: "run_started",
-    message: `Load test started: ${opts.pattern} pattern, target ${opts.targetConcurrency} concurrent`,
-    metadata_json: { pattern: opts.pattern, target_concurrency: opts.targetConcurrency },
+    message: `Load test started: target ${opts.targetConcurrency} concurrent`,
+    metadata_json: { target_concurrency: opts.targetConcurrency },
   });
 
   // Execute load test in background — non-blocking
@@ -80,13 +80,13 @@ export async function runLoadTestInProcess(
     try {
       const result = await runLoadTest({
         ...opts,
-        onTimepoint: (tp: LoadTestTimepoint) => {
+        onTierComplete: (tier: LoadTestTierResult) => {
           // Broadcast via SSE for live dashboard clients
           broadcast(runId, {
             run_id: runId,
-            event_type: "load_test_timepoint",
-            message: `t=${tp.elapsed_s}s: ${tp.active_connections} connections, p95=${Math.round(tp.ttfb_p95_ms)}ms, err=${(tp.error_rate * 100).toFixed(1)}%`,
-            metadata_json: tp as unknown as Record<string, unknown>,
+            event_type: "load_test_tier_complete",
+            message: `Tier ${tier.concurrency} concurrent: ${tier.successful_calls}/${tier.total_calls} success, p95=${Math.round(tier.ttfb_p95_ms)}ms, err=${(tier.error_rate * 100).toFixed(1)}%`,
+            metadata_json: tier as unknown as Record<string, unknown>,
           });
         },
       });
@@ -115,15 +115,15 @@ export async function runLoadTestInProcess(
 
       await app.db.insert(schema.scenarioResults).values({
         run_id: runId,
-        name: `load-test:${result.pattern}`,
+        name: `load-test:tiered`,
         status: result.status,
         test_type: "load_test",
         metrics_json: result,
-        trace_json: result.timeline,
+        trace_json: result.tiers,
       });
 
       // Broadcast completion
-      const completeMessage = `${result.status}: ${result.total_calls} calls, ${result.successful_calls} success, ${result.failed_calls} failed`;
+      const completeMessage = `${result.status} (${result.severity}): ${result.total_calls} calls, ${result.successful_calls} success, ${result.failed_calls} failed`;
       await app.db.insert(schema.runEvents).values({
         run_id: runId,
         event_type: "run_complete",
