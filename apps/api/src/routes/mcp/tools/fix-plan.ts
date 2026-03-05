@@ -351,7 +351,7 @@ function dedupeFailedEvalEvidence(evals: EvalResult[]): FailedEvalEvidence[] {
 }
 
 function failedEvals(evals: EvalResult[] | undefined): EvalResult[] {
-  return (evals ?? []).filter((e) => e.relevant && !e.passed);
+  return (evals ?? []).filter((e) => !e.passed);
 }
 
 function normalizeAudioResults(results: unknown[]): AudioTestResult[] {

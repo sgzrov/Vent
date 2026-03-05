@@ -122,9 +122,7 @@ export function TraceViewer({ trace, evalResults }: TraceViewerProps) {
                   Eval Results
                 </p>
                 <div className="flex flex-wrap gap-1.5">
-                  {evalResults
-                    .filter((e) => e.relevant)
-                    .map((e, i) => (
+                  {evalResults.map((e, i) => (
                       <span
                         key={i}
                         className={cn(

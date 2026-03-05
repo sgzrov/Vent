@@ -23,10 +23,7 @@ export const SYSTEM_INSTRUCTIONS = load("system", "instructions.txt");
 
 // Guides (returned by voiceci_guide_* doc tools)
 export const SETUP_GUIDE = load("guides", "setup.txt");
-export const SCENARIO_GUIDE = load("guides", "scenario.txt");
-export const RESULT_GUIDE = load("guides", "results.txt");
-export const AUDIO_TEST_REFERENCE = load("guides", "audio-tests.txt");
-export const EVAL_EXAMPLES = load("guides", "security-and-tools.txt");
+export const REFERENCE_GUIDE = load("guides", "reference.txt");
 
 // Tool descriptions (used as MCP tool description fields)
 export const RUN_TESTS_DESCRIPTION = load("tools", "run-tests.txt");

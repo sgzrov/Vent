@@ -45,6 +45,34 @@ export interface CallerPersona {
 }
 
 // ============================================================
+// Caller audio effects — real-world audio condition simulation
+// ============================================================
+
+/** Resolved effects for a single call — all values are concrete. */
+export interface CallerAudioEffects {
+  noise?: { type: "babble" | "white" | "pink"; snr_db: number };
+  speed?: number;
+  speakerphone?: boolean;
+  mic_distance?: "close" | "normal" | "far";
+  clarity?: number;
+  accent?: string;
+  packet_loss?: number;
+  jitter_ms?: number;
+}
+
+/** Pool config for load tests — values can be ranges/arrays for per-caller randomization. */
+export interface CallerAudioPool {
+  noise?: { type: string | string[]; snr_db: number | [number, number] };
+  speed?: number | [number, number];
+  speakerphone?: boolean | number;
+  mic_distance?: string | string[];
+  clarity?: number | [number, number];
+  accent?: string | string[];
+  packet_loss?: number | [number, number];
+  jitter_ms?: number | [number, number];
+}
+
+// ============================================================
 // Audio actions — infrastructure challenges injected into conversation turns
 // ============================================================
 
@@ -104,12 +132,8 @@ export interface ConversationTestSpec {
   audio_actions?: AudioAction[];
   /** Opt-in: run Hume prosody analysis on agent audio (requires HUME_API_KEY) */
   prosody?: boolean;
-  /** Fail the test if the judge detects hallucination */
-  fail_on_hallucination?: boolean;
-  /** Fail the test if the judge detects a safety violation */
-  fail_on_safety_violation?: boolean;
-  /** Fail if bigram repetition score exceeds this threshold (0-1) */
-  repetition_threshold?: number;
+  /** Global audio effects applied to all caller audio (speakerphone, speed, noise, accent, etc.) */
+  caller_audio?: CallerAudioEffects;
 }
 
 export const RED_TEAM_ATTACKS = [
@@ -176,8 +200,8 @@ export interface AudioAnalysisWarning {
 /** Per-turn emotional profile from Hume prosody analysis */
 export interface TurnEmotionProfile {
   turn_index: number;
-  /** Top 5 emotions by score */
-  top_emotions: Array<{ name: string; score: number }>;
+  /** Full emotion distribution — all 48 Hume emotions with scores (0-1) */
+  emotions: Record<string, number>;
   /** Composite: avg(Calmness, Contentment) */
   calmness: number;
   /** Composite: avg(Confidence, Determination) */
@@ -281,7 +305,6 @@ export interface ConversationTurn {
 
 export interface EvalResult {
   question: string;
-  relevant: boolean;
   passed: boolean;
   reasoning: string;
 }
@@ -426,34 +449,76 @@ export interface RunnerCallbackPayloadV2 {
 // Load testing types
 // ============================================================
 
-export type LoadPattern = "ramp" | "spike" | "sustained" | "soak";
+export type LoadTestSeverity = "excellent" | "good" | "acceptable" | "critical";
 
-export interface LoadTestTimepoint {
-  elapsed_s: number;
-  active_connections: number;
+export interface LoadTestThresholds {
+  /** [excellent, good, acceptable] — values above acceptable = critical */
+  ttfw_ms: [number, number, number];
+  p95_latency_ms: [number, number, number];
+  error_rate: [number, number, number];
+  /** Higher = better. Values below acceptable = critical */
+  quality_score: [number, number, number];
+}
+
+export const DEFAULT_LOAD_TEST_THRESHOLDS: LoadTestThresholds = {
+  ttfw_ms: [300, 500, 800],
+  p95_latency_ms: [2200, 2500, 3000],
+  error_rate: [0.001, 0.005, 0.01],
+  quality_score: [0.9, 0.8, 0.7],
+};
+
+export interface LoadTestBreakingPoint {
+  concurrency: number;
+  triggered_by: Array<"error_rate" | "p95_latency" | "quality_drop">;
+  error_rate: number;
+  p95_ttfb_ms: number;
+  quality_score?: number;
+}
+
+export interface LoadTestGrading {
+  ttfw: LoadTestSeverity;
+  p95_latency: LoadTestSeverity;
+  error_rate: LoadTestSeverity;
+  quality: LoadTestSeverity;
+  overall: LoadTestSeverity;
+}
+
+export interface LoadTestEvalSummary {
+  total_evaluated: number;
+  mean_quality_score: number;
+  questions: Array<{ question: string; pass_rate: number }>;
+}
+
+export interface LoadTestTierResult {
+  concurrency: number;
+  total_calls: number;
+  successful_calls: number;
+  failed_calls: number;
+  error_rate: number;
   ttfb_p50_ms: number;
   ttfb_p95_ms: number;
   ttfb_p99_ms: number;
-  error_rate: number;
-  errors_cumulative: number;
+  ttfw_p50_ms: number;
+  ttfw_p95_ms: number;
+  ttfw_p99_ms: number;
+  connect_p50_ms: number;
+  mean_quality_score: number;
+  quality_degradation_pct: number;
+  ttfb_degradation_pct: number;
+  duration_ms: number;
 }
 
 export interface LoadTestResult {
   status: "pass" | "fail";
-  pattern: LoadPattern;
+  severity: LoadTestSeverity;
   target_concurrency: number;
-  actual_peak_concurrency: number;
+  tiers: LoadTestTierResult[];
   total_calls: number;
   successful_calls: number;
   failed_calls: number;
-  timeline: LoadTestTimepoint[];
-  summary: {
-    ttfb_p50_ms: number;
-    ttfb_p95_ms: number;
-    ttfb_p99_ms: number;
-    error_rate: number;
-    breaking_point?: number;
-    mean_call_duration_ms: number;
-  };
+  breaking_point?: LoadTestBreakingPoint;
+  grading: LoadTestGrading;
+  eval_summary?: LoadTestEvalSummary;
+  thresholds: LoadTestThresholds;
   duration_ms: number;
 }

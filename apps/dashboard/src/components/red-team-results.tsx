@@ -43,9 +43,7 @@ export function RedTeamResults({ scenarios }: RedTeamResultsProps) {
           const evalsPassed = result.eval_results.filter(
             (e) => e.passed
           ).length;
-          const evalsTotal = result.eval_results.filter(
-            (e) => e.relevant
-          ).length;
+          const evalsTotal = result.eval_results.length;
 
           return (
             <Card
@@ -129,7 +127,7 @@ function RedTeamDetailPanel({
 }) {
   const result = scenario.metrics_json as ConversationTestResult;
   const evalsPassed = result.eval_results.filter((e) => e.passed).length;
-  const evalsTotal = result.eval_results.filter((e) => e.relevant).length;
+  const evalsTotal = result.eval_results.length;
 
   return (
     <Card className="border-amber-500/20">

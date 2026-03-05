@@ -54,6 +54,37 @@ export const CallerPersonaSchema = z.object({
   confirmation_style: z.enum(["explicit", "vague"]).optional(),
 }).optional();
 
+export const CallerAudioEffectsSchema = z.object({
+  noise: z.object({
+    type: z.enum(["babble", "white", "pink"]),
+    snr_db: z.number().min(0).max(40).default(10),
+  }).optional(),
+  speed: z.number().min(0.5).max(2.0).optional(),
+  speakerphone: z.boolean().optional(),
+  mic_distance: z.enum(["close", "normal", "far"]).optional(),
+  clarity: z.number().min(0).max(1).optional(),
+  accent: z.string().optional(),
+  packet_loss: z.number().min(0).max(0.3).optional(),
+  jitter_ms: z.number().min(0).max(100).optional(),
+});
+
+const noiseTypeEnum = z.enum(["babble", "white", "pink"]);
+const micDistanceEnum = z.enum(["close", "normal", "far"]);
+
+export const CallerAudioPoolSchema = z.object({
+  noise: z.object({
+    type: z.union([noiseTypeEnum, z.array(noiseTypeEnum)]),
+    snr_db: z.union([z.number(), z.tuple([z.number(), z.number()])]),
+  }).optional(),
+  speed: z.union([z.number(), z.tuple([z.number(), z.number()])]).optional(),
+  speakerphone: z.union([z.boolean(), z.number().min(0).max(1)]).optional(),
+  mic_distance: z.union([micDistanceEnum, z.array(micDistanceEnum)]).optional(),
+  clarity: z.union([z.number(), z.tuple([z.number(), z.number()])]).optional(),
+  accent: z.union([z.string(), z.array(z.string())]).optional(),
+  packet_loss: z.union([z.number(), z.tuple([z.number(), z.number()])]).optional(),
+  jitter_ms: z.union([z.number(), z.tuple([z.number(), z.number()])]).optional(),
+});
+
 export const ConversationTestSpecSchema = z.object({
   name: z.string().optional(),
   caller_prompt: z.string().min(1),
@@ -64,6 +95,7 @@ export const ConversationTestSpecSchema = z.object({
   persona: CallerPersonaSchema,
   audio_actions: z.array(AudioActionSchema).optional(),
   prosody: z.boolean().optional(),
+  caller_audio: CallerAudioEffectsSchema.optional(),
 });
 
 export const RedTeamAttackSchema = z.enum(RED_TEAM_ATTACKS);
@@ -163,7 +195,6 @@ export const ConversationTurnSchema = z.object({
 
 export const EvalResultSchema = z.object({
   question: z.string(),
-  relevant: z.boolean(),
   passed: z.boolean(),
   reasoning: z.string(),
 });
@@ -240,7 +271,7 @@ export const AudioAnalysisMetricsSchema = z.object({
 
 export const TurnEmotionProfileSchema = z.object({
   turn_index: z.number().int().min(0),
-  top_emotions: z.array(z.object({ name: z.string(), score: z.number() })),
+  emotions: z.record(z.string(), z.number()),
   calmness: z.number(),
   confidence: z.number(),
   frustration: z.number(),
@@ -348,34 +379,72 @@ export const RunnerCallbackV2Schema = z.object({
 // Load testing schemas
 // ============================================================
 
-export const LoadPatternSchema = z.enum(["ramp", "spike", "sustained", "soak"]);
+export const LoadTestSeveritySchema = z.enum(["excellent", "good", "acceptable", "critical"]);
 
-export const LoadTestTimepointSchema = z.object({
-  elapsed_s: z.number(),
-  active_connections: z.number(),
+const ThresholdTupleSchema = z.tuple([z.number(), z.number(), z.number()]);
+
+export const LoadTestThresholdsSchema = z.object({
+  ttfw_ms: ThresholdTupleSchema,
+  p95_latency_ms: ThresholdTupleSchema,
+  error_rate: ThresholdTupleSchema,
+  quality_score: ThresholdTupleSchema,
+});
+
+export const LoadTestBreakingPointSchema = z.object({
+  concurrency: z.number(),
+  triggered_by: z.array(z.enum(["error_rate", "p95_latency", "quality_drop"])),
+  error_rate: z.number(),
+  p95_ttfb_ms: z.number(),
+  quality_score: z.number().optional(),
+});
+
+export const LoadTestGradingSchema = z.object({
+  ttfw: LoadTestSeveritySchema,
+  p95_latency: LoadTestSeveritySchema,
+  error_rate: LoadTestSeveritySchema,
+  quality: LoadTestSeveritySchema,
+  overall: LoadTestSeveritySchema,
+});
+
+export const LoadTestEvalSummarySchema = z.object({
+  total_evaluated: z.number().int().min(0),
+  mean_quality_score: z.number().min(0).max(1),
+  questions: z.array(z.object({
+    question: z.string(),
+    pass_rate: z.number().min(0).max(1),
+  })),
+});
+
+export const LoadTestTierResultSchema = z.object({
+  concurrency: z.number().int().min(1),
+  total_calls: z.number().int().min(0),
+  successful_calls: z.number().int().min(0),
+  failed_calls: z.number().int().min(0),
+  error_rate: z.number().min(0).max(1),
   ttfb_p50_ms: z.number(),
   ttfb_p95_ms: z.number(),
   ttfb_p99_ms: z.number(),
-  error_rate: z.number(),
-  errors_cumulative: z.number(),
+  ttfw_p50_ms: z.number(),
+  ttfw_p95_ms: z.number(),
+  ttfw_p99_ms: z.number(),
+  connect_p50_ms: z.number(),
+  mean_quality_score: z.number().min(0).max(1),
+  quality_degradation_pct: z.number(),
+  ttfb_degradation_pct: z.number(),
+  duration_ms: z.number(),
 });
 
 export const LoadTestResultSchema = z.object({
   status: z.enum(["pass", "fail"]),
-  pattern: LoadPatternSchema,
+  severity: LoadTestSeveritySchema,
   target_concurrency: z.number(),
-  actual_peak_concurrency: z.number(),
+  tiers: z.array(LoadTestTierResultSchema),
   total_calls: z.number(),
   successful_calls: z.number(),
   failed_calls: z.number(),
-  timeline: z.array(LoadTestTimepointSchema),
-  summary: z.object({
-    ttfb_p50_ms: z.number(),
-    ttfb_p95_ms: z.number(),
-    ttfb_p99_ms: z.number(),
-    error_rate: z.number(),
-    breaking_point: z.number().optional(),
-    mean_call_duration_ms: z.number(),
-  }),
+  breaking_point: LoadTestBreakingPointSchema.optional(),
+  grading: LoadTestGradingSchema,
+  eval_summary: LoadTestEvalSummarySchema.optional(),
+  thresholds: LoadTestThresholdsSchema,
   duration_ms: z.number(),
 });

@@ -33,6 +33,17 @@ export interface CallerPersona {
   confirmation_style?: "explicit" | "vague";
 }
 
+export interface CallerAudioEffects {
+  noise?: { type: "babble" | "white" | "pink"; snr_db: number };
+  speed?: number;
+  speakerphone?: boolean;
+  mic_distance?: "close" | "normal" | "far";
+  clarity?: number;
+  accent?: string;
+  packet_loss?: number;
+  jitter_ms?: number;
+}
+
 export interface ConversationTestSpec {
   name?: string;
   caller_prompt: string;
@@ -42,6 +53,7 @@ export interface ConversationTestSpec {
   silence_threshold_ms?: number;
   persona?: CallerPersona;
   prosody?: boolean;
+  caller_audio?: CallerAudioEffects;
 }
 
 export type RedTeamAttack =
@@ -57,11 +69,10 @@ export interface TestSpec {
   conversation_tests?: ConversationTestSpec[];
   red_team?: RedTeamAttack[];
   load_test?: {
-    pattern: LoadPattern;
     target_concurrency: number;
-    total_duration_s: number;
-    ramp_duration_s?: number;
     caller_prompt: string;
+    max_turns?: number;
+    eval?: string[];
   };
 }
 
@@ -174,7 +185,6 @@ export interface ConversationTurn {
 
 export interface EvalResult {
   question: string;
-  relevant: boolean;
   passed: boolean;
   reasoning: string;
 }
@@ -309,7 +319,7 @@ export interface AudioAnalysisWarning {
 
 export interface TurnEmotionProfile {
   turn_index: number;
-  top_emotions: Array<{ name: string; score: number }>;
+  emotions: Record<string, number>;
   calmness: number;
   confidence: number;
   frustration: number;
@@ -345,35 +355,68 @@ export interface HarnessOverhead {
 
 // --- Load test types ---
 
-export type LoadPattern = "ramp" | "spike" | "sustained" | "soak";
+export type LoadTestSeverity = "excellent" | "good" | "acceptable" | "critical";
 
-export interface LoadTestTimepoint {
-  elapsed_s: number;
-  active_connections: number;
+export interface LoadTestThresholds {
+  ttfw_ms: [number, number, number];
+  p95_latency_ms: [number, number, number];
+  error_rate: [number, number, number];
+  quality_score: [number, number, number];
+}
+
+export interface LoadTestBreakingPoint {
+  concurrency: number;
+  triggered_by: Array<"error_rate" | "p95_latency" | "quality_drop">;
+  error_rate: number;
+  p95_ttfb_ms: number;
+  quality_score?: number;
+}
+
+export interface LoadTestGrading {
+  ttfw: LoadTestSeverity;
+  p95_latency: LoadTestSeverity;
+  error_rate: LoadTestSeverity;
+  quality: LoadTestSeverity;
+  overall: LoadTestSeverity;
+}
+
+export interface LoadTestEvalSummary {
+  total_evaluated: number;
+  mean_quality_score: number;
+  questions: Array<{ question: string; pass_rate: number }>;
+}
+
+export interface LoadTestTierResult {
+  concurrency: number;
+  total_calls: number;
+  successful_calls: number;
+  failed_calls: number;
+  error_rate: number;
   ttfb_p50_ms: number;
   ttfb_p95_ms: number;
   ttfb_p99_ms: number;
-  error_rate: number;
-  errors_cumulative: number;
+  ttfw_p50_ms: number;
+  ttfw_p95_ms: number;
+  ttfw_p99_ms: number;
+  connect_p50_ms: number;
+  mean_quality_score: number;
+  quality_degradation_pct: number;
+  ttfb_degradation_pct: number;
+  duration_ms: number;
 }
 
 export interface LoadTestResult {
   status: "pass" | "fail";
-  pattern: LoadPattern;
+  severity: LoadTestSeverity;
   target_concurrency: number;
-  actual_peak_concurrency: number;
+  tiers: LoadTestTierResult[];
   total_calls: number;
   successful_calls: number;
   failed_calls: number;
-  timeline: LoadTestTimepoint[];
-  summary: {
-    ttfb_p50_ms: number;
-    ttfb_p95_ms: number;
-    ttfb_p99_ms: number;
-    error_rate: number;
-    breaking_point?: number;
-    mean_call_duration_ms: number;
-  };
+  breaking_point?: LoadTestBreakingPoint;
+  grading: LoadTestGrading;
+  eval_summary?: LoadTestEvalSummary;
+  thresholds: LoadTestThresholds;
   duration_ms: number;
 }
 

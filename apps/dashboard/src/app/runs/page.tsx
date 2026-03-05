@@ -86,7 +86,7 @@ function describeRun(run: RunRow): string {
     if (spec.red_team?.length)
       parts.push(`${spec.red_team.length} red-team`);
     if (spec.load_test)
-      parts.push(`load test (${spec.load_test.pattern})`);
+      parts.push(`load test (${spec.load_test.target_concurrency} concurrent)`);
     if (parts.length > 0) return parts.join(", ");
   }
   if (run.aggregate_json) {
@@ -151,8 +151,7 @@ function getMetaTags(spec: TestSpec | null): string[] {
   }
 
   if (spec.load_test) {
-    tags.push(`${spec.load_test.pattern} pattern`);
-    tags.push(`${spec.load_test.target_concurrency} target concurrency`);
+    tags.push(`${spec.load_test.target_concurrency} concurrent callers`);
   }
 
   return tags;

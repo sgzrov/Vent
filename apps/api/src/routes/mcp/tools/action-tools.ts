@@ -6,7 +6,8 @@ import { schema } from "@voiceci/db";
 import { z } from "zod";
 import {
   AdapterTypeSchema,
-  LoadPatternSchema,
+  LoadTestThresholdsSchema,
+  CallerAudioPoolSchema,
   type RedTeamAttack,
 } from "@voiceci/shared";
 import { expandRedTeamTests } from "@voiceci/runner/executor";
@@ -102,10 +103,22 @@ export function registerActionTools(
         ? { adapter, target_phone_number: targetPhoneNumber, voice }
         : { adapter, target_phone_number: targetPhoneNumber };
 
+      // Merge root-level caller_audio as default onto conversation tests
+      const callerAudio = cfg.caller_audio as Record<string, unknown> | undefined;
+      let conversationTests = cfg.conversation_tests as Record<string, unknown>[] | null | undefined;
+      if (callerAudio && Array.isArray(conversationTests)) {
+        conversationTests = conversationTests.map((test) => {
+          if (test.caller_audio === undefined) {
+            return { ...test, caller_audio: callerAudio };
+          }
+          return test;
+        });
+      }
+
       return {
         testSpecJson: {
           infrastructure: cfg.infrastructure ?? null,
-          conversation_tests: cfg.conversation_tests ?? null,
+          conversation_tests: conversationTests ?? null,
           red_team: cfg.red_team ?? null,
           adapter,
           voice_config: voiceConfig,
@@ -119,6 +132,7 @@ export function registerActionTools(
         agentUrl,
         voiceConfig,
         targetPhoneNumber,
+        conversationTests: conversationTests ?? null,
         isRemote: ["vapi", "retell", "elevenlabs", "bland"].includes(adapter)
           || adapter === "sip" || adapter === "webrtc" || !!agentUrl,
       };
@@ -169,7 +183,7 @@ export function registerActionTools(
       };
     }
 
-    const { testSpecJson, adapter, agentUrl, voiceConfig, targetPhoneNumber, isRemote } = buildTestSpec(cfg);
+    const { testSpecJson, adapter, agentUrl, voiceConfig, targetPhoneNumber, conversationTests, isRemote } = buildTestSpec(cfg);
 
     if (isRemote) {
       // Remote/deployed agent — queue immediately, no bash needed
@@ -198,7 +212,7 @@ export function registerActionTools(
         adapter,
         test_spec: {
           infrastructure: cfg.infrastructure ?? null,
-          conversation_tests: cfg.conversation_tests ?? null,
+          conversation_tests: conversationTests ?? null,
           red_team: cfg.red_team ?? null,
         },
         target_phone_number: targetPhoneNumber,
@@ -266,7 +280,7 @@ export function registerActionTools(
     return {
       content: [{
         type: "text" as const,
-        text: `ACTION REQUIRED: Run this command in the project root to start your agent and connect to VoiceCI for testing. The run will NOT proceed until you execute this command.\n\n${relayCommand}\n\nThe relay client will start your agent, connect to VoiceCI, and tests will run against your local agent. After executing, spawn subagents to monitor results via voiceci_get_run_status with run_id: ${runId}`,
+        text: `RELAY COMMAND — execute this in the project root. This is a LONG-RUNNING background process.\n\n${relayCommand}\n\nCRITICAL INSTRUCTIONS:\n1. Run this command in the BACKGROUND (is_background: true or equivalent). It stays running while tests execute.\n2. Execute EXACTLY ONCE. Do NOT retry, re-run, or run variations of this command.\n3. Do NOT run npm install, check ports, or any other prep commands. The relay handles everything.\n4. After backgrounding, IMMEDIATELY spawn subagents to monitor results via voiceci_get_run_status with run_id: ${runId}`,
       }],
     };
   });
@@ -278,31 +292,31 @@ export function registerActionTools(
     inputSchema: {
       adapter: AdapterTypeSchema.describe("Transport: websocket, sip, or webrtc."),
       agent_url: z.string().describe("URL of the already-deployed agent to test."),
-      pattern: LoadPatternSchema.describe(
-        "Traffic pattern: ramp (linear 0→target), spike (1→target instantly), sustained (full immediately), soak (slow ramp, long hold)"
-      ),
       target_concurrency: z
         .number()
         .int()
         .min(1)
-        .max(500)
-        .describe("Maximum concurrent calls to maintain"),
-      total_duration_s: z
-        .number()
-        .int()
-        .min(10)
-        .max(3600)
-        .describe("Total test duration in seconds"),
-      ramp_duration_s: z
-        .number()
-        .int()
-        .min(1)
-        .optional()
-        .describe("Duration of ramp-up phase in seconds (default: 30% of total_duration_s)"),
+        .max(100)
+        .describe("Maximum concurrent calls. Tiers fire at 10%, 25%, 50%, 100% of this value."),
       caller_prompt: z
         .string()
         .min(1)
-        .describe("What the simulated caller says. Pre-synthesized once and replayed for all callers."),
+        .describe("Persona prompt for CallerLLM. Each concurrent caller generates a unique utterance from this prompt."),
+      max_turns: z
+        .number()
+        .int()
+        .min(1)
+        .max(10)
+        .optional()
+        .describe("Conversation turns per call (default 6). Every call is a full multi-turn conversation."),
+      eval: z
+        .array(z.string().min(1))
+        .optional()
+        .describe("Eval questions for post-call quality scoring. Each call's transcript is judged against these."),
+      thresholds: LoadTestThresholdsSchema
+        .partial()
+        .optional()
+        .describe("Override default severity thresholds. Each field is [excellent, good, acceptable]."),
       target_phone_number: z
         .string()
         .optional()
@@ -326,19 +340,23 @@ export function registerActionTools(
         })
         .optional()
         .describe("Voice configuration overrides."),
+      caller_audio: CallerAudioPoolSchema
+        .optional()
+        .describe("Audio condition simulation for callers. By default, values are randomized per caller from ranges/arrays. Use exact values to make all callers identical. Effects: noise (babble/white/pink + SNR), speed (0.5-2.0), speakerphone (bandpass 300-3400Hz), mic_distance (close/normal/far), clarity (0-1), accent (american/british/australian/etc), packet_loss (0-0.3), jitter_ms (0-100)."),
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
   }, async (
     {
       adapter,
       agent_url,
-      pattern,
       target_concurrency,
-      total_duration_s,
-      ramp_duration_s,
       caller_prompt,
+      max_turns,
+      eval: evalQuestions,
+      thresholds,
       target_phone_number,
       voice,
+      caller_audio,
     },
   ) => {
     const runId = await runLoadTestInProcess(
@@ -349,11 +367,12 @@ export function registerActionTools(
           targetPhoneNumber: target_phone_number,
           voice,
         },
-        pattern,
         targetConcurrency: target_concurrency,
-        totalDurationS: total_duration_s,
-        rampDurationS: ramp_duration_s,
         callerPrompt: caller_prompt,
+        maxTurns: max_turns,
+        evalQuestions,
+        thresholds,
+        callerAudioPool: caller_audio,
       },
       app,
       apiKeyId,
@@ -367,10 +386,8 @@ export function registerActionTools(
           text: JSON.stringify({
             run_id: runId,
             status: "running",
-            pattern,
             target_concurrency,
-            total_duration_s,
-            message: "Load test started. Use voiceci_get_run_status with this run_id and test_type='load_test' to get results via long-polling.",
+            message: "Load test started. Tiers will fire at increasing concurrency levels. Use voiceci_get_run_status with this run_id and test_type='load_test' to get results via long-polling.",
           }, null, 2),
         },
       ],

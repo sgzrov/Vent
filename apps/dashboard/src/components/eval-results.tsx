@@ -25,12 +25,7 @@ function EvalRow({ eval_ }: { eval_: EvalResult }) {
         />
         <div className="flex-1 min-w-0">
           <p className="text-sm font-medium">{eval_.question}</p>
-          {!eval_.relevant && (
-            <span className="text-xs text-muted-foreground italic">
-              Not relevant to this conversation
-            </span>
-          )}
-          {eval_.relevant && eval_.reasoning && (
+          {eval_.reasoning && (
             <p className="text-xs text-muted-foreground mt-1.5 leading-relaxed">
               {eval_.reasoning}
             </p>

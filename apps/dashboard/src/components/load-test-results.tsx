@@ -2,7 +2,13 @@
 
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-import type { ScenarioResultRow, LoadTestResult, LoadTestTimepoint } from "@/lib/types";
+import type {
+  ScenarioResultRow,
+  LoadTestResult,
+  LoadTestTierResult,
+  LoadTestSeverity,
+  LoadTestGrading,
+} from "@/lib/types";
 import { formatDuration } from "@/lib/format";
 
 // ---------------------------------------------------------------------------
@@ -17,12 +23,37 @@ function fmtPct(v: number): string {
   return `${(v * 100).toFixed(1)}%`;
 }
 
-const PATTERN_LABELS: Record<string, string> = {
-  ramp: "Ramp",
-  spike: "Spike",
-  sustained: "Sustained",
-  soak: "Soak",
+const SEVERITY_COLORS: Record<LoadTestSeverity, string> = {
+  excellent: "text-emerald-600 dark:text-emerald-400",
+  good: "text-blue-600 dark:text-blue-400",
+  acceptable: "text-amber-600 dark:text-amber-400",
+  critical: "text-red-600 dark:text-red-400",
 };
+
+const SEVERITY_BG: Record<LoadTestSeverity, string> = {
+  excellent: "bg-emerald-500/10 border-emerald-500/30",
+  good: "bg-blue-500/10 border-blue-500/30",
+  acceptable: "bg-amber-500/10 border-amber-500/30",
+  critical: "bg-red-500/10 border-red-500/30",
+};
+
+// ---------------------------------------------------------------------------
+// Severity badge
+// ---------------------------------------------------------------------------
+
+function SeverityBadge({ severity }: { severity: LoadTestSeverity }) {
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold uppercase tracking-wider border",
+        SEVERITY_BG[severity],
+        SEVERITY_COLORS[severity],
+      )}
+    >
+      {severity}
+    </span>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Summary card
@@ -32,12 +63,12 @@ function SummaryCard({
   label,
   value,
   sub,
-  status,
+  severity,
 }: {
   label: string;
   value: string;
   sub?: string;
-  status?: "pass" | "fail";
+  severity?: LoadTestSeverity;
 }) {
   return (
     <div className="rounded-lg border border-border px-3.5 py-2.5">
@@ -47,103 +78,190 @@ function SummaryCard({
       <p
         className={cn(
           "text-lg font-semibold font-mono tabular-nums mt-0.5 leading-tight",
-          status === "pass" && "text-emerald-600 dark:text-emerald-400",
-          status === "fail" && "text-red-600 dark:text-red-400"
+          severity && SEVERITY_COLORS[severity],
         )}
       >
         {value}
       </p>
       {sub && (
-        <p className="text-[11px] text-red-500 mt-0.5">{sub}</p>
+        <p className="text-[11px] text-muted-foreground mt-0.5">{sub}</p>
       )}
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Timeline chart (pure SVG)
+// Grading table
 // ---------------------------------------------------------------------------
 
-function LoadTestTimelineChart({
-  timeline,
-  breakingPoint,
-}: {
-  timeline: LoadTestTimepoint[];
-  breakingPoint?: number;
-}) {
-  if (timeline.length < 2) return null;
+function GradingTable({ grading }: { grading: LoadTestGrading }) {
+  const rows: Array<{ metric: string; grade: LoadTestSeverity }> = [
+    { metric: "TTFW (P95)", grade: grading.ttfw },
+    { metric: "P95 Latency", grade: grading.p95_latency },
+    { metric: "Error Rate", grade: grading.error_rate },
+    { metric: "Quality", grade: grading.quality },
+  ];
 
-  const width = 700;
-  const height = 300;
+  return (
+    <div className="rounded-lg border border-border overflow-hidden">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b border-border">
+            <th className="text-left px-3.5 py-2 text-[11px] text-muted-foreground/60 uppercase tracking-wider font-medium">
+              Metric
+            </th>
+            <th className="text-right px-3.5 py-2 text-[11px] text-muted-foreground/60 uppercase tracking-wider font-medium">
+              Grade
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.metric} className="border-b border-border last:border-0">
+              <td className="px-3.5 py-2 text-foreground">{row.metric}</td>
+              <td className="px-3.5 py-2 text-right">
+                <span className={cn("font-semibold font-mono text-xs uppercase", SEVERITY_COLORS[row.grade])}>
+                  {row.grade}
+                </span>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Tier results table
+// ---------------------------------------------------------------------------
+
+function TierTable({ tiers }: { tiers: LoadTestTierResult[] }) {
+  return (
+    <div className="rounded-lg border border-border overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b border-border">
+            {["Concurrency", "Calls", "Error Rate", "TTFB P95", "TTFW P95", "Quality", "Degradation"].map(
+              (h) => (
+                <th
+                  key={h}
+                  className="text-right px-3 py-2 text-[11px] text-muted-foreground/60 uppercase tracking-wider font-medium first:text-left"
+                >
+                  {h}
+                </th>
+              ),
+            )}
+          </tr>
+        </thead>
+        <tbody>
+          {tiers.map((tier, i) => (
+            <tr key={i} className="border-b border-border last:border-0">
+              <td className="px-3 py-2 font-mono font-semibold tabular-nums text-foreground">
+                {tier.concurrency}
+              </td>
+              <td className="px-3 py-2 font-mono tabular-nums text-right text-muted-foreground">
+                {tier.successful_calls}/{tier.total_calls}
+              </td>
+              <td
+                className={cn(
+                  "px-3 py-2 font-mono tabular-nums text-right",
+                  tier.error_rate > 0.01
+                    ? "text-red-600 dark:text-red-400"
+                    : tier.error_rate > 0
+                    ? "text-amber-600 dark:text-amber-400"
+                    : "text-muted-foreground",
+                )}
+              >
+                {fmtPct(tier.error_rate)}
+              </td>
+              <td className="px-3 py-2 font-mono tabular-nums text-right text-muted-foreground">
+                {fmtMs(tier.ttfb_p95_ms)}
+              </td>
+              <td className="px-3 py-2 font-mono tabular-nums text-right text-muted-foreground">
+                {fmtMs(tier.ttfw_p95_ms)}
+              </td>
+              <td
+                className={cn(
+                  "px-3 py-2 font-mono tabular-nums text-right",
+                  tier.mean_quality_score >= 0.8
+                    ? "text-emerald-600 dark:text-emerald-400"
+                    : tier.mean_quality_score >= 0.7
+                    ? "text-amber-600 dark:text-amber-400"
+                    : tier.mean_quality_score > 0
+                    ? "text-red-600 dark:text-red-400"
+                    : "text-muted-foreground",
+                )}
+              >
+                {tier.mean_quality_score > 0 ? tier.mean_quality_score.toFixed(2) : "—"}
+              </td>
+              <td
+                className={cn(
+                  "px-3 py-2 font-mono tabular-nums text-right",
+                  tier.ttfb_degradation_pct > 100
+                    ? "text-red-600 dark:text-red-400"
+                    : tier.ttfb_degradation_pct > 50
+                    ? "text-amber-600 dark:text-amber-400"
+                    : "text-muted-foreground",
+                )}
+              >
+                {tier.ttfb_degradation_pct > 0 ? `+${tier.ttfb_degradation_pct}%` : "baseline"}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Degradation chart (pure SVG)
+// ---------------------------------------------------------------------------
+
+function DegradationChart({ tiers }: { tiers: LoadTestTierResult[] }) {
+  if (tiers.length < 2) return null;
+
+  const width = 600;
+  const height = 240;
   const padLeft = 52;
   const padRight = 52;
   const padTop = 20;
-  const padBottom = 40;
+  const padBottom = 36;
   const innerW = width - padLeft - padRight;
   const innerH = height - padTop - padBottom;
 
-  const maxElapsed = Math.max(...timeline.map((t) => t.elapsed_s));
-  const maxTtfb = Math.max(...timeline.map((t) => t.ttfb_p99_ms), 100);
-  const maxConnections = Math.max(...timeline.map((t) => t.active_connections), 1);
+  // X positions for each tier (evenly spaced)
+  const xStep = innerW / (tiers.length - 1);
+  const xPos = tiers.map((_, i) => padLeft + i * xStep);
 
-  // Scales
-  const xScale = (s: number) => padLeft + (s / Math.max(maxElapsed, 1)) * innerW;
+  // Y scales
+  const maxTtfb = Math.max(...tiers.map((t) => t.ttfb_p95_ms), 100);
   const yTtfb = (v: number) => padTop + innerH - (v / maxTtfb) * innerH;
-  const yConn = (v: number) => padTop + innerH - (v / maxConnections) * innerH;
 
-  // Build SVG paths
-  const buildPath = (accessor: (tp: LoadTestTimepoint) => number, yFn: (v: number) => number) =>
-    timeline
-      .map((tp, i) => `${i === 0 ? "M" : "L"} ${xScale(tp.elapsed_s).toFixed(1)} ${yFn(accessor(tp)).toFixed(1)}`)
-      .join(" ");
+  const hasQuality = tiers.some((t) => t.mean_quality_score > 0);
+  const yQuality = (v: number) => padTop + innerH - v * innerH;
 
-  const connAreaPath =
-    buildPath((tp) => tp.active_connections, yConn) +
-    ` L ${xScale(timeline[timeline.length - 1]!.elapsed_s).toFixed(1)} ${(padTop + innerH).toFixed(1)}` +
-    ` L ${xScale(timeline[0]!.elapsed_s).toFixed(1)} ${(padTop + innerH).toFixed(1)} Z`;
+  // Build paths
+  const ttfbPath = tiers
+    .map((t, i) => `${i === 0 ? "M" : "L"} ${xPos[i]!.toFixed(1)} ${yTtfb(t.ttfb_p95_ms).toFixed(1)}`)
+    .join(" ");
 
-  const p50Path = buildPath((tp) => tp.ttfb_p50_ms, yTtfb);
-  const p95Path = buildPath((tp) => tp.ttfb_p95_ms, yTtfb);
-  const p99Path = buildPath((tp) => tp.ttfb_p99_ms, yTtfb);
+  const qualityPath = hasQuality
+    ? tiers
+        .map((t, i) => `${i === 0 ? "M" : "L"} ${xPos[i]!.toFixed(1)} ${yQuality(t.mean_quality_score).toFixed(1)}`)
+        .join(" ")
+    : null;
 
-  // Error rate dots (only where > 0)
-  const errorPoints = timeline
-    .filter((tp) => tp.error_rate > 0)
-    .map((tp) => ({
-      x: xScale(tp.elapsed_s),
-      y: yTtfb(0), // show at bottom
-      rate: tp.error_rate,
-    }));
-
-  // Axis ticks
-  const xTicks: number[] = [];
-  const xStep = maxElapsed <= 30 ? 5 : maxElapsed <= 120 ? 15 : maxElapsed <= 600 ? 60 : 300;
-  for (let t = 0; t <= maxElapsed; t += xStep) {
-    xTicks.push(t);
-  }
-
-  const yTtfbTicks: number[] = [];
-  const yStep = maxTtfb <= 500 ? 100 : maxTtfb <= 2000 ? 500 : 1000;
-  for (let v = 0; v <= maxTtfb; v += yStep) {
-    yTtfbTicks.push(v);
-  }
-
-  const yConnTicks: number[] = [];
-  const cStep = maxConnections <= 10 ? 2 : maxConnections <= 50 ? 10 : maxConnections <= 200 ? 50 : 100;
-  for (let v = 0; v <= maxConnections; v += cStep) {
-    yConnTicks.push(v);
-  }
-
-  // Breaking point x position
-  const breakingX = breakingPoint != null
-    ? timeline.find((tp) => tp.active_connections >= breakingPoint)
-    : undefined;
-  const breakingXPos = breakingX ? xScale(breakingX.elapsed_s) : undefined;
+  // Y-axis ticks for TTFB
+  const ttfbStep = maxTtfb <= 500 ? 100 : maxTtfb <= 2000 ? 500 : 1000;
+  const ttfbTicks: number[] = [];
+  for (let v = 0; v <= maxTtfb; v += ttfbStep) ttfbTicks.push(v);
 
   return (
     <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-auto overflow-visible">
       {/* Grid lines */}
-      {yTtfbTicks.map((v) => (
+      {ttfbTicks.map((v) => (
         <line
           key={`g-${v}`}
           x1={padLeft}
@@ -156,63 +274,24 @@ function LoadTestTimelineChart({
         />
       ))}
 
-      {/* Active connections area */}
-      <path
-        d={connAreaPath}
-        fill="currentColor"
-        className="text-blue-500/10 dark:text-blue-400/10"
-      />
-      <path
-        d={buildPath((tp) => tp.active_connections, yConn)}
-        fill="none"
-        stroke="currentColor"
-        strokeWidth={1}
-        className="text-blue-400/40"
-      />
-
-      {/* TTFB lines */}
-      <path d={p50Path} fill="none" stroke="#a1a1aa" strokeWidth={1.5} />
-      <path d={p95Path} fill="none" stroke="#f59e0b" strokeWidth={1.5} />
-      <path d={p99Path} fill="none" stroke="#ef4444" strokeWidth={1.5} />
-
-      {/* Error rate dots */}
-      {errorPoints.map((p, i) => (
-        <circle
-          key={`err-${i}`}
-          cx={p.x}
-          cy={padTop + innerH - 6}
-          r={3}
-          fill="#ef4444"
-          opacity={Math.min(1, p.rate * 5 + 0.3)}
-        />
+      {/* P95 TTFB line + dots */}
+      <path d={ttfbPath} fill="none" stroke="#ef4444" strokeWidth={2} />
+      {tiers.map((t, i) => (
+        <circle key={`ttfb-${i}`} cx={xPos[i]} cy={yTtfb(t.ttfb_p95_ms)} r={3.5} fill="#ef4444" />
       ))}
 
-      {/* Breaking point line */}
-      {breakingXPos != null && (
+      {/* Quality line + dots */}
+      {qualityPath && (
         <>
-          <line
-            x1={breakingXPos}
-            y1={padTop}
-            x2={breakingXPos}
-            y2={padTop + innerH}
-            stroke="#f59e0b"
-            strokeWidth={1.5}
-            strokeDasharray="6,4"
-          />
-          <text
-            x={breakingXPos + 4}
-            y={padTop + 10}
-            fill="#f59e0b"
-            fontSize={9}
-            fontFamily="monospace"
-          >
-            breaking point
-          </text>
+          <path d={qualityPath} fill="none" stroke="#22c55e" strokeWidth={2} />
+          {tiers.map((t, i) => (
+            <circle key={`q-${i}`} cx={xPos[i]} cy={yQuality(t.mean_quality_score)} r={3.5} fill="#22c55e" />
+          ))}
         </>
       )}
 
-      {/* Left Y-axis labels (TTFB ms) */}
-      {yTtfbTicks.map((v) => (
+      {/* Left Y-axis labels (TTFB) */}
+      {ttfbTicks.map((v) => (
         <text
           key={`yl-${v}`}
           x={padLeft - 6}
@@ -230,46 +309,48 @@ function LoadTestTimelineChart({
         x={8}
         y={padTop + innerH / 2}
         textAnchor="middle"
-        fill="currentColor"
+        fill="#ef4444"
         fontSize={9}
-        className="text-muted-foreground"
         transform={`rotate(-90, 8, ${padTop + innerH / 2})`}
       >
-        TTFB (ms)
+        P95 TTFB (ms)
       </text>
 
-      {/* Right Y-axis labels (connections) */}
-      {yConnTicks.map((v) => (
-        <text
-          key={`yr-${v}`}
-          x={width - padRight + 6}
-          y={yConn(v) + 3}
-          textAnchor="start"
-          fill="currentColor"
-          fontSize={9}
-          fontFamily="monospace"
-          className="text-blue-500/60 dark:text-blue-400/60"
-        >
-          {v}
-        </text>
-      ))}
-      <text
-        x={width - 8}
-        y={padTop + innerH / 2}
-        textAnchor="middle"
-        fill="currentColor"
-        fontSize={9}
-        className="text-blue-500/60 dark:text-blue-400/60"
-        transform={`rotate(90, ${width - 8}, ${padTop + innerH / 2})`}
-      >
-        Connections
-      </text>
+      {/* Right Y-axis labels (Quality 0-1) */}
+      {hasQuality && (
+        <>
+          {[0, 0.25, 0.5, 0.75, 1].map((v) => (
+            <text
+              key={`yr-${v}`}
+              x={width - padRight + 6}
+              y={yQuality(v) + 3}
+              textAnchor="start"
+              fill="#22c55e"
+              fontSize={9}
+              fontFamily="monospace"
+              opacity={0.7}
+            >
+              {v.toFixed(2)}
+            </text>
+          ))}
+          <text
+            x={width - 8}
+            y={padTop + innerH / 2}
+            textAnchor="middle"
+            fill="#22c55e"
+            fontSize={9}
+            transform={`rotate(90, ${width - 8}, ${padTop + innerH / 2})`}
+          >
+            Quality
+          </text>
+        </>
+      )}
 
-      {/* X-axis labels */}
-      {xTicks.map((t) => (
+      {/* X-axis labels (concurrency per tier) */}
+      {tiers.map((t, i) => (
         <text
-          key={`xt-${t}`}
-          x={xScale(t)}
+          key={`xt-${i}`}
+          x={xPos[i]}
           y={height - padBottom + 16}
           textAnchor="middle"
           fill="currentColor"
@@ -277,43 +358,40 @@ function LoadTestTimelineChart({
           fontFamily="monospace"
           className="text-muted-foreground"
         >
-          {t}s
+          {t.concurrency}
         </text>
       ))}
+      <text
+        x={padLeft + innerW / 2}
+        y={height - 4}
+        textAnchor="middle"
+        fill="currentColor"
+        fontSize={9}
+        className="text-muted-foreground"
+      >
+        Concurrent Callers
+      </text>
     </svg>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Legend
+// Chart legend
 // ---------------------------------------------------------------------------
 
-function ChartLegend() {
-  const items = [
-    { color: "#a1a1aa", label: "P50 TTFB", dash: false },
-    { color: "#f59e0b", label: "P95 TTFB", dash: false },
-    { color: "#ef4444", label: "P99 TTFB", dash: false },
-  ];
-
+function ChartLegend({ hasQuality }: { hasQuality: boolean }) {
   return (
     <div className="flex items-center gap-5 mt-2 px-1">
-      {items.map((item) => (
-        <div key={item.label} className="flex items-center gap-1.5">
-          <span
-            className="h-0.5 w-4 rounded"
-            style={{ backgroundColor: item.color }}
-          />
-          <span className="text-[10px] text-muted-foreground">{item.label}</span>
+      <div className="flex items-center gap-1.5">
+        <span className="h-0.5 w-4 rounded bg-red-500" />
+        <span className="text-[10px] text-muted-foreground">P95 TTFB</span>
+      </div>
+      {hasQuality && (
+        <div className="flex items-center gap-1.5">
+          <span className="h-0.5 w-4 rounded bg-emerald-500" />
+          <span className="text-[10px] text-muted-foreground">Quality Score</span>
         </div>
-      ))}
-      <div className="flex items-center gap-1.5">
-        <span className="h-3 w-4 rounded bg-blue-500/15 dark:bg-blue-400/15 border border-blue-400/30" />
-        <span className="text-[10px] text-muted-foreground">Connections</span>
-      </div>
-      <div className="flex items-center gap-1.5">
-        <span className="h-2 w-2 rounded-full bg-red-500" />
-        <span className="text-[10px] text-muted-foreground">Errors</span>
-      </div>
+      )}
     </div>
   );
 }
@@ -328,19 +406,23 @@ interface LoadTestResultsProps {
 
 export function LoadTestResults({ scenario }: LoadTestResultsProps) {
   const result = scenario.metrics_json as LoadTestResult;
-  const timeline = result.timeline;
+  const hasQuality = result.tiers.some((t) => t.mean_quality_score > 0);
 
   return (
     <div className="space-y-6">
-      {/* Summary cards — row 1 */}
+      {/* Header: severity + status */}
+      <div className="flex items-center gap-3">
+        <SeverityBadge severity={result.severity} />
+        <span className="text-sm text-muted-foreground">
+          {result.total_calls} calls across {result.tiers.length} tiers
+        </span>
+      </div>
+
+      {/* Summary cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <SummaryCard
-          label="Pattern"
-          value={PATTERN_LABELS[result.pattern] ?? result.pattern}
-        />
-        <SummaryCard
-          label="Peak Concurrency"
-          value={`${result.actual_peak_concurrency} / ${result.target_concurrency}`}
+          label="Target Concurrency"
+          value={`${result.target_concurrency}`}
         />
         <SummaryCard
           label="Total Calls"
@@ -348,49 +430,101 @@ export function LoadTestResults({ scenario }: LoadTestResultsProps) {
           sub={result.failed_calls > 0 ? `${result.failed_calls} failed` : undefined}
         />
         <SummaryCard
-          label="Error Rate"
-          value={fmtPct(result.summary.error_rate)}
-          status={result.summary.error_rate > 0.1 ? "fail" : "pass"}
-        />
-      </div>
-
-      {/* Summary cards — row 2 */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <SummaryCard label="TTFB P50" value={fmtMs(result.summary.ttfb_p50_ms)} />
-        <SummaryCard label="TTFB P95" value={fmtMs(result.summary.ttfb_p95_ms)} />
-        <SummaryCard label="TTFB P99" value={fmtMs(result.summary.ttfb_p99_ms)} />
-        <SummaryCard
           label="Duration"
           value={formatDuration(result.duration_ms)}
         />
+        <SummaryCard
+          label="Overall"
+          value={result.severity}
+          severity={result.severity}
+        />
+      </div>
+
+      {/* Grading table + eval summary */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div>
+          <h3 className="text-xs text-muted-foreground/60 uppercase tracking-wider mb-3">
+            Grading
+          </h3>
+          <GradingTable grading={result.grading} />
+        </div>
+
+        {result.eval_summary && (
+          <div>
+            <h3 className="text-xs text-muted-foreground/60 uppercase tracking-wider mb-3">
+              Quality Evaluation
+            </h3>
+            <div className="rounded-lg border border-border overflow-hidden">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-border">
+                    <th className="text-left px-3.5 py-2 text-[11px] text-muted-foreground/60 uppercase tracking-wider font-medium">
+                      Eval Question
+                    </th>
+                    <th className="text-right px-3.5 py-2 text-[11px] text-muted-foreground/60 uppercase tracking-wider font-medium">
+                      Pass Rate
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {result.eval_summary.questions.map((q, i) => (
+                    <tr key={i} className="border-b border-border last:border-0">
+                      <td className="px-3.5 py-2 text-foreground">{q.question}</td>
+                      <td
+                        className={cn(
+                          "px-3.5 py-2 text-right font-mono tabular-nums font-semibold",
+                          q.pass_rate >= 0.9
+                            ? "text-emerald-600 dark:text-emerald-400"
+                            : q.pass_rate >= 0.7
+                            ? "text-amber-600 dark:text-amber-400"
+                            : "text-red-600 dark:text-red-400",
+                        )}
+                      >
+                        {fmtPct(q.pass_rate)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Breaking point callout */}
-      {result.summary.breaking_point != null && (
+      {result.breaking_point && (
         <Card className="border-amber-500/50 bg-amber-500/5">
           <CardContent className="py-3">
             <p className="text-sm">
               <span className="font-medium text-amber-600 dark:text-amber-400">Breaking point</span>
               {" "}detected at{" "}
-              <span className="font-mono font-semibold">{result.summary.breaking_point}</span>
-              {" "}concurrent connections — P95 TTFB exceeded 2x baseline
+              <span className="font-mono font-semibold">{result.breaking_point.concurrency}</span>
+              {" "}concurrent connections — triggered by{" "}
+              <span className="font-mono">
+                {result.breaking_point.triggered_by.join(", ")}
+              </span>
             </p>
           </CardContent>
         </Card>
       )}
 
-      {/* Timeline chart */}
-      {timeline.length > 1 && (
+      {/* Tier results table */}
+      <div>
+        <h3 className="text-xs text-muted-foreground/60 uppercase tracking-wider mb-3">
+          Tier Results
+        </h3>
+        <TierTable tiers={result.tiers} />
+      </div>
+
+      {/* Degradation chart */}
+      {result.tiers.length > 1 && (
         <Card>
           <CardContent className="py-4">
             <h3 className="text-xs text-muted-foreground/60 uppercase tracking-wider mb-4">
-              Timeline
+              Degradation Curve
             </h3>
-            <LoadTestTimelineChart
-              timeline={timeline}
-              breakingPoint={result.summary.breaking_point}
-            />
-            <ChartLegend />
+            <DegradationChart tiers={result.tiers} />
+            <ChartLegend hasQuality={hasQuality} />
           </CardContent>
         </Card>
       )}
