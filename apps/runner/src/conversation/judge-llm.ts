@@ -1,12 +1,10 @@
 /**
  * Judge LLM — evaluates conversation transcripts against eval questions.
  *
- * Uses Anthropic Sonnet for accuracy. Two-step evaluation:
- * 1. Relevancy: Is this eval question relevant to what happened in the conversation?
- * 2. Judgment: Did the agent pass or fail this criterion?
- *
- * The relevancy check exists because the caller LLM improvises, so the
- * conversation may not always cover the scenario the eval targets.
+ * Uses Anthropic Sonnet for accuracy. For each eval question, the judge
+ * determines if the agent PASSES or FAILS the criterion based on the
+ * conversation transcript. If the conversation didn't cover a topic,
+ * that's a fail — the test didn't accomplish what it was designed to test.
  */
 
 import Anthropic from "@anthropic-ai/sdk";
@@ -217,9 +215,9 @@ Based on BOTH the transcript AND the tool call data, determine if the agent PASS
 
 Be strict but fair. Use the tool call data as ground truth — it shows exactly which tools were called, with what arguments, and what results were returned.
 
-Output raw JSON only — no markdown, no code fences, no explanation: {"relevant": true/false, "passed": true/false, "reasoning": "brief explanation"}
+If the conversation didn't cover the topic of the criterion, that is a FAIL — the test was designed to evaluate this and it didn't happen.
 
-Set "relevant" to false if the conversation didn't touch on the subject of the criterion.`,
+Output raw JSON only — no markdown, no code fences, no explanation: {"passed": true/false, "reasoning": "brief explanation"}`,
       messages: [
         { role: "user", content: `${context}\n\nCRITERION: ${question}` },
       ],
@@ -229,20 +227,17 @@ Set "relevant" to false if the conversation didn't touch on the subject of the c
 
     try {
       const parsed = JSON.parse(text) as {
-        relevant: boolean;
         passed: boolean;
         reasoning: string;
       };
       return {
         question,
-        relevant: parsed.relevant,
-        passed: parsed.relevant ? parsed.passed : true,
+        passed: parsed.passed,
         reasoning: parsed.reasoning,
       };
     } catch {
       return {
         question,
-        relevant: true,
         passed: false,
         reasoning: "Failed to parse judge response",
       };
@@ -259,13 +254,11 @@ Set "relevant" to false if the conversation didn't touch on the subject of the c
       temperature: 0,
       system: `You are evaluating a voice agent's performance based on a conversation transcript.
 
-First determine if the criterion is RELEVANT — did the conversation touch on the subject? A criterion is NOT relevant if the topic never came up.
+Determine if the agent PASSES or FAILS the given criterion. Be strict but fair.
 
-Then, if relevant, determine if the agent PASSES or FAILS the criterion. Be strict but fair.
+If the conversation didn't cover the topic of the criterion, that is a FAIL — the test was designed to evaluate this and it didn't happen.
 
-Output raw JSON only — no markdown, no code fences, no explanation: {"relevant": true/false, "passed": true/false, "reasoning": "brief explanation"}
-
-Set "relevant" to false if the conversation didn't touch on the subject of the criterion.`,
+Output raw JSON only — no markdown, no code fences, no explanation: {"passed": true/false, "reasoning": "brief explanation"}`,
       messages: [
         { role: "user", content: `TRANSCRIPT:\n${transcript}\n\nCRITERION: ${question}` },
       ],
@@ -275,20 +268,17 @@ Set "relevant" to false if the conversation didn't touch on the subject of the c
 
     try {
       const parsed = JSON.parse(text) as {
-        relevant: boolean;
         passed: boolean;
         reasoning: string;
       };
       return {
         question,
-        relevant: parsed.relevant,
-        passed: parsed.relevant ? parsed.passed : true,
+        passed: parsed.passed,
         reasoning: parsed.reasoning,
       };
     } catch {
       return {
         question,
-        relevant: true,
         passed: false,
         reasoning: "Failed to parse judge response",
       };

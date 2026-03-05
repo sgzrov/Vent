@@ -33,7 +33,7 @@ function describeRunDetail(run: RunDetail): string {
     if (spec.red_team?.length)
       parts.push(`${spec.red_team.length} red-team`);
     if (spec.load_test)
-      parts.push(`load test (${spec.load_test.pattern})`);
+      parts.push(`load test (${spec.load_test.target_concurrency} concurrent)`);
     if (parts.length > 0) return parts.join(", ");
   }
   const agg = run.aggregate_json as RunAggregateV2 | null;

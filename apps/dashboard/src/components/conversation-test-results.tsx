@@ -39,9 +39,7 @@ export function ConversationTestResults({
           const evalsPassed = result.eval_results.filter(
             (e) => e.passed
           ).length;
-          const evalsTotal = result.eval_results.filter(
-            (e) => e.relevant
-          ).length;
+          const evalsTotal = result.eval_results.length;
 
           return (
             <Card
@@ -114,7 +112,7 @@ export function ConversationTestResults({
                 {!isPassed && (
                   <div className="mt-3 pt-2.5 border-t">
                     {result.eval_results
-                      .filter((e) => e.relevant && !e.passed)
+                      .filter((e) => !e.passed)
                       .slice(0, 2)
                       .map((e, i) => (
                         <p
@@ -182,7 +180,7 @@ function ConversationDetailPanel({
 }) {
   const result = scenario.metrics_json as ConversationTestResult;
   const evalsPassed = result.eval_results.filter((e) => e.passed).length;
-  const evalsTotal = result.eval_results.filter((e) => e.relevant).length;
+  const evalsTotal = result.eval_results.length;
 
   return (
     <Card>

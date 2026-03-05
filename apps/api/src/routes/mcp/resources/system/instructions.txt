@@ -2,17 +2,15 @@ VoiceCI — CI/CD testing for voice AI agents.
 
 ## Workflow
 
-Test configuration lives in `voiceci-config.json` at the project root — a single file with connection config, infrastructure probes, conversation tests, and red-team attacks.
-
 ### Phase 1: Setup
 Check if `voiceci-config.json` exists in the project root.
   - If YES → read it and proceed to Phase 2.
-  - If NO → call voiceci_guide_test_authoring, read agent code, design tests, and create `voiceci-config.json`.
+  - If NO → call voiceci_guide_reference for config format, then read agent code, analyze it (see Agent Analysis below), design tests, and create `voiceci-config.json`.
 
 ### Phase 2: Run Tests
 Read `voiceci-config.json` and call voiceci_run_tests with its contents as the `config` parameter.
-  - For remote/deployed agents: the run queues immediately.
-  - For local WebSocket agents: execute the returned relay command FIRST to connect your agent.
+  - For remote/deployed agents: the run queues immediately. Proceed to Phase 3.
+  - For local WebSocket agents: voiceci_run_tests returns a relay command. This is a LONG-RUNNING background process. Execute it EXACTLY ONCE in the background. Do NOT retry, debug, run npm install, check ports, or run any other commands. The relay handles everything — it kills the old process, downloads the client, starts the agent, and connects to VoiceCI. After backgrounding the command, proceed to Phase 3 immediately.
 
 ### Phase 3: Monitor with Subagents
 After voiceci_run_tests returns a run_id, use subagents for parallel monitoring:
@@ -25,14 +23,101 @@ After voiceci_run_tests returns a run_id, use subagents for parallel monitoring:
 **Conversation tests** — after infrastructure subagents return, spawn one subagent per conversation test (in parallel):
   - For each test name in the config: "Call voiceci_get_run_status with run_id={run_id}, test_type=conversation, test_name={test_name}. Return the results."
 
-Each subagent calls voiceci_get_run_status with its filter, gets the result when ready, and returns it. The user sees per-test progress as each subagent completes.
+Each subagent calls voiceci_get_run_status with its filter, gets the result when ready, and returns it.
 
-### Phase 4: Results Summary
-After all subagents return, call voiceci_get_run_status once without filters to get the full results summary. Report pass/fail to the user.
+### Phase 4: Interpret Results (Layer Cascade)
+After all subagents return, call voiceci_get_run_status once without filters for the full results summary (includes fix_plan).
 
-## Important rules
-- NEVER modify the user's agent source code, dependencies, or environment files. VoiceCI is a testing tool — it observes the agent, it does not change it. If tests fail due to auth errors, missing env vars, or crashes, report the error to the user.
-- VoiceCI automatically provides API keys (DEEPGRAM_API_KEY, ANTHROPIC_API_KEY) to the agent process via the relay tunnel. The user does NOT need their own keys for these services.
-- For local WebSocket agents without agent_url, VoiceCI uses a relay tunnel. Execute the returned relay command to start your agent and connect it to VoiceCI. The command automatically frees the agent port before starting. Code changes take effect immediately without re-uploading.
-- Only call voiceci_guide_test_authoring for first-time setup. Do NOT call multiple guide tools at once.
-- voiceci_guide_results is an optional deep-dive — only call it when you need detailed result interpretation help.
+Interpret results using the 4-layer quality model — diagnose top-down:
+
+**Layer 1 — Infrastructure** ("Can users hear and interact?")
+If infrastructure probes have errors → fix audio pipeline, connection, or latency issues FIRST. Layer 2-4 results may be unreliable when infrastructure is broken.
+
+**Layer 2 — Agent Execution** ("Does the agent follow instructions?")
+Eval failures on intent accuracy, tool calls, prompt compliance → fix agent logic, system prompt, or tool implementations.
+
+**Layer 3 — User Reaction** ("Is the end user satisfied?")
+Poor behavioral metrics (low empathy, high topic drift, sentiment degradation) → fix agent tone, conversation design, or response style.
+
+**Layer 4 — Business Outcome** ("Are business goals achieved?")
+Eval failures on task completion, containment, required disclosures → fix business logic, flow design, or compliance rules.
+
+The fix_plan in the results has `prioritized_packets` — follow `top_priority` first. Report pass/fail to the user with the layer-based diagnosis.
+
+---
+
+## Agent Analysis (First-Time Setup)
+
+Before writing tests, read the agent's source code to understand:
+- **System prompt** — look for prompt.ts, system-prompt.txt, agent.ts, or config files
+- **Tools/functions** — what APIs the agent calls (booking, lookups, transfers)
+- **Constraints** — refusal boundaries, compliance rules, required disclosures
+- **Conversation flow** — greeting → auth → task → closing, or freeform?
+
+Extract testable components:
+- **Primary intents** — the 3-5 main things callers ask for
+- **Branching logic** — decisions the agent makes (slots available vs. not, authorized vs. not)
+- **Refusal boundaries** — what the agent should NOT do
+- **Tool call sequences** — correct ordering, required parameters, error handling
+
+Map code to scenarios:
+
+| Code pattern | Scenarios to generate |
+|---|---|
+| System prompt with personality | Happy path testing personality + adversarial attempt to break character |
+| Tool/function definitions | Tool call validation: correct params, error handling, ordering |
+| Auth/verification logic | Auth success + failure + social engineering attempt |
+| Error handling / fallbacks | Trigger each error path |
+| Transfer/escalation logic | Should-trigger + should-not-trigger scenarios |
+| Multi-step workflows | Full flow + mid-flow interruption + state retention |
+| Refusal boundaries | Boundary test for each rule: polite decline + persistent caller |
+
+Scenario generation checklist (minimum per test suite):
+- Per primary intent: happy path + challenging persona + error recovery variant
+- Agent-wide: adversarial/red-team + multi-turn state retention + out-of-scope boundary test
+- If tools: tool call validation per critical tool
+- If compliance: compliance verification
+- If escalation: escalation trigger + false-positive test
+
+---
+
+## Test Authoring Principles
+
+**caller_prompt**: Write a specific persona with a name, goal, emotional state, and behavioral instructions. Base on the agent analysis — reference actual intents and constraints found in the code.
+
+**eval**: Binary yes/no questions. Each tests ONE behavior. Good: "Did the agent refuse to provide medical advice?" Bad: "Was the agent good?"
+
+**max_turns**: 5 (smoke), 8 (standard), 10-15 (complex flows), 20+ (adversarial/deep testing).
+
+**Persona traits** (optional `persona` field):
+
+| Trait | Values |
+|---|---|
+| `pace` | `slow`, `normal`, `fast` |
+| `clarity` | `clear`, `vague`, `rambling` |
+| `disfluencies` | `true`, `false` |
+| `cooperation` | `cooperative`, `reluctant`, `hostile` |
+| `emotion` | `neutral`, `cheerful`, `confused`, `frustrated`, `skeptical`, `rushed` |
+| `interruption_style` | `none`, `occasional`, `frequent` |
+| `memory` | `reliable`, `unreliable` |
+| `intent_clarity` | `clear`, `indirect`, `vague` |
+| `confirmation_style` | `explicit`, `vague` |
+
+**Critical eval patterns** — always include eval questions that check for these common voice agent failure modes:
+- **Hallucination**: The agent may fabricate facts, invent data, or state information not in its knowledge base. Compare what the agent says in the transcript against the system prompt and tool responses you found in the codebase. Write evals like: "Did the agent only state information available in its knowledge base?" or "Did the agent avoid making up appointment times, prices, or policies?"
+- **Safety violations**: The agent may respond to harmful requests, go out of scope, or ignore its constraints. Reference the refusal boundaries from the agent's system prompt. Write evals like: "Did the agent refuse to provide medical/legal/financial advice?" or "Did the agent stay within its defined role?"
+- **Repetition**: Voice agents commonly get stuck in loops, repeating the same response or rephrasing the same thing multiple turns in a row. This is one of the most frequent failure modes. Write evals like: "Did the agent avoid repeating the same response?" or "Did the agent progress the conversation forward rather than looping?"
+
+These are not automatically enforced — you must write explicit eval questions grounded in the agent's actual codebase (system prompt, tools, knowledge base) so failures are specific and actionable.
+
+**Scaling**: Smoke (3-5 scenarios, ~60s) → Standard (8-15) → Thorough (20-30, all persona archetypes).
+
+**Iterative testing**: After failures, update voiceci-config.json with targeted follow-up tests. Increase max_turns, write more specific personas. After code changes, re-test affected scenarios + add regression scenario. Every failed eval should become a permanent pinning scenario.
+
+---
+
+## Important Rules
+- NEVER modify the user's agent source code, dependencies, or environment files. VoiceCI observes the agent, it does not change it. If tests fail due to auth errors, missing env vars, or crashes, report the error.
+- VoiceCI automatically provides API keys (DEEPGRAM_API_KEY, ANTHROPIC_API_KEY) to the agent process via the relay. The user does NOT need their own keys.
+- Only call voiceci_guide_reference when you need config format details, field tables, metrics definitions, or red-team/tool-call specifics.
+- Only call voiceci_guide_setup when the user asks about installation or configuration.
