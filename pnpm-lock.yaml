@@ -249,7 +249,13 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: ^1.10.0
         version: 1.26.0(zod@3.25.76)
+      ws:
+        specifier: ^8.18.0
+        version: 8.19.0
     devDependencies:
+      '@types/ws':
+        specifier: ^8.5.0
+        version: 8.18.1
       esbuild:
         specifier: ^0.24.0
         version: 0.24.2

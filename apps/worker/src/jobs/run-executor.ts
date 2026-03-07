@@ -1,4 +1,5 @@
 import { eq } from "drizzle-orm";
+import IORedis from "ioredis";
 import { createDb, schema, type Database } from "@voiceci/db";
 import { RUNNER_CALLBACK_HEADER } from "@voiceci/shared";
 import type {
@@ -279,10 +280,100 @@ async function executeRelayRun(db: Database, job: RunJob): Promise<void> {
 const db = createDb(process.env["DATABASE_URL"]!);
 
 // ---------------------------------------------------------------------------
+// Wait for relay tunnel to be established before running tests
+// Uses Redis pub/sub — instant notification, no HTTP polling
+// ---------------------------------------------------------------------------
+
+async function waitForRelayReady(runId: string, timeoutMs = 90_000): Promise<void> {
+  const redisUrl = process.env["REDIS_URL"] ?? "redis://localhost:6379";
+  const sub = new IORedis(redisUrl, { maxRetriesPerRequest: null });
+  const channel = `voiceci:relay-ready:${runId}`;
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const settle = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        fn();
+      };
+
+      const timeout = setTimeout(() => {
+        settle(() => {
+          sub.unsubscribe(channel).catch(() => {});
+          sub.disconnect();
+          reject(new Error("Relay connection timeout — local agent relay did not connect within 90s"));
+        });
+      }, timeoutMs);
+
+      sub.on("message", () => {
+        settle(() => {
+          clearTimeout(timeout);
+          sub.unsubscribe(channel).catch(() => {});
+          sub.disconnect();
+          resolve();
+        });
+      });
+
+      sub.subscribe(channel, (err) => {
+        if (err) {
+          settle(() => {
+            clearTimeout(timeout);
+            sub.disconnect();
+            reject(err);
+          });
+          return;
+        }
+
+        // Race condition guard: relay may have connected before we subscribed.
+        // One HTTP check right after subscribe — if already ready, resolve immediately.
+        const apiUrl = process.env["API_URL"] ?? "https://voiceci-api.fly.dev";
+        const secret = process.env["RUNNER_CALLBACK_SECRET"] ?? "";
+        fetch(`${apiUrl}/internal/relay-ready/${runId}`, {
+          headers: { [RUNNER_CALLBACK_HEADER]: secret },
+        })
+          .then((res) => {
+            if (res.ok) {
+              settle(() => {
+                clearTimeout(timeout);
+                sub.unsubscribe(channel).catch(() => {});
+                sub.disconnect();
+                resolve();
+              });
+            }
+          })
+          .catch(() => {
+            // Not ready yet — wait for pub/sub message
+          });
+      });
+    });
+  } catch (err) {
+    sub.disconnect();
+    throw err;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Main run executor
 // ---------------------------------------------------------------------------
 
 export async function executeRun(job: RunJob): Promise<void> {
+
+  // For relay runs, wait for the relay tunnel before starting tests
+  if (job.relay) {
+    await emitEvent(db, job.run_id, "waiting_for_relay", "Waiting for local agent relay tunnel to connect...");
+    try {
+      await waitForRelayReady(job.run_id);
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : "Relay timeout";
+      console.error(`Relay wait failed for ${job.run_id}:`, errorMessage);
+      await db
+        .update(schema.runs)
+        .set({ status: "fail", finished_at: new Date(), error_text: errorMessage })
+        .where(eq(schema.runs.id, job.run_id));
+      return;
+    }
+  }
 
   await db
     .update(schema.runs)

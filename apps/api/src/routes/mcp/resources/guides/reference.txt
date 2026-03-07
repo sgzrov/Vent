@@ -25,14 +25,14 @@ The last inline config generated for a targeted test run. Used for quick reruns 
 ```
 First run          → Agent analyzes codebase → writes .voiceci/suite.json
 Targeted test      → Agent generates inline config → caches to .voiceci/.cache/last-run.json
-Rerun after fix    → Agent reads .voiceci/.cache/last-run.json → passes to voiceci_run_tests
-Full suite run     → Agent reads .voiceci/suite.json → passes to voiceci_run_tests
+Rerun after fix    → Agent reads .voiceci/.cache/last-run.json → passes to vent_run_tests
+Full suite run     → Agent reads .voiceci/suite.json → passes to vent_run_tests
 Suite evolution    → Agent updates .voiceci/suite.json when new capabilities are added
 ```
 
 ## Config Format
 
-Both `suite.json` and `last-run.json` use the same format — the config object passed to `voiceci_run_tests`:
+Both `suite.json` and `last-run.json` use the same format — the config object passed to `vent_run_tests`:
 
 ```json
 {
@@ -405,7 +405,7 @@ Raw audio signal analysis — integrated into each conversation test. Found in `
 
 ## Conversation Test Result Format
 
-Each conversation test result returned by `voiceci_get_run_status` uses this structured format. Sections are omitted when empty (e.g., no `tool_calls` if the agent made no tool calls, no `emotion` if `prosody` wasn't enabled).
+Each conversation test result returned by `vent_get_run_status` uses this structured format. Sections are omitted when empty (e.g., no `tool_calls` if the agent made no tool calls, no `emotion` if `prosody` wasn't enabled).
 
 ```json
 {
@@ -618,7 +618,7 @@ After all tiers: evaluate ALL transcripts with JudgeLLM (100 concurrent) → qua
 
 ### Config
 
-Use `voiceci_run_load_test` tool:
+Use `vent_run_load_test` tool:
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|

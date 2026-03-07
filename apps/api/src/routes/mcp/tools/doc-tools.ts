@@ -5,7 +5,7 @@ import {
 } from "../docs.js";
 
 export function registerDocTools(server: McpServer) {
-  server.registerTool("voiceci_guide_setup", {
+  server.registerTool("vent_install", {
     title: "Setup Guide",
     description: "Get setup instructions for connecting VoiceCI to Claude Code, Cursor, Windsurf, and team sharing via .mcp.json. Call this when a user asks how to install or configure VoiceCI.",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
@@ -13,7 +13,7 @@ export function registerDocTools(server: McpServer) {
     content: [{ type: "text" as const, text: SETUP_GUIDE }],
   }));
 
-  server.registerTool("voiceci_guide_reference", {
+  server.registerTool("vent_docs", {
     title: "Reference Guide",
     description: "Complete reference for .voiceci/suite.json format, dual config system, field tables, audio actions, red-team categories, metrics definitions, result interpretation, and tool call integration. Call this when you need config format details, metric definitions, or integration specifics.",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },

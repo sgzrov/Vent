@@ -29,9 +29,10 @@ function createWorkerForQueue(queueName: string) {
         health_endpoint?: string;
         agent_url?: string;
         platform?: Record<string, unknown> | null;
+        relay?: boolean;
       };
 
-      console.log(`[${queueName}] Processing run ${data.run_id} (adapter: ${data.adapter ?? "unknown"})`);
+      console.log(`[${queueName}] Processing run ${data.run_id} (adapter: ${data.adapter ?? "unknown"}${data.relay ? ", relay" : ""})`);
       await executeRun({
         run_id: data.run_id,
         bundle_key: data.bundle_key,
@@ -45,6 +46,7 @@ function createWorkerForQueue(queueName: string) {
         health_endpoint: data.health_endpoint,
         agent_url: data.agent_url,
         platform: data.platform as PlatformConfig | null,
+        relay: data.relay,
       });
     },
     {

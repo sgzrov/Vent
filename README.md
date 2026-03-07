@@ -96,14 +96,11 @@ After connecting, these tools are available to your coding agent:
 
 | Tool | Purpose |
 |------|---------|
-| `voiceci_run_tests` | Run audio + conversation tests (relay connects your local agent automatically) |
-| `voiceci_run_load_test` | Run load/stress tests with traffic patterns (ramp, spike, sustained, soak) |
-| `voiceci_get_run_status` | Check run status and get partial/final results |
-| `voiceci_guide_setup` | Installation and connection instructions |
-| `voiceci_guide_test_authoring` | Design tests — file format, agent analysis, personas, conversation authoring |
-| `voiceci_guide_results` | Interpret results — failure diagnosis, metrics, iterative testing |
-| `voiceci_guide_audio_tests` | Audio test definitions, durations, and threshold customization |
-| `voiceci_guide_security_and_tools` | Red-team attack patterns and tool call integration guides |
+| `vent_run_tests` | Run audio + conversation tests (relay connects your local agent automatically) |
+| `vent_run_load_test` | Run load/stress tests with traffic patterns (ramp, spike, sustained, soak) |
+| `vent_get_run_status` | Check run status and get partial/final results |
+| `vent_install` | Installation and connection instructions |
+| `vent_docs` | Full config schema, metrics, audio actions, red-team, and tool call integration |
 
 ## License
 

@@ -1,6 +1,22 @@
 # VoiceCI Setup Guide
 
-VoiceCI is a remote MCP server — no installation or npm packages needed. Connect your editor directly via HTTP transport.
+## Cursor
+
+Add to `.cursor/mcp.json` (or `~/.cursor/mcp.json` for global):
+
+```json
+{
+  "mcpServers": {
+    "voiceci": {
+      "command": "npx",
+      "args": ["-y", "@vent-hq/mcp"],
+      "env": {
+        "LIGHTMCP_API_KEY": "voiceci_YOUR_KEY"
+      }
+    }
+  }
+}
+```
 
 ## Claude Code
 
@@ -15,26 +31,6 @@ claude mcp add --transport http --scope user \
   --header "Authorization: Bearer voiceci_YOUR_KEY" \
   voiceci "https://voiceci-api.fly.dev/mcp"
 ```
-
-## Cursor
-
-Add to `.cursor/mcp.json` (or `~/.cursor/mcp.json` for global):
-
-```json
-{
-  "mcpServers": {
-    "voiceci": {
-      "type": "http",
-      "url": "https://voiceci-api.fly.dev/mcp",
-      "headers": {
-        "Authorization": "Bearer voiceci_YOUR_KEY"
-      }
-    }
-  }
-}
-```
-
-> **Important**: The `"type": "http"` field is required. Without it, Cursor falls back to OAuth authentication which will fail. Do NOT use `"type": "streamable-http"` — Cursor uses `"http"` for remote streamable HTTP servers.
 
 ## Windsurf
 
@@ -61,10 +57,10 @@ Add `.mcp.json` to your project root (check into git):
 {
   "mcpServers": {
     "voiceci": {
-      "type": "http",
-      "url": "https://voiceci-api.fly.dev/mcp",
-      "headers": {
-        "Authorization": "Bearer ${VOICECI_API_KEY}"
+      "command": "npx",
+      "args": ["-y", "@vent-hq/mcp"],
+      "env": {
+        "LIGHTMCP_API_KEY": "${VOICECI_API_KEY}"
       }
     }
   }
@@ -81,4 +77,4 @@ For targeted test runs after code changes, the agent generates inline configs an
 
 Add `.voiceci/.cache/` to your `.gitignore` — the cache is ephemeral.
 
-See `voiceci_guide_reference` for the full config format and field reference.
+See `vent_docs` for the full config format and field reference.

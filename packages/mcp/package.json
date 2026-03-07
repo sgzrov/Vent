@@ -1,10 +1,10 @@
 {
-  "name": "@voiceci/mcp",
-  "version": "0.5.0",
+  "name": "@vent-hq/mcp",
+  "version": "0.5.2",
   "type": "module",
-  "description": "VoiceCI MCP server — CI/CD for voice AI agents",
+  "description": "LightMCP — CI/CD for voice AI agents",
   "bin": {
-    "voiceci-mcp": "dist/index.mjs"
+    "lightmcp": "dist/index.mjs"
   },
   "files": [
     "dist"
@@ -14,7 +14,7 @@
     "clean": "rm -rf dist"
   },
   "keywords": [
-    "voiceci",
+    "lightmcp",
     "mcp",
     "voice",
     "agent",
@@ -27,11 +27,13 @@
     "url": "https://github.com/voiceci/voiceci",
     "directory": "packages/mcp"
   },
-  "homepage": "https://voiceci.dev",
+  "homepage": "https://lightmcp.com",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.10.0"
+    "@modelcontextprotocol/sdk": "^1.10.0",
+    "ws": "^8.18.0"
   },
   "devDependencies": {
+    "@types/ws": "^8.5.0",
     "esbuild": "^0.24.0"
   }
 }

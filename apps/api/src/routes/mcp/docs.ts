@@ -4,7 +4,7 @@
  *
  * Folder structure:
  *   resources/system/  — MCP server-level instructions
- *   resources/guides/  — Documentation returned by voiceci_guide_* tools
+ *   resources/guides/  — Documentation returned by vent_install / vent_docs tools
  *   resources/tools/   — Action tool descriptions
  */
 import { readFileSync } from "node:fs";
@@ -21,7 +21,7 @@ function load(...segments: string[]): string {
 // System
 export const SYSTEM_INSTRUCTIONS = load("system", "instructions.txt");
 
-// Guides (returned by voiceci_guide_* doc tools)
+// Guides (returned by vent_install / vent_docs)
 export const SETUP_GUIDE = load("guides", "setup.txt");
 export const REFERENCE_GUIDE = load("guides", "reference.txt");
 

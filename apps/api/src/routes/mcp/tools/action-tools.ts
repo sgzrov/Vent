@@ -39,8 +39,8 @@ export function registerActionTools(
   apiKeyId: string,
   userId: string,
 ) {
-  // --- Tool: voiceci_run_tests ---
-  server.registerTool("voiceci_run_tests", {
+  // --- Tool: vent_run_tests ---
+  server.registerTool("vent_run_tests", {
     title: "Run Tests",
     description: RUN_TESTS_DESCRIPTION,
     inputSchema: {
@@ -59,7 +59,7 @@ export function registerActionTools(
       }).refine(
         (d) => (d.conversation_tests?.length ?? 0) + (d.red_team?.length ?? 0) > 0,
         { message: "At least one of conversation_tests or red_team is required." }
-      ).describe("Test configuration object. Generate this inline — see voiceci_guide_reference for the full schema."),
+      ).describe("Test configuration object. Generate this inline — see vent_docs for the full schema."),
       idempotency_key: z
         .string()
         .uuid()
@@ -127,13 +127,6 @@ export function registerActionTools(
         });
       }
 
-      // Detect non-routable URLs — these can't be reached from the cloud worker.
-      // Covers localhost, loopback, and all RFC-1918 private ranges.
-      const isLocalUrl = agentUrl
-        ? /^(https?:\/\/|wss?:\/\/)?(localhost|127\.\d+\.\d+\.\d+|0\.0\.0\.0|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|192\.168\.\d+\.\d+|\[?::1\]?)(:\d+)?(\/|$)/i.test(agentUrl)
-        : false;
-      const effectiveAgentUrl = isLocalUrl ? undefined : agentUrl;
-
       return {
         testSpecJson: {
           conversation_tests: conversationTests ?? null,
@@ -142,26 +135,24 @@ export function registerActionTools(
           voice_config: voiceConfig,
           start_command: cfg.start_command ?? null,
           health_endpoint: cfg.health_endpoint ?? null,
-          agent_url: effectiveAgentUrl ?? null,
+          agent_url: agentUrl ?? null,
           target_phone_number: targetPhoneNumber ?? null,
           platform: cfg.platform ?? null,
         },
         adapter,
-        agentUrl: effectiveAgentUrl,
+        agentUrl,
         voiceConfig,
         targetPhoneNumber,
         conversationTests: conversationTests ?? null,
         isRemote: ["vapi", "retell", "elevenlabs", "bland"].includes(adapter)
-          || adapter === "sip" || adapter === "webrtc" || !!effectiveAgentUrl,
-        isLocalUrl,
+          || adapter === "sip" || adapter === "webrtc" || !!agentUrl,
       };
     };
 
     // Config is already validated by Zod schema — safe to cast
     const cfg = config as Record<string, unknown>;
 
-    const { testSpecJson, adapter, agentUrl, voiceConfig, targetPhoneNumber, conversationTests, isRemote, isLocalUrl } = buildTestSpec(cfg);
-    const originalAgentUrl = cfg.agent_url as string | undefined;
+    const { testSpecJson, adapter, agentUrl, voiceConfig, targetPhoneNumber, conversationTests, isRemote } = buildTestSpec(cfg);
 
     if (isRemote) {
       // Remote/deployed agent — queue immediately, no bash needed
@@ -206,7 +197,7 @@ export function registerActionTools(
           text: JSON.stringify({
             run_id: runId,
             status: "queued",
-            message: "Run queued. Spawn one subagent per conversation test. Each subagent calls voiceci_get_run_status with test_type=conversation and returns when done. After all subagents return, call voiceci_get_run_status once without filters for the full summary.",
+            message: "Run queued. Spawn one subagent per conversation test. Each subagent calls vent_get_run_status with test_type=conversation and returns when done. After all subagents return, call vent_get_run_status once without filters for the full summary.",
           }, null, 2),
         }],
       };
@@ -233,12 +224,26 @@ export function registerActionTools(
 
     const runId = run!.id;
 
-    // Extract port from localhost URL if provided, otherwise use agent_port config
-    let agentPort = (cfg.agent_port as number | undefined) ?? 3001;
-    if (isLocalUrl && originalAgentUrl) {
-      const portMatch = originalAgentUrl.match(/:(\d+)/);
-      if (portMatch) agentPort = parseInt(portMatch[1]!, 10);
-    }
+    // Queue BullMQ job immediately — don't depend on relay client's activate call
+    await app.getRunQueue(userId).add("execute-run", {
+      run_id: runId,
+      bundle_key: null,
+      bundle_hash: null,
+      lockfile_hash: null,
+      adapter,
+      test_spec: {
+        conversation_tests: conversationTests ?? null,
+        red_team: cfg.red_team ?? null,
+      },
+      target_phone_number: targetPhoneNumber,
+      voice_config: voiceConfig,
+      start_command: startCommand,
+      health_endpoint: cfg.health_endpoint as string | undefined,
+      platform: cfg.platform ?? null,
+      relay: true,
+    });
+
+    const agentPort = (cfg.agent_port as number | undefined) ?? 3001;
 
     const relayArgs = [
       "--run-id",
@@ -265,15 +270,23 @@ export function registerActionTools(
         text: JSON.stringify({
           run_id: runId,
           status: "queued",
+          relay_config: {
+            run_id: runId,
+            relay_token: relayToken,
+            api_url: apiUrl,
+            agent_port: agentPort,
+            start_command: startCommand ?? null,
+            health_endpoint: (cfg.health_endpoint as string) ?? "/health",
+          },
           relay_command: relayCommand,
-          message: "Run queued. Execute the relay_command in the BACKGROUND (is_background: true). Execute EXACTLY ONCE — do NOT retry, re-run, or run npm install. After backgrounding, spawn subagents to monitor results via voiceci_get_run_status.",
+          message: "Run queued. Spawn one subagent per conversation test. Each subagent calls vent_get_run_status with test_type=conversation and returns when done. After all subagents return, call vent_get_run_status once without filters for the full summary.",
         }, null, 2),
       }],
     };
   });
 
-  // --- Tool: voiceci_run_load_test ---
-  server.registerTool("voiceci_run_load_test", {
+  // --- Tool: vent_run_load_test ---
+  server.registerTool("vent_run_load_test", {
     title: "Run Load Test",
     description: RUN_LOAD_TEST_DESCRIPTION,
     inputSchema: {
@@ -382,19 +395,19 @@ export function registerActionTools(
             run_id: runId,
             status: "running",
             target_concurrency,
-            message: "Load test started. Tiers will fire at increasing concurrency levels. Use voiceci_get_run_status with this run_id and test_type='load_test' to get results via long-polling.",
+            message: "Load test started. Tiers will fire at increasing concurrency levels. Use vent_get_run_status with this run_id and test_type='load_test' to get results via long-polling.",
           }, null, 2),
         },
       ],
     };
   });
 
-  // --- Tool: voiceci_get_run_status ---
-  server.registerTool("voiceci_get_run_status", {
+  // --- Tool: vent_get_run_status ---
+  server.registerTool("vent_get_run_status", {
     title: "Get Run Status",
     description: GET_RUN_STATUS_DESCRIPTION,
     inputSchema: {
-      run_id: z.string().uuid().describe("The run ID returned by voiceci_run_tests."),
+      run_id: z.string().uuid().describe("The run ID returned by vent_run_tests."),
       last_completed: z.number().int().min(0).optional().describe("Number of completed tests (of the filtered type) from your last status check. Pass the `completed` value from the previous response."),
       test_type: z.enum(["conversation", "load_test"]).optional().describe("Filter results to a single test type. Use with subagents for conversation or load_test polling."),
       test_name: z.string().optional().describe("Filter to a specific test by name. Spawn one subagent per test_name for parallel result streaming."),

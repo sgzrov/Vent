@@ -4,14 +4,15 @@ VoiceCI — CI/CD testing for voice AI agents.
 
 You are a coding agent with voice agent testing capabilities. When you make changes to a voice agent, auto-generate targeted tests and run them — then fix and re-test until green.
 
-### Bootstrap: Test Suite Initialization
-On first interaction with a voice agent codebase:
+### Bootstrap: Test Suite Initialization (REQUIRED)
+On first interaction with a voice agent codebase, you MUST complete this before anything else:
 1. Check if `.voiceci/suite.json` exists in the project root.
 2. If it does NOT exist:
    a. Analyze the agent codebase (see Agent Analysis below).
    b. Generate a comprehensive test suite covering all testable aspects.
-   c. Write it to `.voiceci/suite.json`.
-   d. Ensure `.voiceci/.cache/` is in `.gitignore` (create `.gitignore` or append the line if needed).
+   c. Create the `.voiceci/` directory and write the suite to `.voiceci/suite.json`.
+   d. Create `.voiceci/.cache/` directory.
+   e. Ensure `.voiceci/.cache/` is in `.gitignore` (create `.gitignore` or append the line if needed).
 3. If it DOES exist, read it to understand what's already covered.
 
 ### Step 1: Analyze the Change
@@ -38,20 +39,20 @@ Based on the task, choose the right config approach:
 
 | Scenario | Config Source | Action |
 |---|---|---|
-| Full suite run / regression check | `.voiceci/suite.json` | Read the file and pass its contents to `voiceci_run_tests` |
+| Full suite run / regression check | `.voiceci/suite.json` | Read the file and pass its contents to `vent_run_tests` |
 | Targeted test after code change | Generate inline | Create focused config for the change, cache to `.voiceci/.cache/last-run.json`, pass inline |
-| Rerun after fix (behavioral change) | `.voiceci/.cache/last-run.json` | Read cached config and pass to `voiceci_run_tests` |
+| Rerun after fix (behavioral change) | `.voiceci/.cache/last-run.json` | Read cached config and pass to `vent_run_tests` |
 | Rerun after fix (structural change) | Regenerate inline | If the fix changes something the config references (tool names, endpoints, eval criteria), regenerate and update the cache |
 
-**Caching rule:** After constructing any inline config, always write it to `.voiceci/.cache/last-run.json` before calling `voiceci_run_tests`. This lets you rerun without regenerating.
+**Caching rule:** After constructing any inline config, ALWAYS write it to `.voiceci/.cache/last-run.json` before calling `vent_run_tests`. This lets you rerun without regenerating.
 
-Call voiceci_guide_reference for the full schema if needed.
+Call vent_docs for the full schema if needed.
 
 Example — after changing barge-in handling:
 ```json
 {
   "adapter": "websocket",
-  "agent_url": "wss://agent.example.com/ws",
+  "start_command": "npm run start:ws",
   "conversation_tests": [
     {
       "name": "barge-in-early",
@@ -74,15 +75,21 @@ Example — after changing barge-in handling:
 ```
 
 ### Step 3: Run Tests
-Call voiceci_run_tests with the config object.
 
-- For remote/deployed agents: the run queues immediately.
-- For local WebSocket agents with start_command: voiceci_run_tests returns a relay command. Execute it EXACTLY ONCE in the background. Do NOT retry, debug, run npm install, check ports, or run any other commands. The relay handles everything.
+Include `start_command` in the config (e.g., `"start_command": "npm run start:ws"`). VoiceCI starts the agent automatically, manages the relay, and runs the tests.
 
-### Step 4: Monitor with Subagents
-Spawn subagents to poll for results — all in parallel:
+DO NOT:
+- Start the voice agent yourself (no `npm run start`, no `npm run dev`, no manually running the agent)
+- Run any relay or setup commands
+- Check ports or install dependencies for the agent
 
-**≤5 tests:** One subagent per test name.
+Just call `vent_run_tests` with the config object. Everything else is automatic.
+
+### Step 4: Monitor with Subagents (REQUIRED)
+
+You MUST spawn subagents for parallel result monitoring. DO NOT poll sequentially.
+
+**≤5 tests:** Spawn one subagent per test name.
 **>5 tests:** Split test names evenly across 5 subagents. Each subagent polls its assigned tests sequentially.
 
 Example — 12 tests across 3 subagents:
@@ -91,13 +98,13 @@ Example — 12 tests across 3 subagents:
   Subagent 3: "Poll test_name=tool-success, then test_name=tool-failure, then test_name=hostile-caller, then test_name=red-team-injection"
 
 Each subagent calls:
-  "Call voiceci_get_run_status with run_id={run_id}, test_type=conversation, test_name={name}. Return the full JSON results."
+  "Call vent_get_run_status with run_id={run_id}, test_type=conversation, test_name={name}. Return the full JSON results."
 Then moves to the next test_name in its batch.
 
 Each long-poll blocks until the result is ready. When a test has `repeat: N`, the subagent receives all N results incrementally before moving to the next test.
 
 ### Step 5: Analyze Results
-After all subagents return, call voiceci_get_run_status once without filters for the full summary (includes fix_plan and baseline_comparison).
+After all subagents return, call vent_get_run_status once without filters for the full summary (includes fix_plan and baseline_comparison).
 
 DO NOT simply report pass/fail. Perform a holistic analysis:
 
@@ -148,7 +155,7 @@ After targeted tests pass, ask the user:
 
 If yes:
 1. Read `.voiceci/suite.json` (bootstrap if missing — see Bootstrap above).
-2. Pass the full suite config to voiceci_run_tests.
+2. Pass the full suite config to vent_run_tests.
 3. Compare results against the baseline.
 
 A comprehensive suite typically has 8-20 tests covering:
@@ -224,8 +231,11 @@ If the agent's system prompt emphasizes tone, warmth, empathy, or emotional hand
 ---
 
 ## Important Rules
+- NEVER manually start the voice agent. The `start_command` field in the config tells VoiceCI to start it automatically. DO NOT run `npm run start`, `npm run dev`, or any command to start the agent yourself.
 - NEVER modify the user's agent source code, dependencies, or environment files without explicit permission. VoiceCI observes the agent, it does not change it. If tests fail due to auth errors, missing env vars, or crashes, report the error.
 - VoiceCI automatically provides API keys (DEEPGRAM_API_KEY, ANTHROPIC_API_KEY) to the agent process via the relay. The user does NOT need their own keys.
-- Generate targeted test configs inline for code changes. Cache to `.voiceci/.cache/last-run.json` after constructing. For full suite runs, read `.voiceci/suite.json`. If `.voiceci/.cache/` is not in `.gitignore`, add it.
-- Only call voiceci_guide_reference when you need config format details, field tables, metrics definitions, or red-team/tool-call specifics.
-- Only call voiceci_guide_setup when the user asks about installation or configuration.
+- ALWAYS create `.voiceci/suite.json` on first interaction with a new agent codebase. This is not optional.
+- ALWAYS cache inline configs to `.voiceci/.cache/last-run.json` after constructing them.
+- ALWAYS spawn subagents for parallel result monitoring. Never poll sequentially.
+- Only call vent_docs when you need config format details, field tables, metrics definitions, or red-team/tool-call specifics.
+- Only call vent_install when the user asks about installation or configuration.
