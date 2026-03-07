@@ -1,8 +1,38 @@
 # VoiceCI Reference
 
+## Config System
+
+VoiceCI uses two config files in your project's `.voiceci/` directory:
+
+### `.voiceci/suite.json` — Comprehensive Test Suite
+
+The full test suite covering all testable aspects of your voice agent. Auto-generated on first run by analyzing the agent codebase. Optionally committed to git for CI/CD and team sharing.
+
+**When to use:** Full suite runs, regression checks, CI pipelines.
+**Who creates it:** The coding agent generates it automatically.
+**Git:** Commit if you want shared/repeatable test suites. Skip if you prefer agent-generated suites each session.
+
+### `.voiceci/.cache/last-run.json` — Ephemeral Run Cache
+
+The last inline config generated for a targeted test run. Used for quick reruns after fixes without regenerating.
+
+**When to use:** Rerunning after a fix when the config is still valid.
+**Who creates it:** The coding agent writes it automatically after constructing an inline config.
+**Git:** Always gitignored. Add `.voiceci/.cache/` to `.gitignore`.
+
+### Config Lifecycle
+
+```
+First run          → Agent analyzes codebase → writes .voiceci/suite.json
+Targeted test      → Agent generates inline config → caches to .voiceci/.cache/last-run.json
+Rerun after fix    → Agent reads .voiceci/.cache/last-run.json → passes to voiceci_run_tests
+Full suite run     → Agent reads .voiceci/suite.json → passes to voiceci_run_tests
+Suite evolution    → Agent updates .voiceci/suite.json when new capabilities are added
+```
+
 ## Config Format
 
-Generate test configs inline and pass directly to `voiceci_run_tests`. No config file required.
+Both `suite.json` and `last-run.json` use the same format — the config object passed to `voiceci_run_tests`:
 
 ```json
 {
@@ -32,9 +62,6 @@ Generate test configs inline and pass directly to `voiceci_run_tests`. No config
 
   "red_team": ["prompt_injection", "jailbreak"]
 }
-```
-
-To save tests for CI/CD, write the config to `voiceci-config.json`. To run saved tests, read the file and pass its contents.
 
 ---
 

@@ -49,7 +49,7 @@ export interface LoadTestOpts {
   evalQuestions?: string[];
   thresholds?: Partial<LoadTestThresholds>;
   callerAudioPool?: CallerAudioPool;
-  onTierComplete?: (tier: LoadTestTierResult) => void;
+  onTierComplete?: (tier: LoadTestTierResult) => void | Promise<void>;
   /** ISO 639-1 language code for multilingual load testing */
   language?: string;
 }
@@ -603,7 +603,7 @@ export async function runLoadTest(opts: LoadTestOpts): Promise<LoadTestResult> {
     }
 
     tierResults.push(tierMetrics);
-    onTierComplete?.(tierMetrics);
+    await onTierComplete?.(tierMetrics);
   }
 
   // Post-call pipeline: evaluate ALL transcripts with JudgeLLM
