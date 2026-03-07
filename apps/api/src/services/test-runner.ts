@@ -25,6 +25,8 @@ export interface LoadTestInProcessOpts {
   evalQuestions?: string[];
   thresholds?: Partial<LoadTestThresholds>;
   callerAudioPool?: CallerAudioPool;
+  /** ISO 639-1 language code for multilingual load testing */
+  language?: string;
 }
 
 /**
@@ -93,7 +95,6 @@ export async function runLoadTestInProcess(
 
       // Persist final result
       const aggregate: RunAggregateV2 = {
-        infrastructure: { total: 0, completed: 0, errored: 0 },
         conversation_tests: { total: 0, passed: 0, failed: 0 },
         load_tests: {
           total: 1,

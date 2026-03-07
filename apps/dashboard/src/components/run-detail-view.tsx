@@ -22,10 +22,6 @@ function describeRunDetail(run: RunDetail): string {
   const spec = run.test_spec_json;
   if (spec) {
     const parts: string[] = [];
-    if (spec.audio_tests?.length)
-      parts.push(
-        `${spec.audio_tests.length} infrastructure probe${spec.audio_tests.length > 1 ? "s" : ""}`
-      );
     if (spec.conversation_tests?.length)
       parts.push(
         `${spec.conversation_tests.length} conversation${spec.conversation_tests.length > 1 ? "s" : ""}`
@@ -39,11 +35,6 @@ function describeRunDetail(run: RunDetail): string {
   const agg = run.aggregate_json as RunAggregateV2 | null;
   if (agg) {
     const parts: string[] = [];
-    const infraTotal = agg.infrastructure?.total ?? agg.audio_tests?.total ?? 0;
-    if (infraTotal > 0)
-      parts.push(
-        `${infraTotal} infrastructure probe${infraTotal > 1 ? "s" : ""}`
-      );
     if (agg.conversation_tests.total > 0)
       parts.push(
         `${agg.conversation_tests.total} conversation${agg.conversation_tests.total > 1 ? "s" : ""}`
@@ -111,7 +102,7 @@ export function RunDetailView({
 
   // Split scenarios into groups
   const audioScenarios = run.scenarios.filter(
-    (s) => s.test_type === "audio"
+    (s) => (s.test_type as string) === "audio"
   );
   const redTeamScenarios = run.scenarios.filter(
     (s) =>

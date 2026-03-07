@@ -4,7 +4,13 @@
  */
 
 import type { AudioChannel } from "@voiceci/adapters";
-import type { AudioTestName, AudioTestResult, InfrastructureProbeConfig, TestDiagnostics } from "@voiceci/shared";
+import type { AudioTestName, AudioTestResult, TestDiagnostics } from "@voiceci/shared";
+
+/** @deprecated Infrastructure probes are now integrated into conversation tests. */
+interface InfrastructureProbeConfig {
+  prompt?: string;
+  [key: string]: unknown;
+}
 import { runAudioQualityTest } from "./audio-quality.js";
 import { runLatencyTest } from "./latency.js";
 import { runEchoTest } from "./echo.js";
@@ -54,9 +60,10 @@ export async function runInfrastructureProbe(
   const testStart = Date.now();
 
   // Merge global prompt with per-probe config
+  const perProbeConfig = config?.[testName] as Record<string, unknown> | undefined;
   const probeConfig: Record<string, unknown> = {
     prompt: config?.prompt,
-    ...config?.[testName],
+    ...perProbeConfig,
   };
 
   try {
@@ -67,7 +74,6 @@ export async function runInfrastructureProbe(
       error_detail: result.error ?? null,
       timing: {
         channel_connect_ms: channel.stats.connectLatencyMs,
-        agent_response_wait_ms: result.duration_ms,
       },
       channel: {
         connected: channel.connected,

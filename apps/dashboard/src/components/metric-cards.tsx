@@ -2,47 +2,23 @@ import { Card, CardContent } from "@/components/ui/card";
 import type { RunAggregateV2, TestSpec } from "@/lib/types";
 import { formatDuration } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import { AUDIO_TEST_REGISTRY, RED_TEAM_LABELS } from "@/lib/audio-test-registry";
+import { RED_TEAM_LABELS } from "@/lib/audio-test-registry";
 
 interface MetricCardsProps {
   aggregate: RunAggregateV2;
   testSpec?: TestSpec | null;
 }
 
-/** Resolve infrastructure stats, falling back to legacy audio_tests field. */
-function getInfraStats(agg: RunAggregateV2) {
-  if (agg.infrastructure) return agg.infrastructure;
-  // Legacy aggregate from historical runs
-  if (agg.audio_tests) {
-    return {
-      total: agg.audio_tests.total,
-      completed: agg.audio_tests.passed,
-      errored: agg.audio_tests.failed,
-    };
-  }
-  return { total: 0, completed: 0, errored: 0 };
-}
-
 export function MetricCards({ aggregate, testSpec }: MetricCardsProps) {
-  const infra = getInfraStats(aggregate);
-  const hasInfra = infra.total > 0;
-  const hasConversation = aggregate.conversation_tests.total > 0;
   const hasConfig =
-    (testSpec?.audio_tests?.length ?? 0) > 0 ||
     (testSpec?.conversation_tests?.length ?? 0) > 0 ||
     (testSpec?.red_team?.length ?? 0) > 0;
 
-  const primary = hasInfra
-    ? {
-        label: "Infrastructure probes",
-        value: `${infra.completed}/${infra.total}`,
-        errored: infra.errored,
-      }
-    : {
-        label: "Conversation tests",
-        value: `${aggregate.conversation_tests.passed}/${aggregate.conversation_tests.total}`,
-        errored: aggregate.conversation_tests.failed,
-      };
+  const primary = {
+    label: "Conversation tests",
+    value: `${aggregate.conversation_tests.passed}/${aggregate.conversation_tests.total}`,
+    errored: aggregate.conversation_tests.failed,
+  };
 
   return (
     <div
@@ -77,11 +53,7 @@ export function MetricCards({ aggregate, testSpec }: MetricCardsProps) {
                     : "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
                 )}
               >
-                {hasInfra
-                  ? primary.errored > 0
-                    ? `${primary.errored} errored`
-                    : "All completed"
-                  : primary.errored > 0
+                {primary.errored > 0
                     ? `${primary.errored} failed`
                     : "All passed"}
               </span>
@@ -98,12 +70,6 @@ export function MetricCards({ aggregate, testSpec }: MetricCardsProps) {
               </p>
             </div>
 
-            {hasInfra && hasConversation && (
-              <p className="text-xs text-muted-foreground ml-auto">
-                Conversation: {aggregate.conversation_tests.passed}/
-                {aggregate.conversation_tests.total}
-              </p>
-            )}
           </div>
         </CardContent>
       </Card>
@@ -115,24 +81,6 @@ export function MetricCards({ aggregate, testSpec }: MetricCardsProps) {
               <p className="text-[11px] text-muted-foreground uppercase tracking-wider">
                 Tests Run
               </p>
-
-              {(testSpec?.audio_tests?.length ?? 0) > 0 && (
-                <div>
-                  <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-2">
-                    Infrastructure
-                  </p>
-                  <div className="flex flex-wrap gap-1.5">
-                    {testSpec!.audio_tests!.map((test) => (
-                      <span
-                        key={test}
-                        className="inline-flex items-center rounded-md bg-muted px-2 py-0.5 text-xs font-mono"
-                      >
-                        {AUDIO_TEST_REGISTRY[test as keyof typeof AUDIO_TEST_REGISTRY]?.label ?? test}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              )}
 
               {(testSpec?.conversation_tests?.length ?? 0) > 0 && (
                 <div>

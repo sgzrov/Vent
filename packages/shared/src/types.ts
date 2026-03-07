@@ -108,18 +108,6 @@ export interface AudioActionResult {
   transcriptions?: Record<string, string | null>;
 }
 
-// ============================================================
-// Infrastructure probe config (Layer 1)
-// ============================================================
-
-export interface InfrastructureProbeConfig {
-  /** Default prompt for all probes (overridable per-probe) */
-  prompt?: string;
-  audio_quality?: { prompt?: string };
-  latency?: { prompt?: string; caller_prompt?: string; turns?: number };
-  echo?: { prompt?: string; silence_duration_ms?: number };
-}
-
 export interface ConversationTestSpec {
   name?: string;
   caller_prompt: string;
@@ -134,6 +122,10 @@ export interface ConversationTestSpec {
   prosody?: boolean;
   /** Global audio effects applied to all caller audio (speakerphone, speed, noise, accent, etc.) */
   caller_audio?: CallerAudioEffects;
+  /** ISO 639-1 language code for multilingual testing (e.g., "es", "fr", "de"). Caller speaks this language, STT transcribes it, judge evaluates in it. */
+  language?: string;
+  /** Number of times to repeat this test for statistical confidence. Default 1. */
+  repeat?: number;
 }
 
 export const RED_TEAM_ATTACKS = [
@@ -244,7 +236,6 @@ export interface ProsodyWarning {
 }
 
 export interface TestSpec {
-  infrastructure?: InfrastructureProbeConfig;
   conversation_tests?: ConversationTestSpec[];
   red_team?: RedTeamAttack[];
 }
@@ -255,10 +246,6 @@ export interface TestDiagnostics {
   error_detail: string | null;
   timing: {
     channel_connect_ms: number;
-    tts_synthesis_ms?: number;
-    audio_send_ms?: number;
-    agent_response_wait_ms?: number;
-    stt_transcription_ms?: number;
   };
   channel: {
     connected: boolean;
@@ -342,6 +329,8 @@ export interface LatencyMetrics {
   mean_silence_pad_ms?: number;
   /** Estimated mouth-to-ear latency: mean TTFW + channel connect latency */
   mouth_to_ear_est_ms?: number;
+  /** TTFB drift slope — positive = degradation over turns (ms/turn) */
+  drift_slope_ms_per_turn?: number;
 }
 
 export interface HarnessOverhead {
@@ -377,6 +366,23 @@ export interface BehavioralMetrics {
   escalation_handling?: { triggered: boolean; handled_appropriately: boolean; score: number; reasoning: string };
 }
 
+export interface SignalQualityMetrics {
+  /** Mean signal-to-noise ratio across turns (dB). >20 good, <10 bad */
+  mean_snr_db: number;
+  /** Max clipping ratio across turns (0-1). >0.01 = distortion */
+  max_clipping_ratio: number;
+  /** Mean energy consistency across turns (0-1). <0.5 = unstable volume */
+  energy_consistency: number;
+  /** Total sudden volume drops across all turns */
+  sudden_drops: number;
+  /** Total sudden volume spikes across all turns */
+  sudden_spikes: number;
+  /** All turns have clean start/end (no clicks) */
+  clean_edges: boolean;
+  /** Mean fundamental frequency across turns (Hz) */
+  f0_hz: number;
+}
+
 export interface AudioAnalysisMetrics {
   /** Agent speech time / agent total audio time (0-1). Flag if <0.5 */
   agent_speech_ratio: number;
@@ -397,16 +403,15 @@ export interface AudioAnalysisMetrics {
 }
 
 export interface ConversationMetrics {
-  turns: number;
   mean_ttfb_ms: number;
   /** Mean time to first word (VAD speech onset) across agent turns */
   mean_ttfw_ms?: number;
-  total_duration_ms: number;
-  talk_ratio?: number;
   transcript?: TranscriptMetrics;
   latency?: LatencyMetrics;
   behavioral?: BehavioralMetrics;
   tool_calls?: ToolCallMetrics;
+  /** Raw audio signal quality (SNR, clipping, energy, F0) — aggregated across turns */
+  signal_quality?: SignalQualityMetrics;
   audio_analysis?: AudioAnalysisMetrics;
   audio_analysis_warnings?: AudioAnalysisWarning[];
   prosody?: ProsodyMetrics;
@@ -430,7 +435,6 @@ export interface ConversationTestResult {
 }
 
 export interface RunAggregateV2 {
-  infrastructure: { total: number; completed: number; errored: number };
   conversation_tests: { total: number; passed: number; failed: number };
   load_tests?: { total: number; passed: number; failed: number };
   total_duration_ms: number;
@@ -439,7 +443,6 @@ export interface RunAggregateV2 {
 export interface RunnerCallbackPayloadV2 {
   run_id: string;
   status: "pass" | "fail";
-  infrastructure_results: AudioTestResult[];
   conversation_results: ConversationTestResult[];
   aggregate: RunAggregateV2;
   error_text?: string;

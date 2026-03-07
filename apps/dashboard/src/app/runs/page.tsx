@@ -16,23 +16,14 @@ const API_URL = "/backend";
 
 type DisplayStatus = "queued" | "running" | "all-pass" | "partial" | "all-fail";
 
-function getInfraStats(agg: RunAggregateV2) {
-  if (agg.infrastructure) return agg.infrastructure;
-  if (agg.audio_tests) {
-    return { total: agg.audio_tests.total, completed: agg.audio_tests.passed, errored: agg.audio_tests.failed };
-  }
-  return { total: 0, completed: 0, errored: 0 };
-}
-
 function getDisplayStatus(run: RunRow): DisplayStatus {
   if (run.status === "queued") return "queued";
   if (run.status === "running") return "running";
 
   const agg = run.aggregate_json;
   if (agg) {
-    const infra = getInfraStats(agg);
-    const totalFailed = infra.errored + (agg.conversation_tests?.failed ?? 0) + (agg.load_tests?.failed ?? 0);
-    const totalPassed = infra.completed + (agg.conversation_tests?.passed ?? 0) + (agg.load_tests?.passed ?? 0);
+    const totalFailed = (agg.conversation_tests?.failed ?? 0) + (agg.load_tests?.failed ?? 0);
+    const totalPassed = (agg.conversation_tests?.passed ?? 0) + (agg.load_tests?.passed ?? 0);
     if (totalFailed === 0) return "all-pass";
     if (totalPassed === 0) return "all-fail";
     return "partial";
@@ -75,10 +66,6 @@ function describeRun(run: RunRow): string {
   const spec = run.test_spec_json;
   if (spec) {
     const parts: string[] = [];
-    if (spec.audio_tests?.length)
-      parts.push(
-        `${spec.audio_tests.length} infrastructure probe${spec.audio_tests.length > 1 ? "s" : ""}`
-      );
     if (spec.conversation_tests?.length)
       parts.push(
         `${spec.conversation_tests.length} conversation${spec.conversation_tests.length > 1 ? "s" : ""}`
@@ -91,12 +78,7 @@ function describeRun(run: RunRow): string {
   }
   if (run.aggregate_json) {
     const agg = run.aggregate_json;
-    const infra = getInfraStats(agg);
     const parts: string[] = [];
-    if (infra.total > 0)
-      parts.push(
-        `${infra.total} infrastructure probe${infra.total > 1 ? "s" : ""}`
-      );
     if (agg.conversation_tests && agg.conversation_tests.total > 0)
       parts.push(
         `${agg.conversation_tests.total} conversation${agg.conversation_tests.total > 1 ? "s" : ""}`
@@ -110,12 +92,7 @@ function describeRun(run: RunRow): string {
 
 function getIssues(agg: RunAggregateV2 | null): string | null {
   if (!agg) return null;
-  const infra = getInfraStats(agg);
   const parts: string[] = [];
-  if (infra.errored > 0)
-    parts.push(
-      `${infra.errored} probe${infra.errored > 1 ? "s" : ""} errored`
-    );
   if (agg.conversation_tests?.failed && agg.conversation_tests.failed > 0)
     parts.push(
       `${agg.conversation_tests.failed} conversation${agg.conversation_tests.failed > 1 ? "s" : ""} failed`
@@ -189,7 +166,7 @@ function RunMeta({ spec }: { spec: TestSpec | null }) {
 // Filters
 // ---------------------------------------------------------------------------
 
-type TestTypeFilter = "all" | "audio" | "conversation" | "security" | "load_test";
+type TestTypeFilter = "all" | "conversation" | "security" | "load_test";
 
 function hasTestType(run: RunRow, type: TestTypeFilter): boolean {
   if (type === "all") return true;
@@ -197,12 +174,6 @@ function hasTestType(run: RunRow, type: TestTypeFilter): boolean {
   const spec = run.test_spec_json;
   const agg = run.aggregate_json;
 
-  if (type === "audio") {
-    return (
-      (spec?.audio_tests?.length ?? 0) > 0 ||
-      (agg?.infrastructure?.total ?? agg?.audio_tests?.total ?? 0) > 0
-    );
-  }
   if (type === "conversation") {
     return (
       (spec?.conversation_tests?.length ?? 0) > 0 ||
@@ -267,7 +238,6 @@ function CategoryResult({
 
 const typeFilters: { value: TestTypeFilter; label: string }[] = [
   { value: "all", label: "All" },
-  { value: "audio", label: "Infrastructure" },
   { value: "conversation", label: "Conversations" },
   { value: "security", label: "Security" },
   { value: "load_test", label: "Load Test" },
@@ -410,10 +380,9 @@ export default function RunsPage() {
       ) : (
         <div className="border rounded-xl bg-background overflow-hidden">
           {/* Table header */}
-          <div className="hidden md:grid grid-cols-[6.5rem_1fr_5rem_5rem_1fr_6.5rem] gap-x-4 items-center px-5 py-3 text-[10px] font-medium text-muted-foreground/55 uppercase tracking-[0.12em] border-b bg-muted">
+          <div className="hidden md:grid grid-cols-[6.5rem_1fr_5rem_1fr_6.5rem] gap-x-4 items-center px-5 py-3 text-[10px] font-medium text-muted-foreground/55 uppercase tracking-[0.12em] border-b bg-muted">
             <span>Status</span>
             <span>Run</span>
-            <span>Infra</span>
             <span>Conv</span>
             <span>Issues</span>
             <span className="text-right">When</span>
@@ -429,7 +398,7 @@ export default function RunsPage() {
             return (
               <Link key={run.id} href={`/runs/${run.id}`} className="block">
                 {/* Desktop row */}
-                <div className="hidden md:grid grid-cols-[6.5rem_1fr_5rem_5rem_1fr_6.5rem] gap-x-4 items-center px-5 py-3.5 hover:bg-muted transition-colors cursor-pointer border-b last:border-b-0">
+                <div className="hidden md:grid grid-cols-[6.5rem_1fr_5rem_1fr_6.5rem] gap-x-4 items-center px-5 py-3.5 hover:bg-muted transition-colors cursor-pointer border-b last:border-b-0">
                   {/* Status */}
                   <span className="flex items-center gap-2.5">
                     <span
@@ -450,12 +419,6 @@ export default function RunsPage() {
                     </p>
                     <RunMeta spec={run.test_spec_json} />
                   </div>
-
-                  {/* Infrastructure results */}
-                  <CategoryResult
-                    passed={agg ? getInfraStats(agg).completed : 0}
-                    total={agg ? getInfraStats(agg).total : 0}
-                  />
 
                   {/* Conversation results */}
                   <CategoryResult
@@ -520,17 +483,6 @@ export default function RunsPage() {
                   </p>
                   <RunMeta spec={run.test_spec_json} />
                   <div className="flex items-center gap-5 mt-2">
-                    {agg && getInfraStats(agg).total > 0 && (
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs text-muted-foreground">
-                          Infra
-                        </span>
-                        <CategoryResult
-                          passed={getInfraStats(agg).completed}
-                          total={getInfraStats(agg).total}
-                        />
-                      </div>
-                    )}
                     {agg && agg.conversation_tests && agg.conversation_tests.total > 0 && (
                       <div className="flex items-center gap-2">
                         <span className="text-xs text-muted-foreground">

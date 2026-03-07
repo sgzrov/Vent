@@ -32,7 +32,7 @@ import type {
 } from "@voiceci/shared";
 import { DEFAULT_LOAD_TEST_THRESHOLDS } from "@voiceci/shared";
 import { createAudioChannel, type AudioChannelConfig } from "@voiceci/adapters";
-import { synthesize, VoiceActivityDetector, StreamingTranscriber, applyEffects, resolveAccentVoiceId } from "@voiceci/voice";
+import { synthesize, VoiceActivityDetector, StreamingTranscriber, applyEffects, resolveAccentVoiceId, resolveLanguageVoiceId } from "@voiceci/voice";
 import { collectUntilEndOfTurn } from "./audio-tests/helpers.js";
 import { CallerLLM } from "./conversation/caller-llm.js";
 import { JudgeLLM } from "./conversation/judge-llm.js";
@@ -50,6 +50,8 @@ export interface LoadTestOpts {
   thresholds?: Partial<LoadTestThresholds>;
   callerAudioPool?: CallerAudioPool;
   onTierComplete?: (tier: LoadTestTierResult) => void;
+  /** ISO 639-1 language code for multilingual load testing */
+  language?: string;
 }
 
 interface CallResult {
@@ -176,15 +178,16 @@ async function runSingleCall(
   maxTurns: number,
   tierId: number,
   callerAudioEffects?: CallerAudioEffects,
+  language?: string,
 ): Promise<CallResult> {
   const start = Date.now();
   const transcript: ConversationTurn[] = [];
   const ttfbPerTurn: number[] = [];
   const ttfwPerTurn: number[] = [];
 
-  const caller = new CallerLLM(callerPrompt);
+  const caller = new CallerLLM(callerPrompt, undefined, language);
   const vad = new VoiceActivityDetector({ silenceThresholdMs: 2000 });
-  const transcriber = new StreamingTranscriber();
+  const transcriber = new StreamingTranscriber(language ? { language } : undefined);
 
   // Generate first utterance while initializing VAD + STT
   const [, , firstUtterance] = await Promise.all([
@@ -208,10 +211,12 @@ async function runSingleCall(
     };
   }
 
-  // Resolve accent → TTS voice ID (consistent for this caller's entire conversation)
+  // Resolve accent → TTS voice ID (accent takes priority over language default)
   const ttsVoiceId = callerAudioEffects?.accent
     ? resolveAccentVoiceId(callerAudioEffects.accent)
-    : undefined;
+    : language
+      ? resolveLanguageVoiceId(language)
+      : undefined;
   const ttsOpts = ttsVoiceId ? { voiceId: ttsVoiceId } : undefined;
 
   // Pre-synthesize first turn audio
@@ -552,6 +557,7 @@ export async function runLoadTest(opts: LoadTestOpts): Promise<LoadTestResult> {
     evalQuestions = [],
     callerAudioPool,
     onTierComplete,
+    language,
   } = opts;
 
   // Merge user thresholds with defaults
@@ -579,7 +585,7 @@ export async function runLoadTest(opts: LoadTestOpts): Promise<LoadTestResult> {
     // Each caller gets independently randomized audio effects (if pool configured)
     const calls = Array.from({ length: concurrency }, () => {
       const effects = callerAudioPool ? randomizeEffects(callerAudioPool) : undefined;
-      return runSingleCall(channelConfig, callerPrompt, maxTurns, i, effects);
+      return runSingleCall(channelConfig, callerPrompt, maxTurns, i, effects, language);
     });
     const results = await Promise.all(calls);
     allCallResults.push(...results);
