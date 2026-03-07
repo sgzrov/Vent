@@ -2,7 +2,7 @@ import Fastify from "fastify";
 import cors from "@fastify/cors";
 import cookie from "@fastify/cookie";
 import websocket from "@fastify/websocket";
-import { eq, lt, and } from "drizzle-orm";
+import { eq, lt, ne, and } from "drizzle-orm";
 import { schema } from "@voiceci/db";
 import { healthRoutes } from "./routes/health.js";
 import { runRoutes } from "./routes/runs.js";
@@ -77,6 +77,7 @@ async function main() {
   const CLEANUP_INTERVAL_MS = parseMsEnv("RUN_CLEANUP_INTERVAL_MS", 60_000);
   const STUCK_RUNNING_MS = parseMsEnv("RUN_STUCK_RUNNING_MS", 60 * 60_000);
   const STUCK_QUEUED_RELAY_MS = parseMsEnv("RUN_STUCK_QUEUED_RELAY_MS", 5 * 60_000);
+  const STUCK_QUEUED_REMOTE_MS = parseMsEnv("RUN_STUCK_QUEUED_REMOTE_MS", 10 * 60_000);
   let cleanupInterval: ReturnType<typeof setInterval> | undefined;
 
   app.addHook("onClose", async () => {
@@ -134,7 +135,29 @@ async function main() {
         .returning({ id: schema.runs.id });
 
       if (stuckQueued.length > 0) {
-        console.log(`Cleaned up ${stuckQueued.length} stuck queued run(s): ${stuckQueued.map((r) => r.id).join(", ")}`);
+        console.log(`Cleaned up ${stuckQueued.length} stuck queued relay run(s): ${stuckQueued.map((r) => r.id).join(", ")}`);
+      }
+
+      // 3. Remote runs stuck in "queued" (worker never picked them up)
+      const remoteQueuedCutoff = new Date(Date.now() - STUCK_QUEUED_REMOTE_MS);
+      const stuckRemote = await app.db
+        .update(schema.runs)
+        .set({
+          status: "fail",
+          finished_at: new Date(),
+          error_text: "Run timed out in queue — worker did not pick it up. Try again or check worker health.",
+        })
+        .where(
+          and(
+            eq(schema.runs.status, "queued"),
+            ne(schema.runs.source_type, "relay"),
+            lt(schema.runs.created_at, remoteQueuedCutoff),
+          )
+        )
+        .returning({ id: schema.runs.id });
+
+      if (stuckRemote.length > 0) {
+        console.log(`Cleaned up ${stuckRemote.length} stuck queued remote run(s): ${stuckRemote.map((r) => r.id).join(", ")}`);
       }
     } catch (err) {
       console.error("Stuck run cleanup failed:", err);

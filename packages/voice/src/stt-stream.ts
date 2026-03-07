@@ -30,6 +30,8 @@ export interface StreamingTranscriberConfig {
   apiKeyEnv?: string;
   sampleRate?: number;
   model?: string;
+  /** ISO 639-1 language code for STT (e.g., "es", "fr"). Defaults to English if not set. */
+  language?: string;
 }
 
 export class StreamingTranscriber {
@@ -37,6 +39,7 @@ export class StreamingTranscriber {
   private readonly apiKeyEnv: string;
   private readonly sampleRate: number;
   private readonly model: string;
+  private readonly language: string | undefined;
 
   /** Accumulated final transcript segments for the current turn. */
   private finalSegments: { text: string; confidence: number }[] = [];
@@ -52,6 +55,7 @@ export class StreamingTranscriber {
     this.apiKeyEnv = config?.apiKeyEnv ?? "DEEPGRAM_API_KEY";
     this.sampleRate = config?.sampleRate ?? 24000;
     this.model = config?.model ?? "nova-2";
+    this.language = config?.language;
   }
 
   async connect(): Promise<void> {
@@ -73,6 +77,7 @@ export class StreamingTranscriber {
         interim_results: false,
         endpointing: false,
         vad_events: false,
+        ...(this.language ? { language: this.language } : {}),
       });
 
       const resolveOnce = () => {

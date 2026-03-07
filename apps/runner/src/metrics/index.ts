@@ -16,7 +16,6 @@ import { computeAudioAnalysisMetrics, type TurnAudioData } from "./audio-analysi
 export interface ComputedMetrics {
   transcript: TranscriptMetrics;
   latency: LatencyMetrics;
-  talk_ratio: number | undefined;
   audio_analysis: AudioAnalysisMetrics | undefined;
   harness_overhead: HarnessOverhead | undefined;
 }
@@ -34,23 +33,13 @@ export function computeAllMetrics(
   const latency = computeLatencyMetrics(turns, connectLatencyMs);
   const harness_overhead = computeHarnessOverhead(turns);
 
-  // Talk ratio: caller audio duration / total audio duration
-  const callerAudioMs = turns
-    .filter((t) => t.role === "caller")
-    .reduce((sum, t) => sum + (t.audio_duration_ms ?? 0), 0);
-  const agentAudioMs = turns
-    .filter((t) => t.role === "agent")
-    .reduce((sum, t) => sum + (t.audio_duration_ms ?? 0), 0);
-  const totalAudioMs = callerAudioMs + agentAudioMs;
-  const talk_ratio = totalAudioMs > 0 ? callerAudioMs / totalAudioMs : undefined;
-
   // VAD-derived audio analysis (when turn audio data is available)
   const audio_analysis =
     turnAudioData && turnAudioData.length > 0
       ? computeAudioAnalysisMetrics(turnAudioData)
       : undefined;
 
-  return { transcript, latency, talk_ratio, audio_analysis, harness_overhead };
+  return { transcript, latency, audio_analysis, harness_overhead };
 }
 
 export { computeTranscriptMetrics } from "./transcript.js";

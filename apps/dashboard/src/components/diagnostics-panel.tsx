@@ -34,10 +34,6 @@ function TimingBar({ diagnostics }: { diagnostics: TestDiagnostics }) {
   const t = diagnostics.timing;
   const segments = [
     { label: "Connect", ms: t.channel_connect_ms, color: "bg-blue-500" },
-    { label: "TTS", ms: t.tts_synthesis_ms, color: "bg-violet-500" },
-    { label: "Send", ms: t.audio_send_ms, color: "bg-cyan-500" },
-    { label: "Wait", ms: t.agent_response_wait_ms, color: "bg-amber-500" },
-    { label: "STT", ms: t.stt_transcription_ms, color: "bg-emerald-500" },
   ].filter((s) => s.ms != null && s.ms > 0) as Array<{
     label: string;
     ms: number;

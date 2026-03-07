@@ -11,6 +11,7 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import type { ConversationTurn, CallerPersona } from "@voiceci/shared";
+import { LANGUAGE_NAMES } from "@voiceci/voice";
 
 const MODEL = "claude-haiku-4-5-20251001";
 const MAX_TOKENS = 200;
@@ -104,6 +105,11 @@ function compilePersona(persona: CallerPersona): string {
   );
 }
 
+function compileLanguage(language: string): string {
+  const name = LANGUAGE_NAMES[language] ?? language;
+  return `\n\nLANGUAGE: You must speak entirely in ${name}. Every utterance must be in ${name}. Do not use English.`;
+}
+
 // ---------------------------------------------------------------------------
 // CallerLLM
 // ---------------------------------------------------------------------------
@@ -114,10 +120,13 @@ export class CallerLLM {
   private callerPrompt: string;
   private systemPrompt: string;
 
-  constructor(callerPrompt: string, persona?: CallerPersona) {
+  constructor(callerPrompt: string, persona?: CallerPersona, language?: string) {
     this.client = new Anthropic();
     this.callerPrompt = callerPrompt;
-    this.systemPrompt = SYSTEM_PROMPT + (persona ? compilePersona(persona) : "");
+    this.systemPrompt =
+      SYSTEM_PROMPT +
+      (persona ? compilePersona(persona) : "") +
+      (language && language !== "en" ? compileLanguage(language) : "");
   }
 
   /**

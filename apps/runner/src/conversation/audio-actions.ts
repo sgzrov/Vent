@@ -133,43 +133,57 @@ async function executeInterrupt(
 }
 
 /**
- * Silence: stream silence instead of caller utterance, monitor for agent prompting.
+ * Silence: stream silence instead of caller utterance, count unprompted agent utterances.
+ * Doubles as echo detection — if unprompted_utterance_count > 0, agent is likely
+ * hearing its own TTS output via a feedback loop.
  */
 async function executeSilence(
   action: AudioAction,
   ctx: ActionContext,
 ): Promise<{ result: AudioActionResult; agentText: string }> {
   const durationMs = action.duration_ms ?? 8000;
+  const ECHO_WINDOW_MS = 3000;
 
-  // Stream silence and collect any agent audio concurrently
-  ctx.transcriber.resetForNextTurn();
-  const feedSTT = (chunk: Buffer) => ctx.transcriber.feedAudio(chunk);
-  ctx.channel.on("audio", feedSTT);
-
+  // Stream silence to keep the connection alive
   const silencePromise = streamSilence(ctx.channel, durationMs);
 
-  const { audio: agentAudio } = await collectUntilEndOfTurn(ctx.channel, {
-    timeoutMs: durationMs + 5000,
-    vad: ctx.vad,
-  });
+  const silenceStart = Date.now();
+  let unpromptedCount = 0;
+  const unpromptedTexts: string[] = [];
 
-  ctx.channel.off("audio", feedSTT);
+  // Count distinct unprompted utterances during the silence window
+  while (Date.now() - silenceStart < durationMs) {
+    const remaining = durationMs - (Date.now() - silenceStart);
+    if (remaining < ECHO_WINDOW_MS) break;
+
+    const { timedOut } = await waitForSpeech(ctx.channel, Math.min(ECHO_WINDOW_MS, remaining));
+    if (timedOut) break;
+
+    unpromptedCount++;
+
+    // Drain the unprompted utterance
+    ctx.transcriber.resetForNextTurn();
+    const feedSTT = (chunk: Buffer) => ctx.transcriber.feedAudio(chunk);
+    ctx.channel.on("audio", feedSTT);
+
+    await collectUntilEndOfTurn(ctx.channel, { timeoutMs: 10000, vad: ctx.vad });
+
+    ctx.channel.off("audio", feedSTT);
+    const { text } = await ctx.transcriber.finalize();
+    if (text) unpromptedTexts.push(text);
+  }
+
   await silencePromise;
 
-  let agentText = "";
-  const agentPrompted = agentAudio.length > 0;
-
-  if (agentPrompted) {
-    const { text } = await ctx.transcriber.finalize();
-    agentText = text;
-  }
+  const agentText = unpromptedTexts.join(" ");
 
   return {
     result: {
       at_turn: action.at_turn,
       action: "silence",
       metrics: {
-        agent_prompted: agentPrompted,
+        agent_prompted: unpromptedCount > 0,
+        unprompted_utterance_count: unpromptedCount,
         silence_duration_ms: durationMs,
       },
       transcriptions: { agent_prompt_text: agentText || null },

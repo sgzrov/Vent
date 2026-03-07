@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import type { TestSpec, CallerPersona } from "@/lib/types";
-import { AUDIO_TEST_REGISTRY, RED_TEAM_LABELS } from "@/lib/audio-test-registry";
+import { RED_TEAM_LABELS } from "@/lib/audio-test-registry";
 
 interface TestConfigSectionProps {
   testSpec: TestSpec;
@@ -40,12 +40,11 @@ function PersonaBadges({ persona }: { persona: CallerPersona }) {
 export function TestConfigSection({ testSpec }: TestConfigSectionProps) {
   const [expanded, setExpanded] = useState(false);
 
-  const hasAudio = testSpec.audio_tests && testSpec.audio_tests.length > 0;
   const hasConversation =
     testSpec.conversation_tests && testSpec.conversation_tests.length > 0;
   const hasRedTeam = testSpec.red_team && testSpec.red_team.length > 0;
 
-  if (!hasAudio && !hasConversation && !hasRedTeam) return null;
+  if (!hasConversation && !hasRedTeam) return null;
 
   return (
     <div className="rounded-md border">
@@ -61,7 +60,6 @@ export function TestConfigSection({ testSpec }: TestConfigSectionProps) {
         Test Configuration
         <span className="text-xs text-muted-foreground font-normal ml-auto">
           {[
-            hasAudio && `${testSpec.audio_tests!.length} infrastructure`,
             hasConversation &&
               `${testSpec.conversation_tests!.length} conversation`,
             hasRedTeam && `${testSpec.red_team!.length} red-team`,
@@ -73,24 +71,6 @@ export function TestConfigSection({ testSpec }: TestConfigSectionProps) {
 
       {expanded && (
         <div className="px-4 pb-4 space-y-4 border-t">
-          {hasAudio && (
-            <div className="pt-3">
-              <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-2">
-                Infrastructure Probes
-              </p>
-              <div className="flex flex-wrap gap-1.5">
-                {testSpec.audio_tests!.map((test) => (
-                  <span
-                    key={test}
-                    className="inline-flex items-center rounded-md bg-muted px-2 py-0.5 text-xs font-mono"
-                  >
-                    {AUDIO_TEST_REGISTRY[test as keyof typeof AUDIO_TEST_REGISTRY]?.label ?? test}
-                  </span>
-                ))}
-              </div>
-            </div>
-          )}
-
           {hasConversation && (
             <div className="pt-3">
               <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-2">
