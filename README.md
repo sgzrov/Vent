@@ -99,7 +99,7 @@ After connecting, these tools are available to your coding agent:
 | `vent_run_tests` | Run audio + conversation tests (relay connects your local agent automatically) |
 | `vent_run_load_test` | Run load/stress tests with traffic patterns (ramp, spike, sustained, soak) |
 | `vent_get_run_status` | Check run status and get partial/final results |
-| `vent_install` | Installation and connection instructions |
+| `vent_setup_workspace` | Installation and connection instructions |
 | `vent_docs` | Full config schema, metrics, audio actions, red-team, and tool call integration |
 
 ## License

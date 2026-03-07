@@ -5,7 +5,7 @@ import {
 } from "../docs.js";
 
 export function registerDocTools(server: McpServer) {
-  server.registerTool("vent_install", {
+  server.registerTool("vent_setup_workspace", {
     title: "Setup Guide",
     description: "Get setup instructions for connecting VoiceCI to Claude Code, Cursor, Windsurf, and team sharing via .mcp.json. Call this when a user asks how to install or configure VoiceCI.",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },

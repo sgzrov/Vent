@@ -238,4 +238,4 @@ If the agent's system prompt emphasizes tone, warmth, empathy, or emotional hand
 - ALWAYS cache inline configs to `.voiceci/.cache/last-run.json` after constructing them.
 - ALWAYS spawn subagents for parallel result monitoring. Never poll sequentially.
 - Only call vent_docs when you need config format details, field tables, metrics definitions, or red-team/tool-call specifics.
-- Only call vent_install when the user asks about installation or configuration.
+- Only call vent_setup_workspace when the user asks about installation or configuration.
