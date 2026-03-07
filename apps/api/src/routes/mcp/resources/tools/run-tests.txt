@@ -1,9 +1,9 @@
-Run infrastructure probes and conversation tests against a voice agent.
+Run conversation tests against a voice agent.
 
-**4-layer test model:**
-- Layer 1 (Infrastructure): 3 probes — audio_quality, latency, echo. Return raw metrics, no pass/fail.
-- Layers 2-4 (Conversation): CallerLLM-driven conversations with optional audio_actions (interrupt, silence, inject_noise, split_sentence, noise_on_caller) at specific turns.
+Each conversation test includes integrated signal quality analysis (SNR, clipping, energy, drift) — no separate infrastructure probes needed.
 
-Read `voiceci-config.json` and pass its contents as the `config` parameter. For deployed agents (SIP, WebRTC, platform adapters, or agent_url), the run queues immediately. For local WebSocket agents with start_command, a relay command is returned — run it in the background.
+Tests use CallerLLM-driven conversations with optional audio_actions (interrupt, silence, inject_noise, split_sentence, noise_on_caller) at specific turns.
+
+Generate a test config inline based on what you need to test, and pass it as the `config` parameter. For deployed agents (SIP, WebRTC, platform adapters, or agent_url), the run queues immediately. For local WebSocket agents with start_command, a relay command is returned — run it in the background.
 
 After getting the run_id, spawn subagents to monitor results via voiceci_get_run_status. Call voiceci_guide_reference for config format details.

@@ -21,11 +21,11 @@ import type {
   EvalResult,
   AudioActionResult,
 } from "@voiceci/shared";
-import { synthesize, BatchVAD, VoiceActivityDetector, StreamingTranscriber, applyEffects, resolveAccentVoiceId } from "@voiceci/voice";
+import { synthesize, BatchVAD, VoiceActivityDetector, StreamingTranscriber, applyEffects, resolveAccentVoiceId, resolveLanguageVoiceId, analyzeAudioQuality, type AudioQualityMetrics } from "@voiceci/voice";
 import { CallerLLM } from "./caller-llm.js";
 import { JudgeLLM } from "./judge-llm.js";
 import { executeAudioAction, mixCallerWithNoise } from "./audio-actions.js";
-import { collectUntilEndOfTurn } from "../audio-tests/helpers.js";
+import { collectUntilEndOfTurn, linearRegressionSlope } from "../audio-tests/helpers.js";
 import { computeAllMetrics } from "../metrics/index.js";
 import { analyzeProsody } from "../metrics/prosody.js";
 import { AdaptiveThreshold } from "./adaptive-threshold.js";
@@ -40,7 +40,8 @@ export async function runConversationTest(
   const ttfbValues: number[] = [];
   const ttfwValues: number[] = [];
 
-  const caller = new CallerLLM(spec.caller_prompt, spec.persona);
+  const language = spec.language;
+  const caller = new CallerLLM(spec.caller_prompt, spec.persona, language);
   const adaptiveThreshold = new AdaptiveThreshold({
     baseMs: spec.silence_threshold_ms ?? 800,
   });
@@ -48,7 +49,7 @@ export async function runConversationTest(
   // Initialize VAD, batch VAD, streaming STT, and pre-generate first turn in parallel
   const turnVAD = new VoiceActivityDetector({ silenceThresholdMs: adaptiveThreshold.thresholdMs });
   const batchVAD = new BatchVAD();
-  const transcriber = new StreamingTranscriber();
+  const transcriber = new StreamingTranscriber(language ? { language } : undefined);
 
   const [, , , firstUtterance] = await Promise.all([
     turnVAD.init(),
@@ -57,10 +58,12 @@ export async function runConversationTest(
     caller.nextUtterance(null, []),
   ]);
 
-  // Resolve accent → TTS voice ID
+  // Resolve accent → TTS voice ID (accent takes priority over language default)
   const ttsVoiceId = spec.caller_audio?.accent
     ? resolveAccentVoiceId(spec.caller_audio.accent)
-    : undefined;
+    : language
+      ? resolveLanguageVoiceId(language)
+      : undefined;
   const ttsOpts = ttsVoiceId ? { voiceId: ttsVoiceId } : undefined;
 
   // Pre-synthesize first turn TTS
@@ -76,6 +79,7 @@ export async function runConversationTest(
 
   const turnAudioData: TurnAudioData[] = [];
   const agentAudioBuffers: Buffer[] = [];
+  const turnSignalQualities: AudioQualityMetrics[] = [];
   const audioActionResults: AudioActionResult[] = [];
   let agentText: string | null = null;
 
@@ -269,6 +273,8 @@ export async function runConversationTest(
         // Batch VAD on agent audio for speech/silence segmentation
         const speechSegments = batchVAD.analyze(agentAudio);
         if (spec.prosody) agentAudioBuffers.push(Buffer.from(agentAudio));
+        // Signal quality analysis on raw audio buffer
+        turnSignalQualities.push(analyzeAudioQuality(agentAudio, speechSegments));
         turnAudioData.push({
           role: "agent",
           audioDurationMs: agentAudioDurationMs,
@@ -309,8 +315,8 @@ export async function runConversationTest(
     // Step 7: Judge evaluates transcript + tool calls in parallel
     const judge = new JudgeLLM();
     const judgePromises: Promise<unknown>[] = [
-      judge.evaluate(transcript, spec.eval),
-      judge.evaluateAllBehavioral(transcript),
+      judge.evaluate(transcript, spec.eval, language),
+      judge.evaluateAllBehavioral(transcript, language),
     ];
 
     // Evaluate tool call criteria if provided and tool call data exists
@@ -318,7 +324,7 @@ export async function runConversationTest(
     if (hasToolCallEval) {
       if (observedToolCalls.length > 0) {
         judgePromises.push(
-          judge.evaluateToolCalls(transcript, observedToolCalls, spec.tool_call_eval!),
+          judge.evaluateToolCalls(transcript, observedToolCalls, spec.tool_call_eval!, language),
         );
       } else {
         const unmetToolCallEvals: EvalResult[] = spec.tool_call_eval!.map((question) => ({
@@ -352,7 +358,7 @@ export async function runConversationTest(
         ? Math.round(ttfwValues.reduce((a, b) => a + b, 0) / ttfwValues.length)
         : undefined;
 
-    const { transcript: transcriptMetrics, latency, talk_ratio, audio_analysis, harness_overhead } = computeAllMetrics(transcript, turnAudioData, channel.stats.connectLatencyMs);
+    const { transcript: transcriptMetrics, latency, audio_analysis, harness_overhead } = computeAllMetrics(transcript, turnAudioData, channel.stats.connectLatencyMs);
 
     // Compute tool call metrics
     let toolCallMetrics: ToolCallMetrics | undefined;
@@ -382,15 +388,38 @@ export async function runConversationTest(
       ? gradeAudioAnalysisMetrics(audio_analysis)
       : undefined;
 
+    // Aggregate signal quality across turns
+    const signalQuality = turnSignalQualities.length > 0
+      ? {
+          mean_snr_db: Math.round(
+            turnSignalQualities.reduce((a, q) => a + q.estimated_snr_db, 0) / turnSignalQualities.length * 10,
+          ) / 10,
+          max_clipping_ratio: Math.max(...turnSignalQualities.map((q) => q.clipping_ratio)),
+          energy_consistency: Math.round(
+            turnSignalQualities.reduce((a, q) => a + q.energy_consistency, 0) / turnSignalQualities.length * 1000,
+          ) / 1000,
+          sudden_drops: turnSignalQualities.reduce((a, q) => a + q.sudden_drops, 0),
+          sudden_spikes: turnSignalQualities.reduce((a, q) => a + q.sudden_spikes, 0),
+          clean_edges: turnSignalQualities.every((q) => q.clean_start && q.clean_end),
+          f0_hz: Math.round(
+            turnSignalQualities.reduce((a, q) => a + q.f0_hz, 0) / turnSignalQualities.length,
+          ),
+        }
+      : undefined;
+
+    // Compute TTFB drift slope
+    if (latency && ttfbValues.length >= 2) {
+      latency.drift_slope_ms_per_turn =
+        Math.round(linearRegressionSlope(ttfbValues) * 100) / 100;
+    }
+
     const metrics: ConversationMetrics = {
-      turns: transcript.length,
       mean_ttfb_ms: meanTtfb,
       mean_ttfw_ms: meanTtfw,
-      total_duration_ms: totalDurationMs,
-      talk_ratio,
       transcript: transcriptMetrics,
       latency,
       behavioral,
+      signal_quality: signalQuality,
       tool_calls: toolCallMetrics,
       audio_analysis,
       audio_analysis_warnings: audioAnalysisWarnings?.length ? audioAnalysisWarnings : undefined,
@@ -415,6 +444,17 @@ export async function runConversationTest(
       audio_action_results: audioActionResults.length > 0 ? audioActionResults : undefined,
       duration_ms: totalDurationMs,
       metrics,
+      diagnostics: {
+        error_origin: null,
+        error_detail: null,
+        timing: { channel_connect_ms: channel.stats.connectLatencyMs },
+        channel: {
+          connected: channel.connected,
+          error_events: channel.stats.errorEvents,
+          audio_bytes_sent: channel.stats.bytesSent,
+          audio_bytes_received: channel.stats.bytesReceived,
+        },
+      },
     };
   } finally {
     transcriber.close();

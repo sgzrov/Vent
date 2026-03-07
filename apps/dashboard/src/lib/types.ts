@@ -3,7 +3,7 @@
 
 export type RunStatus = "queued" | "running" | "pass" | "fail";
 export type SourceType = "bundle" | "remote" | "relay";
-export type TestType = "audio" | "conversation" | "load_test";
+export type TestType = "conversation" | "load_test";
 export type AudioTestName =
   | "audio_quality"
   | "latency"
@@ -65,7 +65,6 @@ export type RedTeamAttack =
   | "compliance_bypass";
 
 export interface TestSpec {
-  audio_tests?: AudioTestName[];
   conversation_tests?: ConversationTestSpec[];
   red_team?: RedTeamAttack[];
   load_test?: {
@@ -79,12 +78,9 @@ export interface TestSpec {
 // --- Run-level types ---
 
 export interface RunAggregateV2 {
-  infrastructure: { total: number; completed: number; errored: number };
   conversation_tests: { total: number; passed: number; failed: number };
   load_tests?: { total: number; passed: number; failed: number };
   total_duration_ms: number;
-  /** @deprecated Use `infrastructure`. Present in historical runs only. */
-  audio_tests?: { total: number; passed: number; failed: number };
 }
 
 export interface RunRow {
@@ -137,10 +133,6 @@ export interface TestDiagnostics {
   error_detail: string | null;
   timing: {
     channel_connect_ms: number;
-    tts_synthesis_ms?: number;
-    audio_send_ms?: number;
-    agent_response_wait_ms?: number;
-    stt_transcription_ms?: number;
   };
   channel: {
     connected: boolean;
@@ -215,11 +207,8 @@ export interface ConversationTestResult {
 // --- Deep metric types ---
 
 export interface ConversationMetrics {
-  turns: number;
   mean_ttfb_ms: number;
   mean_ttfw_ms?: number;
-  total_duration_ms: number;
-  talk_ratio?: number;
   transcript?: TranscriptMetrics;
   latency?: LatencyMetrics;
   behavioral?: BehavioralMetrics;
@@ -307,14 +296,6 @@ export interface AudioAnalysisMetrics {
   per_turn_speech_segments: number[];
   per_turn_internal_silence_ms: number[];
   mean_agent_speech_segment_ms: number;
-}
-
-export interface AudioAnalysisWarning {
-  metric: string;
-  value: number;
-  threshold: number;
-  severity: "warning" | "critical";
-  message: string;
 }
 
 export interface TurnEmotionProfile {

@@ -55,6 +55,38 @@ export function resolveAccentVoiceId(accent: string): string {
 }
 
 // ============================================================
+// Language defaults — ISO 639-1 → Deepgram Aura-2 voice ID
+// ============================================================
+
+export const LANGUAGE_DEFAULT_VOICES: Record<string, string> = {
+  en: "aura-2-thalia-en",
+  es: "aura-2-javier-es",
+  fr: "aura-2-hector-fr",
+  de: "aura-2-julius-de",
+  it: "aura-2-elio-it",
+  nl: "aura-2-sander-nl",
+  ja: "aura-2-ebisu-ja",
+};
+
+export const LANGUAGE_NAMES: Record<string, string> = {
+  en: "English",
+  es: "Spanish",
+  fr: "French",
+  de: "German",
+  it: "Italian",
+  nl: "Dutch",
+  ja: "Japanese",
+};
+
+/**
+ * Resolve an ISO 639-1 language code to a default Deepgram voice ID.
+ * Returns undefined if the language has no TTS voice available.
+ */
+export function resolveLanguageVoiceId(language: string): string | undefined {
+  return LANGUAGE_DEFAULT_VOICES[language];
+}
+
+// ============================================================
 // DSP effects
 // ============================================================
 

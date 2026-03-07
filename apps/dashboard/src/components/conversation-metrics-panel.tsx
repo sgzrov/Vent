@@ -10,6 +10,8 @@ import { SentimentChart } from "@/components/sentiment-chart";
 
 interface ConversationMetricsPanelProps {
   metrics: ConversationMetrics;
+  transcriptLength: number;
+  durationMs: number;
 }
 
 function MetricCard({ label, value }: { label: string; value: string }) {
@@ -201,23 +203,25 @@ function TranscriptSection({ transcript }: { transcript: TranscriptMetrics }) {
 
 export function ConversationMetricsPanel({
   metrics,
+  transcriptLength,
+  durationMs,
 }: ConversationMetricsPanelProps) {
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-        <MetricCard label="Turns" value={String(metrics.turns)} />
+        <MetricCard label="Turns" value={String(transcriptLength)} />
         <MetricCard
           label="Mean TTFB"
           value={`${Math.round(metrics.mean_ttfb_ms)}ms`}
         />
         <MetricCard
           label="Duration"
-          value={formatDuration(metrics.total_duration_ms)}
+          value={formatDuration(durationMs)}
         />
-        {metrics.talk_ratio != null && (
+        {metrics.audio_analysis?.talk_ratio_vad != null && (
           <MetricCard
             label="Talk Ratio"
-            value={`${(metrics.talk_ratio * 100).toFixed(0)}%`}
+            value={`${(metrics.audio_analysis.talk_ratio_vad * 100).toFixed(0)}%`}
           />
         )}
       </div>

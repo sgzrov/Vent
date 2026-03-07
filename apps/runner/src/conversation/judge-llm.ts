@@ -9,6 +9,7 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import type { ConversationTurn, EvalResult, BehavioralMetrics, ObservedToolCall } from "@voiceci/shared";
+import { LANGUAGE_NAMES } from "@voiceci/voice";
 
 const MODEL = "claude-sonnet-4-6";
 const MAX_TOKENS = 300;
@@ -38,6 +39,12 @@ function stripFences(text: string): string {
   return text.replace(/^```(?:json)?\s*\n?/i, "").replace(/\n?```\s*$/i, "").trim();
 }
 
+function languageContext(language?: string): string {
+  if (!language || language === "en") return "";
+  const name = LANGUAGE_NAMES[language] ?? language;
+  return `\nThe conversation is in ${name}. The transcript contains ${name} text. Evaluate accordingly.\n`;
+}
+
 export class JudgeLLM {
   private client: Anthropic;
 
@@ -50,11 +57,12 @@ export class JudgeLLM {
    */
   async evaluate(
     transcript: ConversationTurn[],
-    evalQuestions: string[]
+    evalQuestions: string[],
+    language?: string,
   ): Promise<EvalResult[]> {
     const formattedTranscript = formatTranscript(transcript);
     return Promise.all(
-      evalQuestions.map((q) => this.evaluateQuestion(formattedTranscript, q))
+      evalQuestions.map((q) => this.evaluateQuestion(formattedTranscript, q, language))
     );
   }
 
@@ -64,13 +72,15 @@ export class JudgeLLM {
    */
   async evaluateAllBehavioral(
     transcript: ConversationTurn[],
+    language?: string,
   ): Promise<BehavioralMetrics> {
     const formattedTranscript = formatTranscript(transcript);
+    const langCtx = languageContext(language);
 
     const [quality, sentiment, safety] = await Promise.all([
-      this.evaluateConversationalQuality(formattedTranscript),
-      this.evaluateSentiment(formattedTranscript, transcript.length),
-      this.evaluateSafety(formattedTranscript),
+      this.evaluateConversationalQuality(formattedTranscript, langCtx),
+      this.evaluateSentiment(formattedTranscript, transcript.length, langCtx),
+      this.evaluateSafety(formattedTranscript, langCtx),
     ]);
 
     return { ...quality, ...sentiment, ...safety };
@@ -78,12 +88,13 @@ export class JudgeLLM {
 
   private async evaluateConversationalQuality(
     formattedTranscript: string,
+    langCtx = "",
   ): Promise<Partial<BehavioralMetrics>> {
     const response = await this.client.messages.create({
       model: MODEL,
       max_tokens: 600,
       temperature: 0,
-      system: `You are a voice agent quality evaluator. Analyze the conversation transcript and evaluate conversational quality.
+      system: `You are a voice agent quality evaluator. Analyze the conversation transcript and evaluate conversational quality.${langCtx}
 
 Output raw JSON only — no markdown, no code fences, no explanation. Your entire response must be a single valid JSON object matching this schema:
 {
@@ -109,12 +120,13 @@ Be strict but fair.`,
   private async evaluateSentiment(
     formattedTranscript: string,
     turnCount: number,
+    langCtx = "",
   ): Promise<Partial<BehavioralMetrics>> {
     const response = await this.client.messages.create({
       model: MODEL,
       max_tokens: 200 + turnCount * 30,
       temperature: 0,
-      system: `You are a voice agent quality evaluator. Analyze the conversation transcript for sentiment and empathy.
+      system: `You are a voice agent quality evaluator. Analyze the conversation transcript for sentiment and empathy.${langCtx}
 
 Output raw JSON only — no markdown, no code fences, no explanation. Your entire response must be a single valid JSON object matching this schema:
 {
@@ -139,12 +151,13 @@ Be strict but fair.`,
 
   private async evaluateSafety(
     formattedTranscript: string,
+    langCtx = "",
   ): Promise<Partial<BehavioralMetrics>> {
     const response = await this.client.messages.create({
       model: MODEL,
       max_tokens: 800,
       temperature: 0,
-      system: `You are a voice agent quality evaluator. Analyze the conversation transcript for safety, compliance, and escalation handling.
+      system: `You are a voice agent quality evaluator. Analyze the conversation transcript for safety, compliance, and escalation handling.${langCtx}
 
 Output raw JSON only — no markdown, no code fences, no explanation. Your entire response must be a single valid JSON object matching this schema:
 {
@@ -189,25 +202,28 @@ Be strict but fair.`,
     transcript: ConversationTurn[],
     observedToolCalls: ObservedToolCall[],
     evalQuestions: string[],
+    language?: string,
   ): Promise<EvalResult[]> {
     const formattedTranscript = formatTranscript(transcript);
     const formattedToolCalls = formatToolCalls(observedToolCalls);
     const context = `TRANSCRIPT:\n${formattedTranscript}\n\nTOOL CALLS OBSERVED:\n${formattedToolCalls}`;
 
     return Promise.all(
-      evalQuestions.map((q) => this.evaluateToolCallQuestion(context, q))
+      evalQuestions.map((q) => this.evaluateToolCallQuestion(context, q, language))
     );
   }
 
   private async evaluateToolCallQuestion(
     context: string,
     question: string,
+    language?: string,
   ): Promise<EvalResult> {
+    const langCtx = languageContext(language);
     const response = await this.client.messages.create({
       model: MODEL,
       max_tokens: MAX_TOKENS,
       temperature: 0,
-      system: `You are evaluating a voice agent's tool call behavior. You have access to:
+      system: `You are evaluating a voice agent's tool call behavior.${langCtx} You have access to:
 1. The conversation transcript (what was said)
 2. The actual tool calls that the agent made (ground truth data from the platform)
 
@@ -246,13 +262,15 @@ Output raw JSON only — no markdown, no code fences, no explanation: {"passed":
 
   private async evaluateQuestion(
     transcript: string,
-    question: string
+    question: string,
+    language?: string,
   ): Promise<EvalResult> {
+    const langCtx = languageContext(language);
     const response = await this.client.messages.create({
       model: MODEL,
       max_tokens: MAX_TOKENS,
       temperature: 0,
-      system: `You are evaluating a voice agent's performance based on a conversation transcript.
+      system: `You are evaluating a voice agent's performance based on a conversation transcript.${langCtx}
 
 Determine if the agent PASSES or FAILS the given criterion. Be strict but fair.
 

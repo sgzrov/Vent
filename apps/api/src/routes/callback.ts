@@ -57,7 +57,7 @@ export async function callbackRoutes(app: FastifyInstance) {
       run_id: string;
       completed: number;
       total: number;
-      test_type: "audio" | "conversation";
+      test_type: "conversation" | "load_test";
       test_name: string;
       status: "pass" | "fail";
       duration_ms: number;
@@ -158,13 +158,11 @@ export async function callbackRoutes(app: FastifyInstance) {
       lockfile_hash: null,
       adapter: spec.adapter as string,
       test_spec: {
-        infrastructure: spec.infrastructure ?? null,
         conversation_tests: spec.conversation_tests ?? null,
         red_team: spec.red_team ?? null,
       },
       target_phone_number: spec.target_phone_number as string | undefined,
       voice_config: spec.voice_config ?? { adapter: spec.adapter },
-      audio_test_thresholds: spec.audio_test_thresholds ?? null,
       start_command: spec.start_command as string | undefined,
       health_endpoint: spec.health_endpoint as string | undefined,
       agent_url: spec.agent_url as string | undefined,
@@ -204,54 +202,42 @@ export async function callbackRoutes(app: FastifyInstance) {
 
     const body = RunnerCallbackV2Schema.parse(request.body);
 
-    // IMPORTANT: Insert results BEFORE updating run status.
-    // The MCP long-poll wakes on status change — if we update status first,
-    // the handler queries results mid-insert and returns incomplete data.
+    // Atomic transaction: DELETE partials → INSERT final results → UPDATE run status.
+    // Without a transaction, the MCP long-poll can wake mid-operation and return incomplete data.
+    await app.db.transaction(async (tx) => {
+      // Clear any partial results inserted during test-progress — final batch is authoritative
+      await tx
+        .delete(schema.scenarioResults)
+        .where(eq(schema.scenarioResults.run_id, body.run_id));
 
-    // Clear any partial results inserted during test-progress — final batch is authoritative
-    await app.db
-      .delete(schema.scenarioResults)
-      .where(eq(schema.scenarioResults.run_id, body.run_id));
+      // Store conversation test results
+      for (const result of body.conversation_results) {
+        await tx.insert(schema.scenarioResults).values({
+          run_id: body.run_id,
+          name: result.name ?? `conversation:${result.caller_prompt.slice(0, 50)}`,
+          status: result.status,
+          test_type: "conversation",
+          metrics_json: result,
+          trace_json: result.transcript,
+        });
+      }
 
-    // Store infrastructure test results
-    for (const result of body.infrastructure_results) {
-      await app.db.insert(schema.scenarioResults).values({
-        run_id: body.run_id,
-        name: result.test_name,
-        status: result.status,
-        test_type: "audio",
-        metrics_json: result,
-        trace_json: [],
-      });
-    }
-
-    // Store conversation test results
-    for (const result of body.conversation_results) {
-      await app.db.insert(schema.scenarioResults).values({
-        run_id: body.run_id,
-        name: result.name ?? `conversation:${result.caller_prompt.slice(0, 50)}`,
-        status: result.status,
-        test_type: "conversation",
-        metrics_json: result,
-        trace_json: result.transcript,
-      });
-    }
-
-    // Update run status LAST — this is what triggers the MCP long-poll to wake up
-    await app.db
-      .update(schema.runs)
-      .set({
-        status: body.status,
-        finished_at: new Date(),
-        duration_ms: body.aggregate.total_duration_ms,
-        aggregate_json: body.aggregate,
-        error_text: body.error_text ?? null,
-      })
-      .where(eq(schema.runs.id, body.run_id));
+      // Update run status LAST — this is what triggers the MCP long-poll to wake up
+      await tx
+        .update(schema.runs)
+        .set({
+          status: body.status,
+          finished_at: new Date(),
+          duration_ms: body.aggregate.total_duration_ms,
+          aggregate_json: body.aggregate,
+          error_text: body.error_text ?? null,
+        })
+        .where(eq(schema.runs.id, body.run_id));
+    });
 
     // Broadcast run_complete to SSE subscribers (dashboard)
-    const totalTests = body.infrastructure_results.length + body.conversation_results.length;
-    const completeMessage = `${body.status}: ${body.aggregate.infrastructure.completed}/${body.aggregate.infrastructure.total} infrastructure, ${body.aggregate.conversation_tests.passed}/${body.aggregate.conversation_tests.total} conversation`;
+    const totalTests = body.conversation_results.length;
+    const completeMessage = `${body.status}: ${body.aggregate.conversation_tests.passed}/${body.aggregate.conversation_tests.total} conversation`;
     const completeMetadata = {
       status: body.status,
       total_tests: totalTests,

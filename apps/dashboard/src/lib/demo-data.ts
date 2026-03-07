@@ -16,7 +16,6 @@ export const DEMO_RUN: RunDetail = {
   duration_ms: 100_000,
   error_text: null,
   test_spec_json: {
-    audio_tests: ["audio_quality", "latency", "echo"],
     conversation_tests: [
       {
         name: "Appointment Booking",
@@ -49,112 +48,11 @@ export const DEMO_RUN: RunDetail = {
     red_team: ["prompt_injection", "jailbreak"],
   },
   aggregate_json: {
-    infrastructure: { total: 3, completed: 3, errored: 0 },
     conversation_tests: { total: 6, passed: 4, failed: 2 },
     total_duration_ms: 100_000,
   },
   is_baseline: false,
   scenarios: [
-    // --- Infrastructure Probes ---
-    {
-      id: "demo-audio-01",
-      run_id: "demo-run-01",
-      name: "audio_quality",
-      status: "completed",
-      test_type: "audio",
-      metrics_json: {
-        test_name: "audio_quality",
-        status: "completed",
-        metrics: {
-          duration_ms_audio: 4200,
-          total_samples: 100800,
-          clipping_ratio: 0.002,
-          clipped_samples: 201,
-          energy_consistency: 0.87,
-          mean_speech_rms: 3200,
-          sudden_drops: 0,
-          sudden_spikes: 0,
-          clean_start: true,
-          clean_end: true,
-          estimated_snr_db: 22.4,
-          speech_windows: 36,
-          silence_windows: 6,
-        },
-        transcriptions: {
-          agent_response:
-            "Thank you for calling StyleCuts. We offer a variety of haircut styles, coloring services, and beard trims. Our stylists are professionally trained with over five years of experience on average.",
-        },
-        duration_ms: 7400,
-      },
-      trace_json: [],
-      created_at: createdAt,
-    },
-    {
-      id: "demo-audio-02",
-      run_id: "demo-run-01",
-      name: "latency",
-      status: "completed",
-      test_type: "audio",
-      metrics_json: {
-        test_name: "latency",
-        status: "completed",
-        metrics: {
-          responses_received: 7,
-          mean_ttfb_ms: 1340,
-          p50_ttfb_ms: 1200,
-          p95_ttfb_ms: 1820,
-          simple_mean_ttfb_ms: 680,
-          simple_p95_ttfb_ms: 920,
-          complex_mean_ttfb_ms: 1580,
-          complex_p95_ttfb_ms: 1820,
-          tool_mean_ttfb_ms: 1900,
-          tool_p95_ttfb_ms: 2100,
-          mean_ttfw_ms: 1540,
-          p50_ttfw_ms: 1400,
-          p95_ttfw_ms: 2020,
-          ttfw_delta_ms: 200,
-        },
-        transcriptions: {
-          simple_1: "Hello, welcome to StyleCuts!",
-          simple_2: "We're open Monday through Saturday.",
-          simple_3: "Our prices start at twenty dollars.",
-          complex_1:
-            "We offer a full range of services including cuts, coloring, and styling with premium products.",
-          complex_2:
-            "For special occasions we recommend our deluxe package which includes a consultation, wash, cut, and style.",
-          tool_1: "Let me check that for you. I can see your next appointment is scheduled for Thursday at 3pm.",
-          tool_2: "I've found your booking. Your confirmation number is SC-7291.",
-        },
-        duration_ms: 8500,
-      },
-      trace_json: [],
-      created_at: createdAt,
-    },
-    {
-      id: "demo-audio-03",
-      run_id: "demo-run-01",
-      name: "echo",
-      status: "completed",
-      test_type: "audio",
-      metrics_json: {
-        test_name: "echo",
-        status: "completed",
-        metrics: {
-          echo_detected: false,
-          unprompted_count: 0,
-          first_response_delay_ms: 420,
-        },
-        transcriptions: {
-          initial_response:
-            "Hi there! Welcome to StyleCuts. How can I help you today?",
-          silence_period: null,
-        },
-        duration_ms: 3200,
-      },
-      trace_json: [],
-      created_at: createdAt,
-    },
-
     // --- Conversation Tests ---
     {
       id: "demo-conv-01",
@@ -257,10 +155,7 @@ export const DEMO_RUN: RunDetail = {
         ],
         duration_ms: 18200,
         metrics: {
-          turns: 5,
           mean_ttfb_ms: 580,
-          total_duration_ms: 18200,
-          talk_ratio: 0.45,
           latency: {
             ttfb_per_turn_ms: [480, 550, 710],
             p50_ttfb_ms: 550,
@@ -425,10 +320,7 @@ export const DEMO_RUN: RunDetail = {
         ],
         duration_ms: 28600,
         metrics: {
-          turns: 7,
           mean_ttfb_ms: 950,
-          total_duration_ms: 28600,
-          talk_ratio: 0.52,
           latency: {
             ttfb_per_turn_ms: [620, 890, 1050, 1240],
             p50_ttfb_ms: 970,
@@ -567,10 +459,7 @@ export const DEMO_RUN: RunDetail = {
         ],
         duration_ms: 24200,
         metrics: {
-          turns: 5,
           mean_ttfb_ms: 647,
-          total_duration_ms: 24200,
-          talk_ratio: 0.41,
           latency: {
             ttfb_per_turn_ms: [520, 680, 740],
             p50_ttfb_ms: 680,
@@ -681,10 +570,7 @@ export const DEMO_RUN: RunDetail = {
         ],
         duration_ms: 22600,
         metrics: {
-          turns: 5,
           mean_ttfb_ms: 683,
-          total_duration_ms: 22600,
-          talk_ratio: 0.44,
           latency: {
             ttfb_per_turn_ms: [450, 920, 680],
             p50_ttfb_ms: 680,
@@ -768,10 +654,7 @@ export const DEMO_RUN: RunDetail = {
         ],
         duration_ms: 12400,
         metrics: {
-          turns: 3,
           mean_ttfb_ms: 555,
-          total_duration_ms: 12400,
-          talk_ratio: 0.47,
           latency: {
             ttfb_per_turn_ms: [490, 620],
             p50_ttfb_ms: 555,
@@ -842,10 +725,7 @@ export const DEMO_RUN: RunDetail = {
         ],
         duration_ms: 9800,
         metrics: {
-          turns: 3,
           mean_ttfb_ms: 510,
-          total_duration_ms: 9800,
-          talk_ratio: 0.45,
           latency: {
             ttfb_per_turn_ms: [440, 580],
             p50_ttfb_ms: 510,

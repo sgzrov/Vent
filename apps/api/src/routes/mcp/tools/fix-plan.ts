@@ -1,5 +1,4 @@
 import type {
-  AudioTestResult,
   ConversationTestResult,
   ConversationTestSpec,
   EvalResult,
@@ -14,14 +13,6 @@ interface StoredSpecContext {
   platform_provider: string | null;
   has_platform_config: boolean;
   has_voice_overrides: boolean;
-  has_audio_threshold_overrides: boolean;
-}
-
-interface ThresholdBreach {
-  metric: string;
-  value: number;
-  threshold_metric: string;
-  threshold_value: number;
 }
 
 interface FailedEvalEvidence {
@@ -32,7 +23,7 @@ interface FailedEvalEvidence {
 export interface FixPacket {
   id: string;
   category: string;
-  test_type: "audio" | "conversation";
+  test_type: "conversation";
   test_name: string;
   evidence: Record<string, unknown>;
 }
@@ -45,87 +36,29 @@ export interface FixPlan {
 }
 
 interface BuildFixPlanInput {
-  audioResults: unknown[];
   conversationResults: unknown[];
   testSpecJson?: Record<string, unknown> | null;
 }
 
 export function buildFixPlan(input: BuildFixPlanInput): FixPlan | null {
-  const audioResults = normalizeAudioResults(input.audioResults);
   const conversationResults = normalizeConversationResults(input.conversationResults);
-  // Infrastructure probes use "error" status (not "fail") to indicate failure
-  const failedAudio = audioResults.filter((r) => r.status === "error");
   const failedConversation = conversationResults.filter((r) => r.status === "fail");
 
-  if (failedAudio.length === 0 && failedConversation.length === 0) {
+  if (failedConversation.length === 0) {
     return null;
   }
 
   const context = parseStoredSpec(input.testSpecJson ?? null);
-  const packets: FixPacket[] = [
-    ...failedAudio.map((r) => buildAudioFixPacket(r, context)),
-    ...failedConversation.map((r) => buildConversationFixPacket(r, context)),
-  ];
+  const packets: FixPacket[] = failedConversation.map((r) => buildConversationFixPacket(r, context));
 
   return {
     failing_tests: packets.length,
     top_priority: packets[0]?.id ?? null,
     prioritized_packets: packets,
     targeted_rerun_config: buildTargetedRerunConfig(
-      failedAudio,
       failedConversation,
       input.testSpecJson ?? null,
     ),
-  };
-}
-
-function buildAudioFixPacket(result: AudioTestResult, context: StoredSpecContext): FixPacket {
-  const thresholdBreaches = numericThresholdPairs(result.metrics).map((p) => ({
-    metric: p.metricKey,
-    value: roundMetric(p.metric),
-    threshold_metric: p.thresholdKey,
-    threshold_value: roundMetric(p.threshold),
-  }));
-  const falseFlags = unique(
-    Object.entries(result.metrics)
-      .filter(([, value]) => value === false)
-      .map(([key]) => key),
-  ).sort();
-
-  const notes: string[] = [];
-  if (thresholdBreaches.length > 0) {
-    notes.push(`${thresholdBreaches.length} threshold breach(es) detected.`);
-  }
-  if (falseFlags.length > 0) {
-    notes.push(`${falseFlags.length} false health flag(s) detected.`);
-  }
-  if (notes.length === 0 && result.error) {
-    notes.push(result.error);
-  }
-  if (notes.length === 0) {
-    notes.push("Audio test failed without explicit threshold/flag signal.");
-  }
-
-  return {
-    id: `audio:${result.test_name}`,
-    category: "audio",
-    test_type: "audio",
-    test_name: result.test_name,
-    evidence: {
-      context,
-      test_runtime: {
-        duration_ms: result.duration_ms,
-        metrics_count: Object.keys(result.metrics).length,
-      },
-      failure_signals: {
-        error: result.error ?? null,
-        threshold_breaches: thresholdBreaches,
-        false_flags: falseFlags,
-        notes: unique(notes),
-      },
-      metrics: sortRecordKeys(result.metrics),
-      diagnostics: result.diagnostics ?? null,
-    },
   };
 }
 
@@ -189,53 +122,13 @@ function buildConversationFixPacket(
   };
 }
 
-function numericThresholdPairs(metrics: Record<string, number | boolean | number[]>): Array<{
-  metricKey: string;
-  metric: number;
-  thresholdKey: string;
-  threshold: number;
-}> {
-  const pairs: Array<{
-    metricKey: string;
-    metric: number;
-    thresholdKey: string;
-    threshold: number;
-  }> = [];
-
-  const numericEntries = Object.entries(metrics)
-    .filter(([, value]) => typeof value === "number")
-    .map(([key, value]) => [key, value as number] as const);
-
-  const thresholdEntries = numericEntries.filter(([key]) => /threshold/i.test(key));
-
-  for (const [thresholdKey, threshold] of thresholdEntries) {
-    const candidateMetrics = numericEntries.filter(([metricKey]) => {
-      if (metricKey === thresholdKey) return false;
-      if (/threshold/i.test(metricKey)) return false;
-      // Compare only likely comparable metrics
-      if (!/_ms$/.test(metricKey) && !/ratio|snr|count|p\d+/i.test(metricKey)) return false;
-      return true;
-    });
-
-    for (const [metricKey, metric] of candidateMetrics) {
-      if (metric > threshold) {
-        pairs.push({ metricKey, metric, thresholdKey, threshold });
-      }
-    }
-  }
-
-  return uniqueBy(pairs, (p) => `${p.metricKey}:${p.thresholdKey}`);
-}
-
 function buildTargetedRerunConfig(
-  failedAudioResults: AudioTestResult[],
   failedConversationResults: ConversationTestResult[],
   testSpecJson: Record<string, unknown> | null,
 ): Record<string, unknown> | null {
-  const audioTests = unique(failedAudioResults.map((r) => r.test_name));
   const conversationTests = focusedConversationTests(failedConversationResults, testSpecJson);
 
-  if (audioTests.length === 0 && conversationTests.length === 0) {
+  if (conversationTests.length === 0) {
     return null;
   }
 
@@ -248,8 +141,6 @@ function buildTargetedRerunConfig(
   if (spec.target_phone_number) rerunConfig["target_phone_number"] = spec.target_phone_number;
   if (spec.platform) rerunConfig["platform"] = spec.platform;
   if (spec.voice) rerunConfig["voice"] = spec.voice;
-  if (spec.audio_test_thresholds) rerunConfig["audio_test_thresholds"] = spec.audio_test_thresholds;
-  if (audioTests.length > 0) rerunConfig["audio_tests"] = audioTests;
   if (conversationTests.length > 0) rerunConfig["conversation_tests"] = conversationTests;
 
   return rerunConfig;
@@ -302,6 +193,10 @@ function focusedConversationTests(
     if (original?.silence_threshold_ms != null) focusedSpec.silence_threshold_ms = original.silence_threshold_ms;
     if (original?.persona) focusedSpec.persona = original.persona;
     if (original?.prosody != null) focusedSpec.prosody = original.prosody;
+    if (original?.audio_actions) focusedSpec.audio_actions = original.audio_actions;
+    if (original?.caller_audio) focusedSpec.caller_audio = original.caller_audio;
+    if (original?.language) focusedSpec.language = original.language;
+    if (original?.repeat != null && original.repeat > 1) focusedSpec.repeat = original.repeat;
 
     return focusedSpec;
   });
@@ -354,13 +249,6 @@ function failedEvals(evals: EvalResult[] | undefined): EvalResult[] {
   return (evals ?? []).filter((e) => !e.passed);
 }
 
-function normalizeAudioResults(results: unknown[]): AudioTestResult[] {
-  return results
-    .filter(isRecord)
-    .filter((r) => typeof r["test_name"] === "string")
-    .map((r) => r as unknown as AudioTestResult);
-}
-
 function normalizeConversationResults(results: unknown[]): ConversationTestResult[] {
   return results
     .filter(isRecord)
@@ -395,7 +283,6 @@ function parseStoredSpec(specJson: Record<string, unknown> | null): StoredSpecCo
       platform_provider: null,
       has_platform_config: false,
       has_voice_overrides: false,
-      has_audio_threshold_overrides: false,
     };
   }
 
@@ -412,7 +299,6 @@ function parseStoredSpec(specJson: Record<string, unknown> | null): StoredSpecCo
     platform_provider: platformProvider,
     has_platform_config: isRecord(platform),
     has_voice_overrides: voiceConfig != null && isRecord(voiceConfig["voice"]),
-    has_audio_threshold_overrides: isRecord(specJson["audio_test_thresholds"]),
   };
 }
 
@@ -422,7 +308,6 @@ function parseStoredSpecForRerun(specJson: Record<string, unknown> | null): {
   target_phone_number: string | null;
   platform: unknown;
   voice: Record<string, unknown> | null;
-  audio_test_thresholds: Record<string, unknown> | null;
 } {
   if (!specJson || !isRecord(specJson)) {
     return {
@@ -431,7 +316,6 @@ function parseStoredSpecForRerun(specJson: Record<string, unknown> | null): {
       target_phone_number: null,
       platform: null,
       voice: null,
-      audio_test_thresholds: null,
     };
   }
 
@@ -443,25 +327,12 @@ function parseStoredSpecForRerun(specJson: Record<string, unknown> | null): {
     target_phone_number: str(specJson["target_phone_number"]),
     platform: specJson["platform"] ?? null,
     voice: voiceConfig && isRecord(voiceConfig["voice"]) ? voiceConfig["voice"] : null,
-    audio_test_thresholds: isRecord(specJson["audio_test_thresholds"])
-      ? specJson["audio_test_thresholds"]
-      : null,
   };
 }
 
 function conversationId(result: ConversationTestResult): string {
   if (result.name && result.name.length > 0) return result.name;
   return result.caller_prompt.slice(0, 32).replace(/\s+/g, "_");
-}
-
-function roundMetric(value: number): number {
-  return Number.isInteger(value) ? value : Math.round(value * 1000) / 1000;
-}
-
-function sortRecordKeys(record: Record<string, number | boolean | number[]>): Record<string, number | boolean | number[]> {
-  return Object.fromEntries(
-    Object.entries(record).sort(([a], [b]) => a.localeCompare(b)),
-  );
 }
 
 function clamp(value: number, minValue: number, maxValue: number): number {

@@ -8,11 +8,16 @@ import {
   AdapterTypeSchema,
   LoadTestThresholdsSchema,
   CallerAudioPoolSchema,
+  ConversationTestSpecSchema,
+  RedTeamAttackSchema,
+  PlatformConfigSchema,
+  CallerAudioEffectsSchema,
   type RedTeamAttack,
 } from "@voiceci/shared";
 import { expandRedTeamTests } from "@voiceci/runner/executor";
 import { runLoadTestInProcess } from "../../../services/test-runner.js";
 import { buildFixPlan } from "./fix-plan.js";
+import { formatConversationResult } from "./format-result.js";
 import { waitForRunEvent } from "../../../lib/run-subscribers.js";
 import {
   RUN_TESTS_DESCRIPTION,
@@ -39,13 +44,22 @@ export function registerActionTools(
     title: "Run Tests",
     description: RUN_TESTS_DESCRIPTION,
     inputSchema: {
-      config: z
-        .any()
-        .describe("Config from voiceci-config.json. Read the file and pass its contents here."),
-      project_root: z
-        .string()
-        .optional()
-        .describe("Absolute path to agent project root containing voiceci-config.json. Defaults to current working directory."),
+      config: z.object({
+        adapter: AdapterTypeSchema.default("websocket").describe("Transport adapter: websocket, sip, webrtc, vapi, retell, elevenlabs, bland."),
+        agent_url: z.string().optional().describe("URL of the deployed agent (wss:// or https://)."),
+        agent_port: z.number().int().min(1).max(65535).optional().describe("Local agent port for relay. Default 3001."),
+        conversation_tests: z.array(ConversationTestSpecSchema).optional().describe("Conversation test scenarios."),
+        red_team: z.array(RedTeamAttackSchema).optional().describe("Red team attack types to run."),
+        start_command: z.string().optional().describe("Shell command to start the local agent."),
+        health_endpoint: z.string().optional().describe("Health check endpoint path."),
+        target_phone_number: z.string().optional().describe("Phone number for SIP/telephony adapters."),
+        voice: z.record(z.unknown()).optional().describe("Voice/audio configuration overrides."),
+        caller_audio: CallerAudioEffectsSchema.optional().describe("Default audio effects applied to all caller audio."),
+        platform: PlatformConfigSchema.optional().describe("Platform config for vapi/retell/elevenlabs/bland."),
+      }).refine(
+        (d) => (d.conversation_tests?.length ?? 0) + (d.red_team?.length ?? 0) > 0,
+        { message: "At least one of conversation_tests or red_team is required." }
+      ).describe("Test configuration object. Generate this inline — see voiceci_guide_reference for the full schema."),
       idempotency_key: z
         .string()
         .uuid()
@@ -56,11 +70,9 @@ export function registerActionTools(
   }, async (
     {
       config,
-      project_root,
       idempotency_key,
     },
   ) => {
-    void project_root;
 
     const hashedIdempotencyKey = idempotency_key
       ? hashIdempotencyKey(idempotency_key)
@@ -117,7 +129,6 @@ export function registerActionTools(
 
       return {
         testSpecJson: {
-          infrastructure: cfg.infrastructure ?? null,
           conversation_tests: conversationTests ?? null,
           red_team: cfg.red_team ?? null,
           adapter,
@@ -138,50 +149,8 @@ export function registerActionTools(
       };
     };
 
-    if (!config) {
-      return {
-        content: [{
-          type: "text" as const,
-          text: "Error: config parameter is required. Read voiceci-config.json and pass its contents as the config parameter.",
-        }],
-        isError: true,
-      };
-    }
-
-    let cfg: Record<string, unknown>;
-    if (typeof config === "string") {
-      try {
-        const parsed = JSON.parse(config) as unknown;
-        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-          return {
-            content: [{
-              type: "text" as const,
-              text: "Error: config must be a JSON object.",
-            }],
-            isError: true,
-          };
-        }
-        cfg = parsed as Record<string, unknown>;
-      } catch {
-        return {
-          content: [{
-            type: "text" as const,
-            text: "Error: config string is not valid JSON.",
-          }],
-          isError: true,
-        };
-      }
-    } else if (typeof config === "object" && config !== null && !Array.isArray(config)) {
-      cfg = config as Record<string, unknown>;
-    } else {
-      return {
-        content: [{
-          type: "text" as const,
-          text: "Error: config must be an object.",
-        }],
-        isError: true,
-      };
-    }
+    // Config is already validated by Zod schema — safe to cast
+    const cfg = config as Record<string, unknown>;
 
     const { testSpecJson, adapter, agentUrl, voiceConfig, targetPhoneNumber, conversationTests, isRemote } = buildTestSpec(cfg);
 
@@ -211,7 +180,6 @@ export function registerActionTools(
         lockfile_hash: null,
         adapter,
         test_spec: {
-          infrastructure: cfg.infrastructure ?? null,
           conversation_tests: conversationTests ?? null,
           red_team: cfg.red_team ?? null,
         },
@@ -229,7 +197,7 @@ export function registerActionTools(
           text: JSON.stringify({
             run_id: runId,
             status: "queued",
-            message: "Run queued. Spawn one subagent per infrastructure probe (test_name: audio_quality, latency, echo) and one per conversation test. Each subagent calls voiceci_get_run_status with its filter and returns when done. After all subagents return, call voiceci_get_run_status once without filters for the full summary.",
+            message: "Run queued. Spawn one subagent per conversation test. Each subagent calls voiceci_get_run_status with test_type=conversation and returns when done. After all subagents return, call voiceci_get_run_status once without filters for the full summary.",
           }, null, 2),
         }],
       };
@@ -256,7 +224,7 @@ export function registerActionTools(
 
     const runId = run!.id;
 
-    const agentPort = 3001;
+    const agentPort = (cfg.agent_port as number | undefined) ?? 3001;
 
     const relayArgs = [
       "--run-id",
@@ -280,7 +248,12 @@ export function registerActionTools(
     return {
       content: [{
         type: "text" as const,
-        text: `RELAY COMMAND — execute this in the project root. This is a LONG-RUNNING background process.\n\n${relayCommand}\n\nCRITICAL INSTRUCTIONS:\n1. Run this command in the BACKGROUND (is_background: true or equivalent). It stays running while tests execute.\n2. Execute EXACTLY ONCE. Do NOT retry, re-run, or run variations of this command.\n3. Do NOT run npm install, check ports, or any other prep commands. The relay handles everything.\n4. After backgrounding, IMMEDIATELY spawn subagents to monitor results via voiceci_get_run_status with run_id: ${runId}`,
+        text: JSON.stringify({
+          run_id: runId,
+          status: "queued",
+          relay_command: relayCommand,
+          message: "Run queued. Execute the relay_command in the BACKGROUND (is_background: true). Execute EXACTLY ONCE — do NOT retry, re-run, or run npm install. After backgrounding, spawn subagents to monitor results via voiceci_get_run_status.",
+        }, null, 2),
       }],
     };
   });
@@ -343,6 +316,12 @@ export function registerActionTools(
       caller_audio: CallerAudioPoolSchema
         .optional()
         .describe("Audio condition simulation for callers. By default, values are randomized per caller from ranges/arrays. Use exact values to make all callers identical. Effects: noise (babble/white/pink + SNR), speed (0.5-2.0), speakerphone (bandpass 300-3400Hz), mic_distance (close/normal/far), clarity (0-1), accent (american/british/australian/etc), packet_loss (0-0.3), jitter_ms (0-100)."),
+      language: z
+        .string()
+        .min(2)
+        .max(5)
+        .optional()
+        .describe("ISO 639-1 language code for multilingual load testing. Supported: en, es, fr, de, it, nl, ja."),
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
   }, async (
@@ -357,6 +336,7 @@ export function registerActionTools(
       target_phone_number,
       voice,
       caller_audio,
+      language,
     },
   ) => {
     const runId = await runLoadTestInProcess(
@@ -373,6 +353,7 @@ export function registerActionTools(
         evalQuestions,
         thresholds,
         callerAudioPool: caller_audio,
+        language,
       },
       app,
       apiKeyId,
@@ -401,14 +382,11 @@ export function registerActionTools(
     inputSchema: {
       run_id: z.string().uuid().describe("The run ID returned by voiceci_run_tests."),
       last_completed: z.number().int().min(0).optional().describe("Number of completed tests (of the filtered type) from your last status check. Pass the `completed` value from the previous response."),
-      test_type: z.enum(["infrastructure", "conversation", "load_test"]).optional().describe("Filter results to a single test type. 'infrastructure' filters to Layer 1 probes (completed/error status). Use with subagents for conversation or load_test polling."),
-      test_name: z.string().optional().describe("Filter to a specific infrastructure probe by name (audio_quality, latency, echo). Spawn one subagent per test_name for parallel result streaming."),
+      test_type: z.enum(["conversation", "load_test"]).optional().describe("Filter results to a single test type. Use with subagents for conversation or load_test polling."),
+      test_name: z.string().optional().describe("Filter to a specific test by name. Spawn one subagent per test_name for parallel result streaming."),
     },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
-  }, async ({ run_id, last_completed, test_type: rawTestType, test_name }) => {
-    // Map user-facing "infrastructure" to DB enum "audio"
-    const test_type = rawTestType === "infrastructure" ? "audio" : rawTestType;
-
+  }, async ({ run_id, last_completed, test_type, test_name }) => {
     let [run] = await app.db
       .select()
       .from(schema.runs)
@@ -429,7 +407,7 @@ export function registerActionTools(
 
     // Build WHERE clause for scenario queries — scoped by test_name or test_type when filtered
     const scenarioWhere = test_name
-      ? and(eq(schema.scenarioResults.run_id, run_id), eq(schema.scenarioResults.test_type, "audio"), eq(schema.scenarioResults.name, test_name))
+      ? and(eq(schema.scenarioResults.run_id, run_id), eq(schema.scenarioResults.name, test_name))
       : test_type
         ? and(eq(schema.scenarioResults.run_id, run_id), eq(schema.scenarioResults.test_type, test_type))
         : eq(schema.scenarioResults.run_id, run_id);
@@ -443,7 +421,7 @@ export function registerActionTools(
         .from(schema.scenarioResults)
         .where(scenarioWhere)).length;
       const startTime = Date.now();
-      const MAX_WAIT_MS = 60_000;
+      const MAX_WAIT_MS = 45_000;
 
       while (Date.now() - startTime < MAX_WAIT_MS) {
         // Register waiter BEFORE checking DB (avoids race condition)
@@ -495,12 +473,10 @@ export function registerActionTools(
     const totalCompleted = allScenarios.length;
 
     // Categorize new results — when filtered by test_type, only that type is present
-    const infrastructureResults = newScenarios
-      .filter((s) => s.test_type === "audio")
-      .map((s) => s.metrics_json);
     const conversationResults = newScenarios
       .filter((s) => s.test_type === "conversation")
-      .map((s) => s.metrics_json);
+      .map((s) => formatConversationResult(s.metrics_json))
+      .filter(Boolean);
     const loadTestResults = newScenarios
       .filter((s) => s.test_type === "load_test")
       .map((s) => s.metrics_json);
@@ -510,7 +486,6 @@ export function registerActionTools(
     // Still in progress — return delta + progress info
     if (!isFinished) {
       const spec = run.test_spec_json as {
-        infrastructure?: Record<string, unknown>;
         conversation_tests?: unknown[];
         red_team?: RedTeamAttack[];
         load_test?: unknown;
@@ -523,17 +498,16 @@ export function registerActionTools(
           redTeamExpanded = 0;
         }
       }
-      // When filtering by test_name, total is always 1; by test_type, count that type only
-      // Infrastructure always runs 3 probes (audio_quality, latency, echo) when configured
-      const infraCount = spec?.infrastructure ? 3 : 0;
-      const convCount = spec?.conversation_tests?.length ?? 0;
+      // Sum repeat counts to get true number of conversation tasks dispatched
+      const convCount = (spec?.conversation_tests as Array<{ repeat?: number }> | undefined)?.reduce(
+        (sum, test) => sum + (test.repeat ?? 1), 0
+      ) ?? 0;
       const loadCount = spec?.load_test ? 1 : 0;
       const totalTests = spec
         ? test_name ? 1
-          : test_type === "audio" ? infraCount
           : test_type === "conversation" ? convCount + redTeamExpanded
           : test_type === "load_test" ? loadCount
-          : infraCount + convCount + redTeamExpanded + loadCount
+          : convCount + redTeamExpanded + loadCount
         : undefined;
 
       if (totalCompleted === 0) {
@@ -563,7 +537,6 @@ export function registerActionTools(
             completed: totalCompleted,
             total: totalTests ?? "unknown",
             started_at: run.started_at,
-            infrastructure_results: infrastructureResults,
             conversation_results: conversationResults,
             load_test_results: loadTestResults,
             message: `${newScenarios.length} new result(s) completed (${totalCompleted}${totalTests ? `/${totalTests}` : ""} total).${totalCompleted >= (totalTests ?? Infinity) ? "" : ` Call again with last_completed=${totalCompleted}.`}`,
@@ -577,7 +550,7 @@ export function registerActionTools(
     // When filtered by test_name or test_type (subagent mode), return just the scoped results.
     // Fix plan + baseline are only computed for unfiltered calls (main agent).
     if (test_name || test_type) {
-      const filterLabel = test_name ?? (rawTestType ?? test_type);
+      const filterLabel = test_name ?? test_type;
       return {
         content: [{
           type: "text" as const,
@@ -585,7 +558,6 @@ export function registerActionTools(
             run_id: run.id,
             status: run.status,
             completed: totalCompleted,
-            infrastructure_results: infrastructureResults,
             conversation_results: conversationResults,
             load_test_results: loadTestResults,
             error_text: run.error_text ?? null,
@@ -601,18 +573,12 @@ export function registerActionTools(
     }
 
     // Unfiltered (main agent) — build fix_plan over ALL results
-    const allInfrastructureResults = (await app.db
-      .select()
-      .from(schema.scenarioResults)
-      .where(and(eq(schema.scenarioResults.run_id, run_id), eq(schema.scenarioResults.test_type, "audio"))))
-      .map((s) => s.metrics_json);
     const allConversationResults = (await app.db
       .select()
       .from(schema.scenarioResults)
       .where(and(eq(schema.scenarioResults.run_id, run_id), eq(schema.scenarioResults.test_type, "conversation"))))
       .map((s) => s.metrics_json);
     const fixPlan = buildFixPlan({
-      audioResults: allInfrastructureResults,
       conversationResults: allConversationResults,
       testSpecJson: (run.test_spec_json as Record<string, unknown> | null) ?? null,
     });
@@ -633,18 +599,9 @@ export function registerActionTools(
           .from(schema.scenarioResults)
           .where(eq(schema.scenarioResults.run_id, baseline.run_id));
 
-        const bInfra = baselineScenarios.filter((s) => s.test_type === "audio");
         const bConv = baselineScenarios.filter((s) => s.test_type === "conversation");
-        const currentInfraScenarios = allScenarios.filter((s) => s.test_type === "audio");
         const currentConvScenarios = allScenarios.filter((s) => s.test_type === "conversation");
 
-        // Infrastructure probes use completed/error, not pass/fail
-        const infraCompletedRate = currentInfraScenarios.length > 0
-          ? currentInfraScenarios.filter((s) => s.status === "completed").length / currentInfraScenarios.length
-          : null;
-        const bInfraCompletedRate = bInfra.length > 0
-          ? bInfra.filter((s) => s.status === "completed").length / bInfra.length
-          : null;
         const convPassRate = currentConvScenarios.length > 0
           ? currentConvScenarios.filter((s) => s.status === "pass").length / currentConvScenarios.length
           : null;
@@ -652,35 +609,36 @@ export function registerActionTools(
           ? bConv.filter((s) => s.status === "pass").length / bConv.length
           : null;
 
-        const extractMeanTtfb = (results: unknown[]): number | null => {
-          const ttfbs = results
+        const extractMetricMean = (results: unknown[], path: (r: Record<string, unknown>) => number | undefined): number | null => {
+          const values = results
             .filter((r): r is Record<string, unknown> => r != null && typeof r === "object")
-            .map((r) => (r as { metrics?: { mean_ttfb_ms?: number } }).metrics?.mean_ttfb_ms)
+            .map(path)
             .filter((v): v is number => v != null && v > 0);
-          return ttfbs.length > 0 ? Math.round(ttfbs.reduce((a, b) => a + b, 0) / ttfbs.length) : null;
+          return values.length > 0 ? Math.round(values.reduce((a, b) => a + b, 0) / values.length) : null;
         };
 
-        const currentTtfb = extractMeanTtfb(allConversationResults);
-        const baselineTtfb = extractMeanTtfb(bConv.map((s) => s.metrics_json));
+        const currentTtfb = extractMetricMean(allConversationResults, (r) => (r as { metrics?: { mean_ttfb_ms?: number } }).metrics?.mean_ttfb_ms);
+        const baselineTtfb = extractMetricMean(bConv.map((s) => s.metrics_json), (r) => (r as { metrics?: { mean_ttfb_ms?: number } }).metrics?.mean_ttfb_ms);
+
+        const currentTtfw = extractMetricMean(allConversationResults, (r) => (r as { metrics?: { mean_ttfw_ms?: number } }).metrics?.mean_ttfw_ms);
+        const baselineTtfw = extractMetricMean(bConv.map((s) => s.metrics_json), (r) => (r as { metrics?: { mean_ttfw_ms?: number } }).metrics?.mean_ttfw_ms);
 
         const ttfbDelta = currentTtfb != null && baselineTtfb != null ? currentTtfb - baselineTtfb : null;
-        const infraCompletedDelta = infraCompletedRate != null && bInfraCompletedRate != null
-          ? Math.round((infraCompletedRate - bInfraCompletedRate) * 100) / 100
-          : null;
+        const ttfwDelta = currentTtfw != null && baselineTtfw != null ? currentTtfw - baselineTtfw : null;
         const convPassDelta = convPassRate != null && bConvPassRate != null
           ? Math.round((convPassRate - bConvPassRate) * 100) / 100
           : null;
 
         const regressionDetected =
           (ttfbDelta != null && ttfbDelta > 500) ||
-          (infraCompletedDelta != null && infraCompletedDelta < -0.1) ||
+          (ttfwDelta != null && ttfwDelta > 500) ||
           (convPassDelta != null && convPassDelta < -0.1);
 
         baselineComparison = {
           baseline_run_id: baseline.run_id,
           baseline_created_at: baseline.created_at,
           mean_ttfb_delta_ms: ttfbDelta,
-          infrastructure_completed_rate_delta: infraCompletedDelta,
+          mean_ttfw_delta_ms: ttfwDelta,
           conversation_pass_rate_delta: convPassDelta,
           regression_detected: regressionDetected,
         };
@@ -707,7 +665,6 @@ export function registerActionTools(
           status: run.status,
           completed: totalCompleted,
           aggregate: run.aggregate_json,
-          infrastructure_results: infrastructureResults,
           conversation_results: conversationResults,
           load_test_results: loadTestResults,
           fix_plan: fixPlan,

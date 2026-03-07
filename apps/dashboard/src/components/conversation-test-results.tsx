@@ -97,7 +97,7 @@ export function ConversationTestResults({
                   <div className="flex items-center justify-between">
                     <span className="text-muted-foreground">Turns</span>
                     <span className="font-mono tabular-nums">
-                      {result.metrics.turns}
+                      {result.transcript.length}
                     </span>
                   </div>
                   <div className="flex items-center justify-between">
@@ -221,7 +221,7 @@ function ConversationDetailPanel({
             />
           </TabsContent>
           <TabsContent value="metrics" className="mt-3">
-            <ConversationMetricsPanel metrics={result.metrics} />
+            <ConversationMetricsPanel metrics={result.metrics} transcriptLength={result.transcript.length} durationMs={result.duration_ms} />
           </TabsContent>
           {result.observed_tool_calls && (
             <TabsContent value="tools" className="mt-3">

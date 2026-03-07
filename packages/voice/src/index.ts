@@ -8,4 +8,5 @@ export { pcmToMulaw, mulawToPcm, resample, pcmToWav } from "./format.js";
 export { VoiceActivityDetector, type VoiceActivityDetectorConfig, type VADState } from "./vad.js";
 export { BatchVAD, type SpeechSegment } from "./batch-vad.js";
 export { generateWhiteNoise, generateBabbleNoise, generatePinkNoise, mixAudio } from "./noise.js";
-export { applyEffects, ACCENT_VOICES, resolveAccentVoiceId } from "./effects.js";
+export { applyEffects, ACCENT_VOICES, resolveAccentVoiceId, LANGUAGE_DEFAULT_VOICES, LANGUAGE_NAMES, resolveLanguageVoiceId } from "./effects.js";
+export { analyzeAudioQuality, type AudioQualityMetrics } from "./audio-analysis.js";
