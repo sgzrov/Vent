@@ -15,7 +15,7 @@ export function registerDocTools(server: McpServer) {
 
   server.registerTool("voiceci_guide_reference", {
     title: "Reference Guide",
-    description: "Complete reference for voiceci-config.json format, field tables, infrastructure probes, audio actions, red-team categories, metrics definitions, result interpretation, and tool call integration. Call this when you need config format details, metric definitions, or integration specifics.",
+    description: "Complete reference for .voiceci/suite.json format, dual config system, field tables, audio actions, red-team categories, metrics definitions, result interpretation, and tool call integration. Call this when you need config format details, metric definitions, or integration specifics.",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
   }, async () => ({
     content: [{ type: "text" as const, text: REFERENCE_GUIDE }],

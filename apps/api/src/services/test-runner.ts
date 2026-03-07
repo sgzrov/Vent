@@ -82,7 +82,21 @@ export async function runLoadTestInProcess(
     try {
       const result = await runLoadTest({
         ...opts,
-        onTierComplete: (tier: LoadTestTierResult) => {
+        onTierComplete: async (tier: LoadTestTierResult) => {
+          // Insert per-tier result for MCP long-poll delta delivery
+          try {
+            await app.db.insert(schema.scenarioResults).values({
+              run_id: runId,
+              name: `load-test:tier-${tier.concurrency}`,
+              status: tier.error_rate > 0.01 ? "fail" : "pass",
+              test_type: "load_test",
+              metrics_json: tier,
+              trace_json: [],
+            });
+          } catch (err) {
+            console.warn(`Failed to insert tier result for run ${runId}:`, err instanceof Error ? err.message : String(err));
+          }
+
           // Broadcast via SSE for live dashboard clients
           broadcast(runId, {
             run_id: runId,
@@ -116,7 +130,7 @@ export async function runLoadTestInProcess(
 
       await app.db.insert(schema.scenarioResults).values({
         run_id: runId,
-        name: `load-test:tiered`,
+        name: `load-test:summary`,
         status: result.status,
         test_type: "load_test",
         metrics_json: result,
