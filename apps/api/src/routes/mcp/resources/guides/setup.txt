@@ -75,6 +75,10 @@ Teammates just set `export VOICECI_API_KEY=voiceci_their_key` — zero setup.
 
 ## Test Configuration
 
-Tests live in `voiceci-config.json` at your project root — a single file with connection config, infrastructure probes, conversation tests, and red-team attacks. Your coding agent creates it automatically on first run, or you can create/edit it manually. Commit it to git — it's your test suite.
+Tests live in `.voiceci/suite.json` at your project root. Your coding agent generates it automatically on first run by analyzing the agent's codebase. You can edit it manually or let the agent evolve it as you add capabilities.
 
-See `voiceci_guide_reference` for the full file format and field reference.
+For targeted test runs after code changes, the agent generates inline configs and caches them to `.voiceci/.cache/last-run.json` for quick reruns.
+
+Add `.voiceci/.cache/` to your `.gitignore` — the cache is ephemeral.
+
+See `voiceci_guide_reference` for the full config format and field reference.
