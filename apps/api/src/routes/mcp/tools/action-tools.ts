@@ -127,6 +127,13 @@ export function registerActionTools(
         });
       }
 
+      // Detect non-routable URLs — these can't be reached from the cloud worker.
+      // Covers localhost, loopback, and all RFC-1918 private ranges.
+      const isLocalUrl = agentUrl
+        ? /^(https?:\/\/|wss?:\/\/)?(localhost|127\.\d+\.\d+\.\d+|0\.0\.0\.0|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|192\.168\.\d+\.\d+|\[?::1\]?)(:\d+)?(\/|$)/i.test(agentUrl)
+        : false;
+      const effectiveAgentUrl = isLocalUrl ? undefined : agentUrl;
+
       return {
         testSpecJson: {
           conversation_tests: conversationTests ?? null,
@@ -135,24 +142,26 @@ export function registerActionTools(
           voice_config: voiceConfig,
           start_command: cfg.start_command ?? null,
           health_endpoint: cfg.health_endpoint ?? null,
-          agent_url: agentUrl ?? null,
+          agent_url: effectiveAgentUrl ?? null,
           target_phone_number: targetPhoneNumber ?? null,
           platform: cfg.platform ?? null,
         },
         adapter,
-        agentUrl,
+        agentUrl: effectiveAgentUrl,
         voiceConfig,
         targetPhoneNumber,
         conversationTests: conversationTests ?? null,
         isRemote: ["vapi", "retell", "elevenlabs", "bland"].includes(adapter)
-          || adapter === "sip" || adapter === "webrtc" || !!agentUrl,
+          || adapter === "sip" || adapter === "webrtc" || !!effectiveAgentUrl,
+        isLocalUrl,
       };
     };
 
     // Config is already validated by Zod schema — safe to cast
     const cfg = config as Record<string, unknown>;
 
-    const { testSpecJson, adapter, agentUrl, voiceConfig, targetPhoneNumber, conversationTests, isRemote } = buildTestSpec(cfg);
+    const { testSpecJson, adapter, agentUrl, voiceConfig, targetPhoneNumber, conversationTests, isRemote, isLocalUrl } = buildTestSpec(cfg);
+    const originalAgentUrl = cfg.agent_url as string | undefined;
 
     if (isRemote) {
       // Remote/deployed agent — queue immediately, no bash needed
@@ -224,7 +233,12 @@ export function registerActionTools(
 
     const runId = run!.id;
 
-    const agentPort = (cfg.agent_port as number | undefined) ?? 3001;
+    // Extract port from localhost URL if provided, otherwise use agent_port config
+    let agentPort = (cfg.agent_port as number | undefined) ?? 3001;
+    if (isLocalUrl && originalAgentUrl) {
+      const portMatch = originalAgentUrl.match(/:(\d+)/);
+      if (portMatch) agentPort = parseInt(portMatch[1]!, 10);
+    }
 
     const relayArgs = [
       "--run-id",
