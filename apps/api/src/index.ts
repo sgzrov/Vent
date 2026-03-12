@@ -13,7 +13,6 @@ import { relayRoutes } from "./routes/relay.js";
 import { dbPlugin } from "./plugins/db.js";
 import { queuePlugin } from "./plugins/queue.js";
 import { authPlugin } from "./plugins/auth.js";
-import { drainLoadTests } from "./services/test-runner.js";
 
 const port = parseInt(process.env["API_PORT"] ?? "3000", 10);
 const host = process.env["API_HOST"] ?? "0.0.0.0";
@@ -82,7 +81,6 @@ async function main() {
 
   app.addHook("onClose", async () => {
     if (cleanupInterval) clearInterval(cleanupInterval);
-    await drainLoadTests();
   });
 
   await app.listen({ port, host });

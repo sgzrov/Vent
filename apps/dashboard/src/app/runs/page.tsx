@@ -70,8 +70,6 @@ function describeRun(run: RunRow): string {
       parts.push(
         `${spec.conversation_tests.length} conversation${spec.conversation_tests.length > 1 ? "s" : ""}`
       );
-    if (spec.red_team?.length)
-      parts.push(`${spec.red_team.length} red-team`);
     if (spec.load_test)
       parts.push(`load test (${spec.load_test.target_concurrency} concurrent)`);
     if (parts.length > 0) return parts.join(", ");
@@ -110,7 +108,7 @@ function getMetaTags(spec: TestSpec | null): string[] {
   if (spec.conversation_tests?.length) {
     const evalCount = spec.conversation_tests.reduce(
       (sum, t) =>
-        sum + t.eval.length + (t.tool_call_eval?.length ?? 0),
+        sum + t.eval.length,
       0
     );
     if (evalCount > 0) tags.push(`${evalCount} evals`);
@@ -121,10 +119,6 @@ function getMetaTags(spec: TestSpec | null): string[] {
     const turns = spec.conversation_tests.map((t) => t.max_turns);
     const maxTurn = Math.max(...turns);
     if (maxTurn > 0) tags.push(`${maxTurn} max turns`);
-  }
-
-  if (spec.red_team?.length) {
-    tags.push(`${spec.red_team.length} attack vectors`);
   }
 
   if (spec.load_test) {
@@ -166,7 +160,7 @@ function RunMeta({ spec }: { spec: TestSpec | null }) {
 // Filters
 // ---------------------------------------------------------------------------
 
-type TestTypeFilter = "all" | "conversation" | "security" | "load_test";
+type TestTypeFilter = "all" | "conversation" | "load_test";
 
 function hasTestType(run: RunRow, type: TestTypeFilter): boolean {
   if (type === "all") return true;
@@ -179,9 +173,6 @@ function hasTestType(run: RunRow, type: TestTypeFilter): boolean {
       (spec?.conversation_tests?.length ?? 0) > 0 ||
       (agg?.conversation_tests?.total ?? 0) > 0
     );
-  }
-  if (type === "security") {
-    return (spec?.red_team?.length ?? 0) > 0;
   }
   if (type === "load_test") {
     return (
@@ -239,7 +230,6 @@ function CategoryResult({
 const typeFilters: { value: TestTypeFilter; label: string }[] = [
   { value: "all", label: "All" },
   { value: "conversation", label: "Conversations" },
-  { value: "security", label: "Security" },
   { value: "load_test", label: "Load Test" },
 ];
 

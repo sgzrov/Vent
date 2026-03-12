@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { AUDIO_TEST_NAMES, AUDIO_ACTION_TYPES, RED_TEAM_ATTACKS } from "./types.js";
+import { AUDIO_TEST_NAMES, AUDIO_ACTION_TYPES } from "./types.js";
 
 // ============================================================
 // V2 Schemas — Dynamic voice agent testing
@@ -71,12 +71,24 @@ export const CallerAudioPoolSchema = z.object({
   jitter_ms: z.union([z.number(), z.tuple([z.number(), z.number()])]).optional(),
 });
 
+const SafetyThresholdSchema = z.object({
+  enabled: z.boolean(),
+  reasoning: z.string().optional(),
+  min_score: z.number().min(0).max(1).optional(),
+});
+
+const SafetyThresholdsSchema = z.object({
+  hallucination: SafetyThresholdSchema.optional(),
+  safety_compliance: SafetyThresholdSchema.optional(),
+  compliance_adherence: SafetyThresholdSchema.optional(),
+}).optional();
+
 export const ConversationTestSpecSchema = z.object({
   name: z.string().optional(),
   caller_prompt: z.string().min(1),
   max_turns: z.number().int().min(1).max(50).default(6),
   eval: z.array(z.string().min(1)).min(1),
-  tool_call_eval: z.array(z.string().min(1)).optional(),
+
   silence_threshold_ms: z.number().int().min(200).max(10000).optional(),
   persona: CallerPersonaSchema,
   audio_actions: z.array(AudioActionSchema).optional(),
@@ -86,20 +98,22 @@ export const ConversationTestSpecSchema = z.object({
   language: z.string().min(2).max(5).optional(),
   /** Number of times to repeat this test for statistical confidence (1-10). Default 1. */
   repeat: z.number().int().min(1).max(10).default(1),
+  safety_thresholds: SafetyThresholdsSchema,
 });
 
-export const RedTeamAttackSchema = z.enum(RED_TEAM_ATTACKS);
-
+// TestSpecSchema uses z.lazy for load_test to avoid forward-reference to LoadTestSpecSchema
 export const TestSpecSchema = z
   .object({
     conversation_tests: z.array(ConversationTestSpecSchema).optional(),
-    red_team: z.array(RedTeamAttackSchema).optional(),
+    load_test: z.lazy(() => LoadTestSpecSchema).optional(),
   })
   .refine(
-    (d) =>
-      (d.conversation_tests?.length ?? 0) +
-      (d.red_team?.length ?? 0) > 0,
-    { message: "At least one of conversation_tests or red_team is required" }
+    (d) => (d.conversation_tests?.length ?? 0) > 0 || d.load_test != null,
+    { message: "Exactly one of conversation_tests or load_test is required" }
+  )
+  .refine(
+    (d) => !((d.conversation_tests?.length ?? 0) > 0 && d.load_test != null),
+    { message: "conversation_tests and load_test cannot be used together" }
   );
 
 export const AdapterTypeSchema = z.enum(["websocket", "sip", "webrtc", "vapi", "retell", "elevenlabs", "bland"]);
@@ -115,6 +129,7 @@ export const ObservedToolCallSchema = z.object({
   successful: z.boolean().optional(),
   timestamp_ms: z.number().optional(),
   latency_ms: z.number().optional(),
+  turn_index: z.number().int().min(0).optional(),
 });
 
 export const ToolCallMetricsSchema = z.object({
@@ -331,7 +346,7 @@ export const ConversationTestResultSchema = z.object({
   status: z.enum(["pass", "fail"]),
   transcript: z.array(ConversationTurnSchema),
   eval_results: z.array(EvalResultSchema),
-  tool_call_eval_results: z.array(EvalResultSchema).optional(),
+
   observed_tool_calls: z.array(ObservedToolCallSchema).optional(),
   audio_action_results: z.array(AudioActionResultSchema).optional(),
   duration_ms: z.number(),
@@ -375,6 +390,16 @@ export const LoadTestThresholdsSchema = z.object({
   p95_latency_ms: ThresholdTupleSchema,
   error_rate: ThresholdTupleSchema,
   quality_score: ThresholdTupleSchema,
+});
+
+export const LoadTestSpecSchema = z.object({
+  target_concurrency: z.number().int().min(1).max(100),
+  caller_prompt: z.string().min(1),
+  max_turns: z.number().int().min(1).max(10).optional(),
+  eval: z.array(z.string().min(1)).optional(),
+  thresholds: LoadTestThresholdsSchema.partial().optional(),
+  caller_audio: CallerAudioPoolSchema.optional(),
+  language: z.string().min(2).max(5).optional(),
 });
 
 export const LoadTestBreakingPointSchema = z.object({

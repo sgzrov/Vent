@@ -20,20 +20,6 @@ function formatTranscript(transcript: ConversationTurn[]): string {
     .join("\n");
 }
 
-function formatToolCalls(toolCalls: ObservedToolCall[]): string {
-  if (toolCalls.length === 0) return "(no tool calls observed)";
-
-  return toolCalls
-    .map((tc, i) => {
-      const args = JSON.stringify(tc.arguments);
-      const result = tc.result != null ? ` → ${JSON.stringify(tc.result)}` : "";
-      const timing = tc.latency_ms != null ? ` [${tc.latency_ms}ms]` : "";
-      const success = tc.successful != null ? (tc.successful ? " [successful]" : " [failed]") : "";
-      return `${i + 1}. ${tc.name}(${args})${result}${timing}${success}`;
-    })
-    .join("\n");
-}
-
 /** Strip markdown code fences if the LLM wrapped its JSON output */
 function stripFences(text: string): string {
   return text.replace(/^```(?:json)?\s*\n?/i, "").replace(/\n?```\s*$/i, "").trim();
@@ -59,10 +45,22 @@ export class JudgeLLM {
     transcript: ConversationTurn[],
     evalQuestions: string[],
     language?: string,
+    observedToolCalls?: ObservedToolCall[],
   ): Promise<EvalResult[]> {
-    const formattedTranscript = formatTranscript(transcript);
+    let context = formatTranscript(transcript);
+    if (observedToolCalls && observedToolCalls.length > 0) {
+      const toolCallLines = observedToolCalls.map((tc, i) => {
+        const args = JSON.stringify(tc.arguments);
+        const result = tc.result != null ? ` → ${JSON.stringify(tc.result)}` : "";
+        const timing = tc.latency_ms != null ? ` [${tc.latency_ms}ms]` : "";
+        const success = tc.successful != null ? (tc.successful ? " [ok]" : " [failed]") : "";
+        const turn = tc.turn_index != null ? ` [turn ${tc.turn_index}]` : "";
+        return `${i + 1}. ${tc.name}(${args})${result}${timing}${success}${turn}`;
+      }).join("\n");
+      context += `\n\nTOOL CALLS OBSERVED:\n${toolCallLines}`;
+    }
     return Promise.all(
-      evalQuestions.map((q) => this.evaluateQuestion(formattedTranscript, q, language))
+      evalQuestions.map((q) => this.evaluateQuestion(context, q, language))
     );
   }
 
@@ -194,72 +192,6 @@ Be strict but fair.`,
     }
   }
 
-  /**
-   * Evaluate tool call behavior against eval questions.
-   * Provides both transcript AND structured tool call data to the judge.
-   */
-  async evaluateToolCalls(
-    transcript: ConversationTurn[],
-    observedToolCalls: ObservedToolCall[],
-    evalQuestions: string[],
-    language?: string,
-  ): Promise<EvalResult[]> {
-    const formattedTranscript = formatTranscript(transcript);
-    const formattedToolCalls = formatToolCalls(observedToolCalls);
-    const context = `TRANSCRIPT:\n${formattedTranscript}\n\nTOOL CALLS OBSERVED:\n${formattedToolCalls}`;
-
-    return Promise.all(
-      evalQuestions.map((q) => this.evaluateToolCallQuestion(context, q, language))
-    );
-  }
-
-  private async evaluateToolCallQuestion(
-    context: string,
-    question: string,
-    language?: string,
-  ): Promise<EvalResult> {
-    const langCtx = languageContext(language);
-    const response = await this.client.messages.create({
-      model: MODEL,
-      max_tokens: MAX_TOKENS,
-      temperature: 0,
-      system: `You are evaluating a voice agent's tool call behavior.${langCtx} You have access to:
-1. The conversation transcript (what was said)
-2. The actual tool calls that the agent made (ground truth data from the platform)
-
-Based on BOTH the transcript AND the tool call data, determine if the agent PASSES or FAILS the given criterion.
-
-Be strict but fair. Use the tool call data as ground truth — it shows exactly which tools were called, with what arguments, and what results were returned.
-
-If the conversation didn't cover the topic of the criterion, that is a FAIL — the test was designed to evaluate this and it didn't happen.
-
-Output raw JSON only — no markdown, no code fences, no explanation: {"passed": true/false, "reasoning": "brief explanation"}`,
-      messages: [
-        { role: "user", content: `${context}\n\nCRITERION: ${question}` },
-      ],
-    });
-
-    const text = stripFences(response.content[0]?.type === "text" ? response.content[0].text : "");
-
-    try {
-      const parsed = JSON.parse(text) as {
-        passed: boolean;
-        reasoning: string;
-      };
-      return {
-        question,
-        passed: parsed.passed,
-        reasoning: parsed.reasoning,
-      };
-    } catch {
-      return {
-        question,
-        passed: false,
-        reasoning: "Failed to parse judge response",
-      };
-    }
-  }
-
   private async evaluateQuestion(
     transcript: string,
     question: string,
@@ -270,9 +202,9 @@ Output raw JSON only — no markdown, no code fences, no explanation: {"passed":
       model: MODEL,
       max_tokens: MAX_TOKENS,
       temperature: 0,
-      system: `You are evaluating a voice agent's performance based on a conversation transcript.${langCtx}
+      system: `You are evaluating a voice agent's performance based on a conversation transcript and any observed tool calls.${langCtx}
 
-Determine if the agent PASSES or FAILS the given criterion. Be strict but fair.
+Determine if the agent PASSES or FAILS the given criterion. Be strict but fair. If tool call data is provided, use it as ground truth for what the agent actually did.
 
 If the conversation didn't cover the topic of the criterion, that is a FAIL — the test was designed to evaluate this and it didn't happen.
 

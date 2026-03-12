@@ -4,6 +4,4 @@ Use filters to scope results for parallel subagent monitoring:
 - `test_type=conversation` + `test_name={name}` — one subagent per conversation test (≤5 tests) or batched across subagents (>5 tests)
 - `test_type=load_test` — load test tier-by-tier results
 
-After all subagents return, call once without filters for the full summary (includes fix_plan and baseline_comparison).
-
-For reruns after fixing failures, reuse the cached config at .voiceci/.cache/last-run.json instead of regenerating.
+For reruns after fixing failures, reuse the cached config at .vent/.cache/last-run.json instead of regenerating.

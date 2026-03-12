@@ -3,7 +3,6 @@
 import { useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import type { TestSpec, CallerPersona } from "@/lib/types";
-import { RED_TEAM_LABELS } from "@/lib/audio-test-registry";
 
 interface TestConfigSectionProps {
   testSpec: TestSpec;
@@ -42,9 +41,8 @@ export function TestConfigSection({ testSpec }: TestConfigSectionProps) {
 
   const hasConversation =
     testSpec.conversation_tests && testSpec.conversation_tests.length > 0;
-  const hasRedTeam = testSpec.red_team && testSpec.red_team.length > 0;
 
-  if (!hasConversation && !hasRedTeam) return null;
+  if (!hasConversation) return null;
 
   return (
     <div className="rounded-md border">
@@ -59,13 +57,8 @@ export function TestConfigSection({ testSpec }: TestConfigSectionProps) {
         )}
         Test Configuration
         <span className="text-xs text-muted-foreground font-normal ml-auto">
-          {[
-            hasConversation &&
-              `${testSpec.conversation_tests!.length} conversation`,
-            hasRedTeam && `${testSpec.red_team!.length} red-team`,
-          ]
-            .filter(Boolean)
-            .join(", ")}
+          {hasConversation &&
+            `${testSpec.conversation_tests!.length} conversation`}
         </span>
       </button>
 
@@ -112,23 +105,6 @@ export function TestConfigSection({ testSpec }: TestConfigSectionProps) {
             </div>
           )}
 
-          {hasRedTeam && (
-            <div className="pt-3">
-              <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-2">
-                Red-Team Attacks
-              </p>
-              <div className="flex flex-wrap gap-1.5">
-                {testSpec.red_team!.map((attack) => (
-                  <span
-                    key={attack}
-                    className="inline-flex items-center rounded-md bg-red-500/10 text-red-600 dark:text-red-400 px-2 py-0.5 text-xs font-mono"
-                  >
-                    {RED_TEAM_LABELS[attack] ?? attack}
-                  </span>
-                ))}
-              </div>
-            </div>
-          )}
         </div>
       )}
     </div>

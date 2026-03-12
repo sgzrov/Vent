@@ -160,7 +160,7 @@ export async function callbackRoutes(app: FastifyInstance) {
       adapter: spec.adapter as string,
       test_spec: {
         conversation_tests: spec.conversation_tests ?? null,
-        red_team: spec.red_team ?? null,
+        load_test: spec.load_test ?? null,
       },
       target_phone_number: spec.target_phone_number as string | undefined,
       voice_config: spec.voice_config ?? { adapter: spec.adapter },

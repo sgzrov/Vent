@@ -1,4 +1,4 @@
-import type { AdapterType, PlatformConfig, VoiceConfig } from "@voiceci/shared";
+import type { AdapterType, PlatformConfig } from "@voiceci/shared";
 import { RUNNER_CALLBACK_HEADER } from "@voiceci/shared";
 import type { AudioChannel } from "./audio-channel.js";
 import { WsAudioChannel } from "./ws-audio-channel.js";
@@ -23,7 +23,6 @@ export interface AudioChannelConfig {
   adapter: AdapterType;
   agentUrl?: string;
   targetPhoneNumber?: string;
-  voice?: VoiceConfig;
   platform?: PlatformConfig;
 }
 
@@ -48,16 +47,10 @@ export function createAudioChannel(config: AudioChannelConfig): AudioChannel {
     }
 
     case "webrtc": {
-      const webrtc = config.voice?.webrtc;
-      const livekitUrl =
-        process.env[webrtc?.livekit_url_env ?? "LIVEKIT_URL"] ?? "";
-      const apiKey =
-        process.env[webrtc?.api_key_env ?? "LIVEKIT_API_KEY"] ?? "";
-      const apiSecret =
-        process.env[webrtc?.api_secret_env ?? "LIVEKIT_API_SECRET"] ?? "";
-      const roomName =
-        webrtc?.room ??
-        `voiceci-${process.env["RUN_ID"] ?? crypto.randomUUID().slice(0, 8)}`;
+      const livekitUrl = process.env["LIVEKIT_URL"] ?? "";
+      const apiKey = process.env["LIVEKIT_API_KEY"] ?? "";
+      const apiSecret = process.env["LIVEKIT_API_SECRET"] ?? "";
+      const roomName = `voiceci-${process.env["RUN_ID"] ?? crypto.randomUUID().slice(0, 8)}`;
 
       return new WebRtcAudioChannel({
         livekitUrl,
@@ -68,24 +61,22 @@ export function createAudioChannel(config: AudioChannelConfig): AudioChannel {
     }
 
     case "sip": {
-      const telephony = config.voice?.telephony;
-      const authId =
-        process.env[telephony?.auth_id_env ?? "PLIVO_AUTH_ID"] ?? "";
-      const authToken =
-        process.env[telephony?.auth_token_env ?? "PLIVO_AUTH_TOKEN"] ?? "";
+      const accountSid = process.env["TWILIO_ACCOUNT_SID"] ?? "";
+      const authToken = process.env["TWILIO_AUTH_TOKEN"] ?? "";
+      const fromNumber = process.env["TWILIO_FROM_NUMBER"] ?? "";
       const publicHost = process.env["RUNNER_PUBLIC_HOST"] ?? "localhost";
 
       if (!config.targetPhoneNumber) {
         throw new Error("SIP adapter requires targetPhoneNumber");
       }
-      if (!telephony?.from_number) {
-        throw new Error("SIP adapter requires voice.telephony.from_number");
+      if (!fromNumber) {
+        throw new Error("SIP adapter requires TWILIO_FROM_NUMBER env var");
       }
 
       return new SipAudioChannel({
         phoneNumber: config.targetPhoneNumber,
-        fromNumber: telephony.from_number,
-        authId,
+        fromNumber,
+        accountSid,
         authToken,
         publicHost,
       });
@@ -107,19 +98,19 @@ export function createAudioChannel(config: AudioChannelConfig): AudioChannel {
       if (!agentId) throw new Error("Retell adapter requires platform.agent_id");
       if (!config.targetPhoneNumber) throw new Error("Retell adapter requires targetPhoneNumber (the agent's phone number)");
 
-      const retellTelephony = config.voice?.telephony;
-      const retellAuthId = process.env[retellTelephony?.auth_id_env ?? "PLIVO_AUTH_ID"] ?? "";
-      const retellAuthToken = process.env[retellTelephony?.auth_token_env ?? "PLIVO_AUTH_TOKEN"] ?? "";
+      const retellAccountSid = process.env["TWILIO_ACCOUNT_SID"] ?? "";
+      const retellAuthToken = process.env["TWILIO_AUTH_TOKEN"] ?? "";
+      const retellFromNumber = process.env["TWILIO_FROM_NUMBER"] ?? "";
       const retellPublicHost = process.env["RUNNER_PUBLIC_HOST"] ?? "localhost";
-      if (!retellTelephony?.from_number) throw new Error("Retell adapter requires voice.telephony.from_number");
+      if (!retellFromNumber) throw new Error("Retell adapter requires TWILIO_FROM_NUMBER env var");
 
       return new RetellAudioChannel({
         apiKey,
         agentId,
         sip: {
           phoneNumber: config.targetPhoneNumber,
-          fromNumber: retellTelephony.from_number,
-          authId: retellAuthId,
+          fromNumber: retellFromNumber,
+          accountSid: retellAccountSid,
           authToken: retellAuthToken,
           publicHost: retellPublicHost,
         },
@@ -140,19 +131,19 @@ export function createAudioChannel(config: AudioChannelConfig): AudioChannel {
       if (!apiKey) throw new Error("Bland adapter requires API key (set BLAND_API_KEY or platform.api_key_env)");
       if (!config.targetPhoneNumber) throw new Error("Bland adapter requires targetPhoneNumber (the agent's phone number)");
 
-      const blandTelephony = config.voice?.telephony;
-      const blandAuthId = process.env[blandTelephony?.auth_id_env ?? "PLIVO_AUTH_ID"] ?? "";
-      const blandAuthToken = process.env[blandTelephony?.auth_token_env ?? "PLIVO_AUTH_TOKEN"] ?? "";
+      const blandAccountSid = process.env["TWILIO_ACCOUNT_SID"] ?? "";
+      const blandAuthToken = process.env["TWILIO_AUTH_TOKEN"] ?? "";
+      const blandFromNumber = process.env["TWILIO_FROM_NUMBER"] ?? "";
       const blandPublicHost = process.env["RUNNER_PUBLIC_HOST"] ?? "localhost";
-      if (!blandTelephony?.from_number) throw new Error("Bland adapter requires voice.telephony.from_number");
+      if (!blandFromNumber) throw new Error("Bland adapter requires TWILIO_FROM_NUMBER env var");
 
       return new BlandAudioChannel({
         apiKey,
         phoneNumber: config.targetPhoneNumber,
         sip: {
           phoneNumber: config.targetPhoneNumber,
-          fromNumber: blandTelephony.from_number,
-          authId: blandAuthId,
+          fromNumber: blandFromNumber,
+          accountSid: blandAccountSid,
           authToken: blandAuthToken,
           publicHost: blandPublicHost,
         },

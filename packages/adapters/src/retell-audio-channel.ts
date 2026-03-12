@@ -5,7 +5,7 @@
  * with Retell's REST API for call creation and tool call extraction.
  *
  * Flow:
- *   1. connect()  — sets up Plivo inbound, then asks Retell to call us
+ *   1. connect()  — sets up Twilio inbound, then asks Retell to call us
  *      via POST /v2/create-phone-call → call_id known immediately
  *   2. sendAudio() / on("audio") — bidirectional PCM 24kHz over SIP
  *   3. disconnect() — hangs up the SIP call
@@ -76,7 +76,7 @@ export class RetellAudioChannel extends BaseAudioChannel {
 
   async connect(): Promise<void> {
     const connectStart = Date.now();
-    // Start SIP in inbound mode — Plivo app created, number configured, waiting
+    // Start SIP in inbound mode — Twilio app created, number configured, waiting
     this.sipChannel = new SipAudioChannel({ ...this.config.sip, mode: "inbound" });
 
     this.sipChannel.on("audio", (chunk) => {
@@ -89,10 +89,10 @@ export class RetellAudioChannel extends BaseAudioChannel {
     });
     this.sipChannel.on("disconnected", () => this.emit("disconnected"));
 
-    // Start the SIP server and configure Plivo number for inbound
+    // Start the SIP server and configure Twilio number for inbound
     await this.sipChannel.connect();
 
-    // Ask Retell to call our Plivo number — call_id returned immediately
+    // Ask Retell to call our Twilio number — call_id returned immediately
     const res = await fetch("https://api.retellai.com/v2/create-phone-call", {
       method: "POST",
       headers: {

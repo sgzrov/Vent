@@ -1,0 +1,80 @@
+# Vent Setup Guide
+
+## Cursor
+
+Add to `.cursor/mcp.json` (or `~/.cursor/mcp.json` for global):
+
+```json
+{
+  "mcpServers": {
+    "vent": {
+      "command": "npx",
+      "args": ["-y", "@vent-hq/mcp"],
+      "env": {
+        "LIGHTMCP_API_KEY": "vent_YOUR_KEY"
+      }
+    }
+  }
+}
+```
+
+## Claude Code
+
+```bash
+# Project-level (default)
+claude mcp add --transport http \
+  --header "Authorization: Bearer vent_YOUR_KEY" \
+  vent "https://voiceci-api.fly.dev/mcp"
+
+# Global (all projects)
+claude mcp add --transport http --scope user \
+  --header "Authorization: Bearer vent_YOUR_KEY" \
+  vent "https://voiceci-api.fly.dev/mcp"
+```
+
+## Windsurf
+
+Add to `~/.codeium/windsurf/mcp_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "vent": {
+      "serverUrl": "https://voiceci-api.fly.dev/mcp",
+      "headers": {
+        "Authorization": "Bearer ${env:VENT_API_KEY}"
+      }
+    }
+  }
+}
+```
+
+## Team Sharing
+
+Add `.mcp.json` to your project root (check into git):
+
+```json
+{
+  "mcpServers": {
+    "vent": {
+      "command": "npx",
+      "args": ["-y", "@vent-hq/mcp"],
+      "env": {
+        "LIGHTMCP_API_KEY": "${VENT_API_KEY}"
+      }
+    }
+  }
+}
+```
+
+Teammates just set `export VENT_API_KEY=vent_their_key` — zero setup.
+
+## Test Configuration
+
+Tests live in `.vent/suite.json` at your project root. Your coding agent generates it automatically on first run by analyzing the agent's codebase. You can edit it manually or let the agent evolve it as you add capabilities.
+
+For targeted test runs after code changes, the agent generates inline configs and caches them to `.vent/.cache/last-run.json` for quick reruns.
+
+Add `.vent/.cache/` to your `.gitignore` — the cache is ephemeral.
+
+See `vent_docs` for the full config format and field reference.

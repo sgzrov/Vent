@@ -1,11 +1,9 @@
 /**
- * Loads guide/prompt content from plain text files in the resources folder.
- * Prompts are stored as .txt files for clean separation from code.
+ * Loads prompt content from plain text files in the resources folder.
  *
  * Folder structure:
- *   resources/system/  — MCP server-level instructions
- *   resources/guides/  — Documentation returned by vent_setup_workspace / vent_docs tools
- *   resources/tools/   — Action tool descriptions
+ *   resources/system/       — MCP server-level instructions
+ *   resources/tool_prompts/ — Tool descriptions and tool response content
  */
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -21,11 +19,11 @@ function load(...segments: string[]): string {
 // System
 export const SYSTEM_INSTRUCTIONS = load("system", "instructions.txt");
 
-// Guides (returned by vent_setup_workspace / vent_docs)
-export const SETUP_GUIDE = load("guides", "setup.txt");
-export const REFERENCE_GUIDE = load("guides", "reference.txt");
+// Tool response content (returned by vent_setup_workspace / vent_docs)
+export const SETUP_GUIDE = load("tool_prompts", "setup-workspace.txt");
+export const VENT_DOCS = load("tool_prompts", "docs.txt");
 
 // Tool descriptions (used as MCP tool description fields)
-export const RUN_TESTS_DESCRIPTION = load("tools", "run-tests.txt");
-export const RUN_LOAD_TEST_DESCRIPTION = load("tools", "run-load-test.txt");
-export const GET_RUN_STATUS_DESCRIPTION = load("tools", "get-run-status.txt");
+export const RUN_TESTS_DESCRIPTION = load("tool_prompts", "run-tests.txt");
+export const GET_RUN_STATUS_DESCRIPTION = load("tool_prompts", "get-run-status.txt");
+

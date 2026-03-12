@@ -3,7 +3,6 @@ import type { EvalResult } from "@/lib/types";
 
 interface EvalResultsProps {
   evalResults: EvalResult[];
-  toolCallEvalResults?: EvalResult[];
 }
 
 function EvalRow({ eval_ }: { eval_: EvalResult }) {
@@ -46,10 +45,7 @@ function EvalRow({ eval_ }: { eval_: EvalResult }) {
   );
 }
 
-export function EvalResults({
-  evalResults,
-  toolCallEvalResults,
-}: EvalResultsProps) {
+export function EvalResults({ evalResults }: EvalResultsProps) {
   return (
     <div className="space-y-4">
       {evalResults.length > 0 && (
@@ -57,19 +53,6 @@ export function EvalResults({
           {evalResults.map((eval_, i) => (
             <EvalRow key={i} eval_={eval_} />
           ))}
-        </div>
-      )}
-
-      {toolCallEvalResults && toolCallEvalResults.length > 0 && (
-        <div>
-          <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2 mt-4">
-            Tool Call Evals
-          </h4>
-          <div className="space-y-2">
-            {toolCallEvalResults.map((eval_, i) => (
-              <EvalRow key={i} eval_={eval_} />
-            ))}
-          </div>
         </div>
       )}
     </div>
