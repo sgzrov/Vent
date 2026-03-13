@@ -51,6 +51,12 @@ export class StreamingTranscriber {
   /** Track whether we've received any audio this turn. */
   private hasFedAudio = false;
 
+  /** KeepAlive interval to prevent Deepgram's 10s idle timeout. */
+  private keepAliveInterval: ReturnType<typeof setInterval> | null = null;
+
+  /** Track dropped audio chunks for diagnostics. */
+  private droppedChunks = 0;
+
   constructor(config?: StreamingTranscriberConfig) {
     this.apiKeyEnv = config?.apiKeyEnv ?? "DEEPGRAM_API_KEY";
     this.sampleRate = config?.sampleRate ?? 24000;
@@ -102,6 +108,14 @@ export class StreamingTranscriber {
       };
 
       this.connection.on(LiveTranscriptionEvents.Open, () => {
+        // Send KeepAlive every 5s to prevent Deepgram's 10s idle timeout.
+        // Between conversation turns, dead time (LLM + TTS + agent processing)
+        // can exceed 10s, causing silent connection drops.
+        this.keepAliveInterval = setInterval(() => {
+          if (this.connection?.isConnected()) {
+            this.connection.keepAlive();
+          }
+        }, 5000);
         resolveOnce();
       });
 
@@ -128,6 +142,8 @@ export class StreamingTranscriber {
       );
 
       this.connection.on(LiveTranscriptionEvents.Error, (err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(`[STT] Deepgram error: ${msg}`);
         if (this.finalizeResolve) {
           this.resolveFinalTranscript();
         } else {
@@ -136,12 +152,15 @@ export class StreamingTranscriber {
       });
 
       this.connection.on(LiveTranscriptionEvents.Close, () => {
+        this.clearKeepAlive();
         if (this.finalizeResolve) {
           this.resolveFinalTranscript();
           return;
         }
 
-        if (!settled) {
+        if (settled) {
+          console.warn("[STT] Deepgram connection closed unexpectedly mid-session");
+        } else {
           rejectOnce("socket closed before connection opened");
         }
       });
@@ -160,6 +179,11 @@ export class StreamingTranscriber {
       );
       this.connection.send(audio);
       this.hasFedAudio = true;
+    } else {
+      this.droppedChunks++;
+      if (this.droppedChunks === 1) {
+        console.warn("[STT] Deepgram connection lost — dropping audio chunks");
+      }
     }
   }
 
@@ -206,10 +230,12 @@ export class StreamingTranscriber {
     this.finalizeResolve = null;
     this.finalizeCalled = false;
     this.hasFedAudio = false;
+    this.droppedChunks = 0;
   }
 
   /** Close the WebSocket connection. */
   close(): void {
+    this.clearKeepAlive();
     if (this.connection) {
       if (this.connection.isConnected()) {
         this.connection.requestClose();
@@ -217,6 +243,13 @@ export class StreamingTranscriber {
       this.connection.removeAllListeners();
       this.connection.disconnect();
       this.connection = null;
+    }
+  }
+
+  private clearKeepAlive(): void {
+    if (this.keepAliveInterval) {
+      clearInterval(this.keepAliveInterval);
+      this.keepAliveInterval = null;
     }
   }
 

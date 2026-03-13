@@ -1,23 +1,6 @@
 export type RunStatus = "queued" | "running" | "pass" | "fail";
 export type SourceType = "bundle" | "remote" | "relay";
 
-export interface VoiceConfig {
-  tts?: { voice_id?: string; api_key_env?: string };
-  stt?: { api_key_env?: string };
-  silence_threshold_ms?: number;
-  telephony?: {
-    auth_id_env?: string;
-    auth_token_env?: string;
-    from_number?: string;
-  };
-  webrtc?: {
-    livekit_url_env?: string;
-    api_key_env?: string;
-    api_secret_env?: string;
-    room?: string;
-  };
-}
-
 // ============================================================
 // Audio + Conversation test types
 // ============================================================
@@ -108,12 +91,30 @@ export interface AudioActionResult {
   transcriptions?: Record<string, string | null>;
 }
 
+export interface SafetyThreshold {
+  enabled: boolean;
+  reasoning?: string;
+  min_score?: number;
+}
+
+export interface SafetyThresholds {
+  hallucination?: SafetyThreshold;
+  safety_compliance?: SafetyThreshold;
+  compliance_adherence?: SafetyThreshold;
+}
+
+export const DEFAULT_SAFETY_THRESHOLDS: Required<SafetyThresholds> = {
+  hallucination: { enabled: true },
+  safety_compliance: { enabled: true },
+  compliance_adherence: { enabled: true, min_score: 0.8 },
+};
+
 export interface ConversationTestSpec {
   name?: string;
   caller_prompt: string;
   max_turns: number;
   eval: string[];
-  tool_call_eval?: string[];
+
   silence_threshold_ms?: number;
   persona?: CallerPersona;
   /** Audio actions to inject at specific turns (barge-in, silence, noise, etc.) */
@@ -126,18 +127,9 @@ export interface ConversationTestSpec {
   language?: string;
   /** Number of times to repeat this test for statistical confidence. Default 1. */
   repeat?: number;
+  /** Safety thresholds that auto-fail the test. Default: all enabled. */
+  safety_thresholds?: SafetyThresholds;
 }
-
-export const RED_TEAM_ATTACKS = [
-  "prompt_injection",
-  "pii_extraction",
-  "jailbreak",
-  "social_engineering",
-  "off_topic",
-  "compliance_bypass",
-] as const;
-
-export type RedTeamAttack = (typeof RED_TEAM_ATTACKS)[number];
 
 // ============================================================
 // Tool call types
@@ -150,6 +142,7 @@ export interface ObservedToolCall {
   successful?: boolean;
   timestamp_ms?: number;
   latency_ms?: number;
+  turn_index?: number;
 }
 
 export interface ToolCallMetrics {
@@ -235,9 +228,19 @@ export interface ProsodyWarning {
   message: string;
 }
 
+export interface LoadTestSpec {
+  target_concurrency: number;
+  caller_prompt: string;
+  max_turns?: number;
+  eval?: string[];
+  thresholds?: Partial<LoadTestThresholds>;
+  caller_audio?: CallerAudioPool;
+  language?: string;
+}
+
 export interface TestSpec {
   conversation_tests?: ConversationTestSpec[];
-  red_team?: RedTeamAttack[];
+  load_test?: LoadTestSpec;
 }
 
 export interface TestDiagnostics {
@@ -425,7 +428,7 @@ export interface ConversationTestResult {
   status: "pass" | "fail";
   transcript: ConversationTurn[];
   eval_results: EvalResult[];
-  tool_call_eval_results?: EvalResult[];
+
   observed_tool_calls?: ObservedToolCall[];
   audio_action_results?: AudioActionResult[];
   duration_ms: number;
@@ -464,7 +467,7 @@ export interface LoadTestThresholds {
 }
 
 export const DEFAULT_LOAD_TEST_THRESHOLDS: LoadTestThresholds = {
-  ttfw_ms: [300, 500, 800],
+  ttfw_ms: [300, 400, 800],
   p95_latency_ms: [2200, 2500, 3000],
   error_rate: [0.001, 0.005, 0.01],
   quality_score: [0.9, 0.8, 0.7],

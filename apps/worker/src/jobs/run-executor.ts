@@ -1,14 +1,18 @@
 import { eq } from "drizzle-orm";
+import IORedis from "ioredis";
 import { createDb, schema, type Database } from "@voiceci/db";
 import { RUNNER_CALLBACK_HEADER } from "@voiceci/shared";
 import type {
   TestSpec,
+  LoadTestSpec,
+  LoadTestResult,
+  LoadTestTierResult,
   AdapterType,
-  VoiceConfig,
   PlatformConfig,
 } from "@voiceci/shared";
 import type { AudioChannelConfig } from "@voiceci/adapters";
-import { executeTests, expandRedTeamTests } from "@voiceci/runner/executor";
+import { executeTests } from "@voiceci/runner/executor";
+import { runLoadTest } from "@voiceci/runner/load-test";
 
 // ---------------------------------------------------------------------------
 // Event emission — writes to DB and notifies API for SSE/MCP broadcast
@@ -56,6 +60,86 @@ interface RunJob {
 }
 
 // ---------------------------------------------------------------------------
+// Load test execution — runs after conversation tests if load_test spec exists
+// ---------------------------------------------------------------------------
+
+async function executeLoadTestPhase(
+  db: Database,
+  job: RunJob,
+  channelConfig: AudioChannelConfig,
+  apiUrl: string,
+  callbackSecret: string,
+): Promise<{ loadTestResult: LoadTestResult } | null> {
+  const testSpec = job.test_spec as TestSpec;
+  const loadSpec = testSpec.load_test;
+  if (!loadSpec) return null;
+
+  await emitEvent(db, job.run_id, "load_test_started", `Starting load test — target concurrency: ${loadSpec.target_concurrency}`);
+
+  let tierCount = 0;
+  const result = await runLoadTest({
+    channelConfig,
+    targetConcurrency: loadSpec.target_concurrency,
+    callerPrompt: loadSpec.caller_prompt,
+    maxTurns: loadSpec.max_turns,
+    evalQuestions: loadSpec.eval,
+    thresholds: loadSpec.thresholds,
+    callerAudioPool: loadSpec.caller_audio,
+    language: loadSpec.language,
+    onTierComplete: async (tier: LoadTestTierResult) => {
+      tierCount++;
+      const tierName = `load-test:tier-${tier.concurrency}`;
+
+      try {
+        await db.insert(schema.scenarioResults).values({
+          run_id: job.run_id,
+          name: tierName,
+          status: tier.failed_calls > 0 ? "fail" : "pass",
+          test_type: "load_test" as const,
+          metrics_json: tier as unknown as Record<string, unknown>,
+          trace_json: {},
+        });
+      } catch {
+        // Best-effort
+      }
+
+      void fetch(`${apiUrl}/internal/test-progress`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          [RUNNER_CALLBACK_HEADER]: callbackSecret,
+        },
+        body: JSON.stringify({
+          run_id: job.run_id,
+          completed: tierCount,
+          total: 4,
+          test_type: "load_test",
+          test_name: tierName,
+          status: tier.failed_calls > 0 ? "fail" : "pass",
+          duration_ms: tier.duration_ms,
+        }),
+      }).catch(() => {});
+    },
+  });
+
+  // Insert final load test summary
+  try {
+    await db.insert(schema.scenarioResults).values({
+      run_id: job.run_id,
+      name: "load-test:summary",
+      status: result.status,
+      test_type: "load_test" as const,
+      metrics_json: result as unknown as Record<string, unknown>,
+      trace_json: {},
+    });
+  } catch {
+    // Best-effort
+  }
+
+  return { loadTestResult: result };
+}
+
+// ---------------------------------------------------------------------------
 // Direct execution for already-deployed agents (SIP, WebRTC, agent_url)
 // ---------------------------------------------------------------------------
 
@@ -67,87 +151,106 @@ async function executeRemoteRun(db: Database, job: RunJob): Promise<void> {
   const adapterType = (job.adapter ?? "websocket") as AdapterType;
   const agentUrl = job.agent_url ?? "http://localhost:3001";
 
-  // Parse voice config
-  let voiceConfig: VoiceConfig | undefined;
-  if (job.voice_config) {
-    voiceConfig = (job.voice_config as { voice?: VoiceConfig }).voice ?? undefined;
-  }
-
   const channelConfig: AudioChannelConfig = {
     adapter: adapterType,
     agentUrl,
     targetPhoneNumber: job.target_phone_number,
-    voice: voiceConfig,
     platform: job.platform ?? undefined,
   };
 
   const testSpec = job.test_spec as TestSpec;
-  const redTeamExpanded = testSpec.red_team ? expandRedTeamTests(testSpec.red_team).length : 0;
   const totalTests = (testSpec.conversation_tests ?? []).reduce(
     (sum, t) => sum + ((t as { repeat?: number }).repeat ?? 1), 0
-  ) + redTeamExpanded;
+  );
   let completedTests = 0;
 
   try {
-    const { status, conversationResults, aggregate } = await executeTests({
-      testSpec,
-      channelConfig,
-      onTestComplete: async (result) => {
-        completedTests++;
-        const testName = result.name ?? "conversation";
+    if (testSpec.load_test) {
+      // Load test run
+      const loadResult = await executeLoadTestPhase(db, job, channelConfig, apiUrl, callbackSecret);
+      const status = loadResult!.loadTestResult.status;
 
-        try {
-          await db.insert(schema.scenarioResults).values({
-            run_id: job.run_id,
-            name: testName,
-            status: result.status,
-            test_type: "conversation" as const,
-            metrics_json: result as unknown as Record<string, unknown>,
-            trace_json: result.transcript ?? [],
-          });
-        } catch {
-          // Best-effort
-        }
+      const response = await fetch(callbackUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          [RUNNER_CALLBACK_HEADER]: callbackSecret,
+        },
+        body: JSON.stringify({
+          run_id: job.run_id,
+          status,
+          conversation_results: [],
+          aggregate: {},
+          load_test_result: loadResult!.loadTestResult,
+        }),
+      });
 
-        void fetch(`${apiUrl}/internal/test-progress`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            [RUNNER_CALLBACK_HEADER]: callbackSecret,
-          },
-          body: JSON.stringify({
-            run_id: job.run_id,
-            completed: completedTests,
-            total: totalTests,
-            test_type: "conversation",
-            test_name: testName,
-            status: result.status,
-            duration_ms: result.duration_ms,
-          }),
-        }).catch(() => {});
-      },
-    });
+      if (!response.ok) {
+        throw new Error(`Callback failed: ${response.status} ${await response.text()}`);
+      }
 
-    // POST results to callback (stores in DB + triggers SSE push)
-    const response = await fetch(callbackUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        [RUNNER_CALLBACK_HEADER]: callbackSecret,
-      },
-      body: JSON.stringify({
-        run_id: job.run_id,
-        status,
-        conversation_results: conversationResults,
-        aggregate,
-      }),
-    });
+      console.log(`Remote load test ${job.run_id} completed: ${status}`);
+    } else {
+      // Conversation test run
+      const { status, conversationResults, aggregate } = await executeTests({
+        testSpec,
+        channelConfig,
+        onTestComplete: async (result) => {
+          completedTests++;
+          const testName = result.name ?? "conversation";
 
-    if (!response.ok) {
-      throw new Error(`Callback failed: ${response.status} ${await response.text()}`);
+          try {
+            await db.insert(schema.scenarioResults).values({
+              run_id: job.run_id,
+              name: testName,
+              status: result.status,
+              test_type: "conversation" as const,
+              metrics_json: result as unknown as Record<string, unknown>,
+              trace_json: result.transcript ?? [],
+            });
+          } catch {
+            // Best-effort
+          }
+
+          void fetch(`${apiUrl}/internal/test-progress`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              [RUNNER_CALLBACK_HEADER]: callbackSecret,
+            },
+            body: JSON.stringify({
+              run_id: job.run_id,
+              completed: completedTests,
+              total: totalTests,
+              test_type: "conversation",
+              test_name: testName,
+              status: result.status,
+              duration_ms: result.duration_ms,
+            }),
+          }).catch(() => {});
+        },
+      });
+
+      const response = await fetch(callbackUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          [RUNNER_CALLBACK_HEADER]: callbackSecret,
+        },
+        body: JSON.stringify({
+          run_id: job.run_id,
+          status,
+          conversation_results: conversationResults,
+          aggregate,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Callback failed: ${response.status} ${await response.text()}`);
+      }
+
+      console.log(`Remote run ${job.run_id} completed: ${status}`);
     }
-
-    console.log(`Remote run ${job.run_id} completed: ${status}`);
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : "Unknown error";
     console.error(`Remote run ${job.run_id} failed:`, errorMessage);
@@ -182,81 +285,102 @@ async function executeRelayRun(db: Database, job: RunJob): Promise<void> {
   };
 
   const testSpec = job.test_spec as TestSpec;
-  const redTeamExpanded = testSpec.red_team ? expandRedTeamTests(testSpec.red_team).length : 0;
   const totalTests = (testSpec.conversation_tests ?? []).reduce(
     (sum, t) => sum + ((t as { repeat?: number }).repeat ?? 1), 0
-  ) + redTeamExpanded;
+  );
   let completedTests = 0;
 
   try {
-    const { status, conversationResults, aggregate } = await executeTests({
-      testSpec,
-      channelConfig,
-      onTestComplete: async (result) => {
-        completedTests++;
-        const testName = result.name ?? "conversation";
+    // Notify relay complete helper
+    const notifyRelayComplete = () => {
+      void fetch(`${apiUrl}/internal/relay-complete`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", [RUNNER_CALLBACK_HEADER]: callbackSecret },
+        body: JSON.stringify({ run_id: job.run_id }),
+      }).catch(() => {});
+    };
 
-        try {
-          await db.insert(schema.scenarioResults).values({
-            run_id: job.run_id,
-            name: testName,
-            status: result.status,
-            test_type: "conversation" as const,
-            metrics_json: result as unknown as Record<string, unknown>,
-            trace_json: result.transcript ?? [],
-          });
-        } catch {
-          // Best-effort
-        }
+    if (testSpec.load_test) {
+      // Load test run
+      const loadResult = await executeLoadTestPhase(db, job, channelConfig, apiUrl, callbackSecret);
+      const status = loadResult!.loadTestResult.status;
 
-        void fetch(`${apiUrl}/internal/test-progress`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            [RUNNER_CALLBACK_HEADER]: callbackSecret,
-          },
-          body: JSON.stringify({
-            run_id: job.run_id,
-            completed: completedTests,
-            total: totalTests,
-            test_type: "conversation",
-            test_name: testName,
-            status: result.status,
-            duration_ms: result.duration_ms,
-          }),
-        }).catch(() => {});
-      },
-    });
+      notifyRelayComplete();
 
-    // Notify relay client that the run is complete
-    void fetch(`${apiUrl}/internal/relay-complete`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        [RUNNER_CALLBACK_HEADER]: callbackSecret,
-      },
-      body: JSON.stringify({ run_id: job.run_id }),
-    }).catch(() => {});
+      const response = await fetch(callbackUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", [RUNNER_CALLBACK_HEADER]: callbackSecret },
+        body: JSON.stringify({
+          run_id: job.run_id,
+          status,
+          conversation_results: [],
+          aggregate: {},
+          load_test_result: loadResult!.loadTestResult,
+        }),
+      });
 
-    const response = await fetch(callbackUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        [RUNNER_CALLBACK_HEADER]: callbackSecret,
-      },
-      body: JSON.stringify({
-        run_id: job.run_id,
-        status,
-        conversation_results: conversationResults,
-        aggregate,
-      }),
-    });
+      if (!response.ok) {
+        throw new Error(`Callback failed: ${response.status} ${await response.text()}`);
+      }
 
-    if (!response.ok) {
-      throw new Error(`Callback failed: ${response.status} ${await response.text()}`);
+      console.log(`Relay load test ${job.run_id} completed: ${status}`);
+    } else {
+      // Conversation test run
+      const { status, conversationResults, aggregate } = await executeTests({
+        testSpec,
+        channelConfig,
+        onTestComplete: async (result) => {
+          completedTests++;
+          const testName = result.name ?? "conversation";
+
+          try {
+            await db.insert(schema.scenarioResults).values({
+              run_id: job.run_id,
+              name: testName,
+              status: result.status,
+              test_type: "conversation" as const,
+              metrics_json: result as unknown as Record<string, unknown>,
+              trace_json: result.transcript ?? [],
+            });
+          } catch {
+            // Best-effort
+          }
+
+          void fetch(`${apiUrl}/internal/test-progress`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", [RUNNER_CALLBACK_HEADER]: callbackSecret },
+            body: JSON.stringify({
+              run_id: job.run_id,
+              completed: completedTests,
+              total: totalTests,
+              test_type: "conversation",
+              test_name: testName,
+              status: result.status,
+              duration_ms: result.duration_ms,
+            }),
+          }).catch(() => {});
+        },
+      });
+
+      notifyRelayComplete();
+
+      const response = await fetch(callbackUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", [RUNNER_CALLBACK_HEADER]: callbackSecret },
+        body: JSON.stringify({
+          run_id: job.run_id,
+          status,
+          conversation_results: conversationResults,
+          aggregate,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Callback failed: ${response.status} ${await response.text()}`);
+      }
+
+      console.log(`Relay run ${job.run_id} completed: ${status}`);
     }
-
-    console.log(`Relay run ${job.run_id} completed: ${status}`);
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : "Unknown error";
     console.error(`Relay run ${job.run_id} failed:`, errorMessage);
@@ -279,10 +403,100 @@ async function executeRelayRun(db: Database, job: RunJob): Promise<void> {
 const db = createDb(process.env["DATABASE_URL"]!);
 
 // ---------------------------------------------------------------------------
+// Wait for relay tunnel to be established before running tests
+// Uses Redis pub/sub — instant notification, no HTTP polling
+// ---------------------------------------------------------------------------
+
+async function waitForRelayReady(runId: string, timeoutMs = 90_000): Promise<void> {
+  const redisUrl = process.env["REDIS_URL"] ?? "redis://localhost:6379";
+  const sub = new IORedis(redisUrl, { maxRetriesPerRequest: null });
+  const channel = `voiceci:relay-ready:${runId}`;
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const settle = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        fn();
+      };
+
+      const timeout = setTimeout(() => {
+        settle(() => {
+          sub.unsubscribe(channel).catch(() => {});
+          sub.disconnect();
+          reject(new Error("Relay connection timeout — local agent relay did not connect within 90s"));
+        });
+      }, timeoutMs);
+
+      sub.on("message", () => {
+        settle(() => {
+          clearTimeout(timeout);
+          sub.unsubscribe(channel).catch(() => {});
+          sub.disconnect();
+          resolve();
+        });
+      });
+
+      sub.subscribe(channel, (err) => {
+        if (err) {
+          settle(() => {
+            clearTimeout(timeout);
+            sub.disconnect();
+            reject(err);
+          });
+          return;
+        }
+
+        // Race condition guard: relay may have connected before we subscribed.
+        // One HTTP check right after subscribe — if already ready, resolve immediately.
+        const apiUrl = process.env["API_URL"] ?? "https://voiceci-api.fly.dev";
+        const secret = process.env["RUNNER_CALLBACK_SECRET"] ?? "";
+        fetch(`${apiUrl}/internal/relay-ready/${runId}`, {
+          headers: { [RUNNER_CALLBACK_HEADER]: secret },
+        })
+          .then((res) => {
+            if (res.ok) {
+              settle(() => {
+                clearTimeout(timeout);
+                sub.unsubscribe(channel).catch(() => {});
+                sub.disconnect();
+                resolve();
+              });
+            }
+          })
+          .catch(() => {
+            // Not ready yet — wait for pub/sub message
+          });
+      });
+    });
+  } catch (err) {
+    sub.disconnect();
+    throw err;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Main run executor
 // ---------------------------------------------------------------------------
 
 export async function executeRun(job: RunJob): Promise<void> {
+
+  // For relay runs, wait for the relay tunnel before starting tests
+  if (job.relay) {
+    await emitEvent(db, job.run_id, "waiting_for_relay", "Waiting for local agent relay tunnel to connect...");
+    try {
+      await waitForRelayReady(job.run_id);
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : "Relay timeout";
+      console.error(`Relay wait failed for ${job.run_id}:`, errorMessage);
+      await db
+        .update(schema.runs)
+        .set({ status: "fail", finished_at: new Date(), error_text: errorMessage })
+        .where(eq(schema.runs.id, job.run_id));
+      return;
+    }
+  }
 
   await db
     .update(schema.runs)

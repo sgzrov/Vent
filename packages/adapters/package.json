@@ -9,11 +9,12 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@livekit/rtc-node": "^0.13.0",
     "@voiceci/shared": "workspace:*",
     "@voiceci/voice": "workspace:*",
-    "ws": "^8.18.0",
-    "@livekit/rtc-node": "^0.13.0",
-    "livekit-server-sdk": "^2.0.0"
+    "livekit-server-sdk": "^2.0.0",
+    "twilio": "^5.12.2",
+    "ws": "^8.18.0"
   },
   "devDependencies": {
     "@types/ws": "^8.5.0",

@@ -1,12 +1,12 @@
 /**
- * SIP/Phone Audio Channel (Plivo Audio Streams)
+ * SIP/Phone Audio Channel (Twilio Media Streams)
  *
- * Streams bidirectional audio through Plivo Audio Streams over WebSocket.
+ * Streams bidirectional audio through Twilio Media Streams over WebSocket.
  * Handles PCM 24kHz <-> mulaw 8kHz conversion internally.
  *
  * Supports two modes:
- *   - outbound (default): Places an outbound call via Plivo to phoneNumber
- *   - inbound: Creates a temporary Plivo Application, assigns it to
+ *   - outbound (default): Places an outbound call via Twilio to phoneNumber
+ *   - inbound: Creates a temporary TwiML Application, assigns it to
  *     fromNumber, then waits for an incoming call from the voice platform
  *
  * Extracted from sip-voice-adapter.ts — no TTS/STT/silence logic.
@@ -15,6 +15,7 @@
 import { WebSocketServer, WebSocket } from "ws";
 import http from "node:http";
 import { randomBytes } from "node:crypto";
+import Twilio from "twilio";
 import { pcmToMulaw, mulawToPcm, resample } from "@voiceci/voice";
 import type { ObservedToolCall } from "@voiceci/shared";
 import { BaseAudioChannel } from "./audio-channel.js";
@@ -22,34 +23,40 @@ import { BaseAudioChannel } from "./audio-channel.js";
 export interface SipAudioChannelConfig {
   phoneNumber: string;
   fromNumber: string;
-  authId: string;
+  accountSid: string;
   authToken: string;
   publicHost: string;
-  /** "outbound" (default): Plivo dials phoneNumber. "inbound": wait for incoming call on fromNumber. */
+  /** "outbound" (default): Twilio dials phoneNumber. "inbound": wait for incoming call on fromNumber. */
   mode?: "inbound" | "outbound";
 }
 
-interface PlivoStreamMessage {
+interface TwilioStreamMessage {
   event: string;
-  start?: { streamId: string; callId: string };
+  start?: { streamSid: string; callSid: string };
+  media?: { payload: string };
+  streamSid?: string;
 }
 
 export class SipAudioChannel extends BaseAudioChannel {
   private config: SipAudioChannelConfig;
+  private twilio: ReturnType<typeof Twilio>;
   private server: http.Server | null = null;
   private wss: WebSocketServer | null = null;
   private mediaWs: WebSocket | null = null;
-  private streamId: string | null = null;
+  private streamSid: string | null = null;
   private port = 0;
-  private callUuid: string | null = null;
+  private callSid: string | null = null;
   private toolCalls: ObservedToolCall[] = [];
   private connectTimestamp = 0;
-  private appId: string | null = null;
+  private appSid: string | null = null;
+  private numberSid: string | null = null;
+  private originalVoiceUrl: string | null = null;
   private readonly toolCallToken: string;
 
   constructor(config: SipAudioChannelConfig) {
     super();
     this.config = config;
+    this.twilio = Twilio(config.accountSid, config.authToken);
     this.toolCallToken = randomBytes(24).toString("hex");
   }
 
@@ -81,8 +88,8 @@ export class SipAudioChannel extends BaseAudioChannel {
   }
 
   sendAudio(pcm: Buffer): void {
-    if (!this.mediaWs) {
-      throw new Error("SIP media stream not connected");
+    if (!this.mediaWs || !this.streamSid) {
+      throw new Error("Twilio media stream not connected");
     }
 
     this._stats.bytesSent += pcm.length;
@@ -97,10 +104,9 @@ export class SipAudioChannel extends BaseAudioChannel {
         Math.min(offset + CHUNK_SIZE, mulaw.length)
       );
       const msg = JSON.stringify({
-        event: "playAudio",
+        event: "media",
+        streamSid: this.streamSid,
         media: {
-          contentType: "audio/x-mulaw",
-          sampleRate: "8000",
           payload: chunk.toString("base64"),
         },
       });
@@ -113,30 +119,29 @@ export class SipAudioChannel extends BaseAudioChannel {
   }
 
   async disconnect(): Promise<void> {
-    const authHeader = this.plivoAuthHeader();
-
-    if (this.callUuid) {
-      await fetch(
-        `https://api.plivo.com/v1/Account/${this.config.authId}/Call/${this.callUuid}/`,
-        {
-          method: "DELETE",
-          headers: { Authorization: `Basic ${authHeader}` },
-        }
-      ).catch(() => {});
-
-      this.callUuid = null;
+    // Hang up the call
+    if (this.callSid) {
+      await this.twilio.calls(this.callSid)
+        .update({ status: "completed" })
+        .catch(() => {});
+      this.callSid = null;
     }
 
-    if (this.appId) {
-      await fetch(
-        `https://api.plivo.com/v1/Account/${this.config.authId}/Application/${this.appId}/`,
-        {
-          method: "DELETE",
-          headers: { Authorization: `Basic ${authHeader}` },
-        }
-      ).catch(() => {});
+    // Delete the temporary TwiML Application
+    if (this.appSid) {
+      await this.twilio.applications(this.appSid)
+        .remove()
+        .catch(() => {});
+      this.appSid = null;
+    }
 
-      this.appId = null;
+    // Restore original number config if we changed it
+    if (this.numberSid && this.originalVoiceUrl !== null) {
+      await this.twilio.incomingPhoneNumbers(this.numberSid)
+        .update({ voiceUrl: this.originalVoiceUrl })
+        .catch(() => {});
+      this.numberSid = null;
+      this.originalVoiceUrl = null;
     }
 
     if (this.mediaWs) {
@@ -163,92 +168,46 @@ export class SipAudioChannel extends BaseAudioChannel {
 
   private async placeOutboundCall(): Promise<void> {
     const answerUrl = `https://${this.config.publicHost}:${this.port}/answer`;
-    const authHeader = this.plivoAuthHeader();
 
-    const res = await fetch(
-      `https://api.plivo.com/v1/Account/${this.config.authId}/Call/`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Basic ${authHeader}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          to: this.config.phoneNumber,
-          from: this.config.fromNumber,
-          answer_url: answerUrl,
-          answer_method: "GET",
-        }),
-      }
-    );
+    const call = await this.twilio.calls.create({
+      to: this.config.phoneNumber,
+      from: this.config.fromNumber,
+      url: answerUrl,
+      method: "GET",
+    });
 
-    if (!res.ok) {
-      const errorText = await res.text();
-      throw new Error(
-        `Plivo call creation failed (${res.status}): ${errorText}`
-      );
-    }
-
-    const callData = (await res.json()) as { request_uuid: string };
-    this.callUuid = callData.request_uuid;
+    this.callSid = call.sid;
   }
 
   private async setupInbound(): Promise<void> {
-    const authHeader = this.plivoAuthHeader();
     const answerUrl = `https://${this.config.publicHost}:${this.port}/answer`;
 
-    // Create a temporary Plivo Application with our answer_url
-    const appRes = await fetch(
-      `https://api.plivo.com/v1/Account/${this.config.authId}/Application/`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Basic ${authHeader}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          app_name: `voiceci-${Date.now()}`,
-          answer_url: answerUrl,
-          answer_method: "GET",
-        }),
-      }
-    );
+    // Create a temporary TwiML Application with our answer URL
+    const app = await this.twilio.applications.create({
+      friendlyName: `voiceci-${Date.now()}`,
+      voiceUrl: answerUrl,
+      voiceMethod: "GET",
+    });
+    this.appSid = app.sid;
 
-    if (!appRes.ok) {
-      const errorText = await appRes.text();
+    // Look up the phone number SID
+    const numbers = await this.twilio.incomingPhoneNumbers.list({
+      phoneNumber: this.config.fromNumber,
+    });
+
+    if (!numbers.length) {
       throw new Error(
-        `Plivo application creation failed (${appRes.status}): ${errorText}`
+        `Twilio number ${this.config.fromNumber} not found in account`
       );
     }
 
-    const appData = (await appRes.json()) as { app_id: string };
-    this.appId = appData.app_id;
+    this.numberSid = numbers[0].sid;
+    this.originalVoiceUrl = numbers[0].voiceUrl ?? "";
 
-    // Assign the application to our Plivo number
-    const numRes = await fetch(
-      `https://api.plivo.com/v1/Account/${this.config.authId}/Number/${this.config.fromNumber}/`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Basic ${authHeader}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ app_id: this.appId }),
-      }
-    );
-
-    if (!numRes.ok) {
-      const errorText = await numRes.text();
-      throw new Error(
-        `Plivo number update failed (${numRes.status}): ${errorText}`
-      );
-    }
-  }
-
-  private plivoAuthHeader(): string {
-    return Buffer.from(
-      `${this.config.authId}:${this.config.authToken}`
-    ).toString("base64");
+    // Assign the TwiML Application to our number
+    await this.twilio.incomingPhoneNumbers(this.numberSid).update({
+      voiceApplicationSid: this.appSid,
+    });
   }
 
   private async startServer(): Promise<void> {
@@ -257,15 +216,15 @@ export class SipAudioChannel extends BaseAudioChannel {
         const pathname = this.parsePathname(req.url);
         if (req.url?.startsWith("/answer")) {
           const wsUrl = `wss://${this.config.publicHost}:${this.port}/stream`;
-          const xml = [
+          const twiml = [
             '<?xml version="1.0" encoding="UTF-8"?>',
             "<Response>",
-            `  <Stream bidirectional="true" keepCallAlive="true" contentType="audio/x-mulaw;rate=8000">${wsUrl}</Stream>`,
+            `  <Connect><Stream url="${wsUrl}"/></Connect>`,
             "</Response>",
           ].join("\n");
 
           res.writeHead(200, { "Content-Type": "application/xml" });
-          res.end(xml);
+          res.end(twiml);
         } else if (pathname === this.toolCallPath()) {
           if (req.method === "OPTIONS") {
             res.writeHead(204, {
@@ -292,33 +251,44 @@ export class SipAudioChannel extends BaseAudioChannel {
         this.mediaWs = ws;
 
         ws.on("message", (data) => {
-          let buf: Buffer;
+          let raw: string;
           if (Buffer.isBuffer(data)) {
-            buf = data;
+            raw = data.toString();
           } else if (data instanceof ArrayBuffer) {
-            buf = Buffer.from(new Uint8Array(data));
+            raw = Buffer.from(new Uint8Array(data)).toString();
           } else {
-            buf = Buffer.concat(data as Buffer[]);
+            raw = Buffer.concat(data as Buffer[]).toString();
           }
 
-          // JSON control messages (start/stop events)
-          if (buf[0] === 0x7b) {
-            try {
-              const msg = JSON.parse(buf.toString()) as PlivoStreamMessage;
-              if (msg.event === "start" && msg.start?.streamId) {
-                this.streamId = msg.start.streamId;
-              }
-            } catch {
-              // Ignore
+          // Twilio Media Streams sends all messages as JSON
+          let msg: TwilioStreamMessage;
+          try {
+            msg = JSON.parse(raw) as TwilioStreamMessage;
+          } catch {
+            return;
+          }
+
+          if (msg.event === "start" && msg.start?.streamSid) {
+            this.streamSid = msg.start.streamSid;
+            if (msg.start.callSid) {
+              this.callSid = msg.start.callSid;
             }
             return;
           }
 
-          // Raw mulaw audio → PCM 24kHz
-          this._stats.bytesReceived += buf.length;
-          const pcm8k = mulawToPcm(buf);
-          const pcm24k = resample(pcm8k, 8000, 24000);
-          this.emit("audio", pcm24k);
+          if (msg.event === "media" && msg.media?.payload) {
+            const mulaw = Buffer.from(msg.media.payload, "base64");
+            this._stats.bytesReceived += mulaw.length;
+            const pcm8k = mulawToPcm(mulaw);
+            const pcm24k = resample(pcm8k, 8000, 24000);
+            this.emit("audio", pcm24k);
+            return;
+          }
+
+          if (msg.event === "stop") {
+            // Call ended
+            return;
+          }
         });
 
         ws.on("close", () => {
@@ -415,10 +385,10 @@ export class SipAudioChannel extends BaseAudioChannel {
     }
 
     if (!this.mediaWs) {
-      throw new Error("Plivo media stream connection timed out");
+      throw new Error("Twilio media stream connection timed out");
     }
 
-    while (!this.streamId && Date.now() - start < maxWait) {
+    while (!this.streamSid && Date.now() - start < maxWait) {
       await sleep(200);
     }
   }

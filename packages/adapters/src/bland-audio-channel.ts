@@ -6,7 +6,7 @@
  *
  * Flow:
  *   1. connect()  — fetches agent config from GET /v1/inbound/{phone},
- *      sets up Plivo inbound, then asks Bland to call us via POST /v1/calls
+ *      sets up Twilio inbound, then asks Bland to call us via POST /v1/calls
  *      → call_id known immediately
  *   2. sendAudio() / on("audio") — bidirectional PCM 24kHz over SIP
  *   3. disconnect() — hangs up the SIP call
@@ -74,7 +74,7 @@ export class BlandAudioChannel extends BaseAudioChannel {
     // Fetch agent config from Bland's inbound number
     const agentConfig = await this.fetchInboundConfig();
 
-    // Start SIP in inbound mode — Plivo app created, number configured, waiting
+    // Start SIP in inbound mode — Twilio app created, number configured, waiting
     this.sipChannel = new SipAudioChannel({ ...this.config.sip, mode: "inbound" });
 
     this.sipChannel.on("audio", (chunk) => {
@@ -89,7 +89,7 @@ export class BlandAudioChannel extends BaseAudioChannel {
 
     await this.sipChannel.connect();
 
-    // Ask Bland to call our Plivo number — call_id returned immediately
+    // Ask Bland to call our Twilio number — call_id returned immediately
     const callBody: Record<string, unknown> = {
       phone_number: this.config.sip.fromNumber,
     };

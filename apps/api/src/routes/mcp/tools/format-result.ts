@@ -2,7 +2,7 @@
  * Transforms raw ConversationTestResult into a structured, grouped format
  * for coding agent consumption via MCP.
  *
- * Groups metrics by concern, removes VoiceCI internals (harness overhead,
+ * Groups metrics by concern, removes Vent internals (harness overhead,
  * Hume API timing, our TTS/STT processing time), and adds eval summary counts.
  */
 
@@ -118,9 +118,9 @@ interface FormattedLatencyBreakdown {
   network_ms: number;
   /** Dead audio before speech starts (ms) — agent sends silence before speaking */
   silence_before_speech_ms: number;
-  /** VoiceCI test infrastructure TTS overhead per turn (ms) — does not exist in production */
+  /** Vent test infrastructure TTS overhead per turn (ms) — does not exist in production */
   test_overhead_tts_ms: number;
-  /** VoiceCI test infrastructure STT overhead per turn (ms) — does not exist in production */
+  /** Vent test infrastructure STT overhead per turn (ms) — does not exist in production */
   test_overhead_stt_ms: number;
 }
 
@@ -136,19 +136,19 @@ export interface FormattedConversationResult {
   duration_ms: number;
   error: string | null;
   eval: FormattedEvalSection;
-  tool_call_eval?: FormattedEvalSection;
   transcript: FormattedTranscriptTurn[];
-  latency?: FormattedLatency;
-  behavior?: BehavioralMetrics;
-  transcript_quality?: TranscriptMetrics;
-  signal_quality?: SignalQualityMetrics;
-  audio_analysis?: FormattedAudioAnalysis;
-  tool_calls?: FormattedToolCalls;
-  audio_actions?: AudioActionResult[];
-  emotion?: FormattedEmotion;
-  latency_breakdown?: FormattedLatencyBreakdown;
-  warnings?: FormattedWarning[];
-  diagnostics?: FormattedDiagnostics;
+  latency: FormattedLatency | null;
+  behavior: BehavioralMetrics | null;
+  transcript_quality: TranscriptMetrics | null;
+  signal_quality: SignalQualityMetrics | null;
+  audio_analysis: FormattedAudioAnalysis | null;
+  tool_calls: FormattedToolCalls;
+
+  audio_actions: AudioActionResult[];
+  emotion: FormattedEmotion | null;
+  latency_breakdown: FormattedLatencyBreakdown | null;
+  warnings: FormattedWarning[];
+  diagnostics: FormattedDiagnostics;
 }
 
 // ---- Public API ----
@@ -158,7 +158,7 @@ export function formatConversationResult(raw: unknown): FormattedConversationRes
   const r = raw as ConversationTestResult;
   if (typeof r.caller_prompt !== "string") return null;
 
-  const result: FormattedConversationResult = {
+  return {
     name: r.name ?? null,
     status: r.status,
     caller_prompt: r.caller_prompt,
@@ -166,62 +166,19 @@ export function formatConversationResult(raw: unknown): FormattedConversationRes
     error: r.error ?? null,
     eval: formatEvalSection(r.eval_results),
     transcript: formatTranscript(r.transcript),
+    latency: r.metrics?.latency ? formatLatency(r.metrics.latency, r.metrics) : null,
+    behavior: r.metrics?.behavioral && hasContent(r.metrics.behavioral) ? r.metrics.behavioral : null,
+    transcript_quality: r.metrics?.transcript && hasContent(r.metrics.transcript) ? r.metrics.transcript : null,
+    signal_quality: r.metrics?.signal_quality ?? null,
+    audio_analysis: r.metrics?.audio_analysis ? formatAudioAnalysis(r.metrics.audio_analysis) : null,
+    tool_calls: formatToolCalls(r.metrics?.tool_calls, r.observed_tool_calls),
+
+    audio_actions: r.audio_action_results ?? [],
+    emotion: r.metrics?.prosody ? formatEmotion(r.metrics.prosody) : null,
+    latency_breakdown: formatLatencyBreakdown(r.metrics, r.diagnostics) ?? null,
+    warnings: consolidateWarnings(r.metrics?.audio_analysis_warnings, r.metrics?.prosody_warnings),
+    diagnostics: r.diagnostics ? formatDiagnostics(r.diagnostics) : { error_origin: null, error_detail: null },
   };
-
-  if (r.tool_call_eval_results?.length) {
-    result.tool_call_eval = formatEvalSection(r.tool_call_eval_results);
-  }
-
-  if (r.metrics?.latency) {
-    result.latency = formatLatency(r.metrics.latency, r.metrics);
-  }
-
-  if (r.metrics?.behavioral && hasContent(r.metrics.behavioral)) {
-    result.behavior = r.metrics.behavioral;
-  }
-
-  if (r.metrics?.transcript && hasContent(r.metrics.transcript)) {
-    result.transcript_quality = r.metrics.transcript;
-  }
-
-  if (r.metrics?.signal_quality) {
-    result.signal_quality = r.metrics.signal_quality;
-  }
-
-  if (r.metrics?.audio_analysis) {
-    result.audio_analysis = formatAudioAnalysis(r.metrics.audio_analysis);
-  }
-
-  if (r.metrics?.tool_calls || r.observed_tool_calls?.length) {
-    result.tool_calls = formatToolCalls(r.metrics?.tool_calls, r.observed_tool_calls);
-  }
-
-  if (r.audio_action_results?.length) {
-    result.audio_actions = r.audio_action_results;
-  }
-
-  if (r.metrics?.prosody) {
-    result.emotion = formatEmotion(r.metrics.prosody);
-  }
-
-  const warnings = consolidateWarnings(
-    r.metrics?.audio_analysis_warnings,
-    r.metrics?.prosody_warnings,
-  );
-  if (warnings.length > 0) {
-    result.warnings = warnings;
-  }
-
-  const breakdown = formatLatencyBreakdown(r.metrics, r.diagnostics);
-  if (breakdown) {
-    result.latency_breakdown = breakdown;
-  }
-
-  if (r.diagnostics?.error_origin || r.diagnostics?.error_detail) {
-    result.diagnostics = formatDiagnostics(r.diagnostics);
-  }
-
-  return result;
 }
 
 // ---- Helpers ----
@@ -312,6 +269,7 @@ function formatToolCalls(
       result: c.result,
       successful: c.successful,
       latency_ms: c.latency_ms,
+      turn_index: c.turn_index,
     })),
   };
 }

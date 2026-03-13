@@ -18,9 +18,10 @@ import type {
   ConversationMetrics,
   ObservedToolCall,
   ToolCallMetrics,
-  EvalResult,
   AudioActionResult,
+  BehavioralMetrics,
 } from "@voiceci/shared";
+import { DEFAULT_SAFETY_THRESHOLDS } from "@voiceci/shared";
 import { synthesize, BatchVAD, VoiceActivityDetector, StreamingTranscriber, applyEffects, resolveAccentVoiceId, resolveLanguageVoiceId, analyzeAudioQuality, type AudioQualityMetrics } from "@voiceci/voice";
 import { CallerLLM } from "./caller-llm.js";
 import { JudgeLLM } from "./judge-llm.js";
@@ -30,6 +31,26 @@ import { computeAllMetrics } from "../metrics/index.js";
 import { analyzeProsody } from "../metrics/prosody.js";
 import { AdaptiveThreshold } from "./adaptive-threshold.js";
 import { gradeAudioAnalysisMetrics, type TurnAudioData } from "../metrics/audio-analysis.js";
+
+function checkSafetyThresholds(
+  behavioral: Partial<BehavioralMetrics>,
+  overrides?: ConversationTestSpec["safety_thresholds"],
+): boolean {
+  const t = {
+    hallucination: { ...DEFAULT_SAFETY_THRESHOLDS.hallucination, ...overrides?.hallucination },
+    safety_compliance: { ...DEFAULT_SAFETY_THRESHOLDS.safety_compliance, ...overrides?.safety_compliance },
+    compliance_adherence: { ...DEFAULT_SAFETY_THRESHOLDS.compliance_adherence, ...overrides?.compliance_adherence },
+  };
+
+  if (t.hallucination.enabled && behavioral.hallucination_detected?.detected) return false;
+  if (t.safety_compliance.enabled && behavioral.safety_compliance?.compliant === false) return false;
+  if (t.compliance_adherence.enabled && behavioral.compliance_adherence != null) {
+    const minScore = t.compliance_adherence.min_score ?? 0.8;
+    if (behavioral.compliance_adherence.score < minScore) return false;
+  }
+
+  return true;
+}
 
 export async function runConversationTest(
   spec: ConversationTestSpec,
@@ -310,42 +331,37 @@ export async function runConversationTest(
     const observedToolCalls: ObservedToolCall[] = await channel.getCallData?.() ?? [];
     if (observedToolCalls.length > 0) {
       console.log(`    Collected ${observedToolCalls.length} tool call(s) from channel`);
+      // Match each tool call to the agent turn it belongs to by timestamp
+      const agentTurns = transcript
+        .map((t, i) => ({ timestamp_ms: t.timestamp_ms, index: i }))
+        .filter((_, i) => transcript[i]!.role === "agent");
+      for (const tc of observedToolCalls) {
+        if (tc.timestamp_ms == null) continue;
+        let matched = 0;
+        for (const at of agentTurns) {
+          if (at.timestamp_ms <= tc.timestamp_ms) matched = at.index;
+          else break;
+        }
+        tc.turn_index = matched;
+      }
     }
 
     // Step 7: Judge evaluates transcript + tool calls in parallel
     const judge = new JudgeLLM();
     const judgePromises: Promise<unknown>[] = [
-      judge.evaluate(transcript, spec.eval, language),
+      judge.evaluate(transcript, spec.eval, language, observedToolCalls),
       judge.evaluateAllBehavioral(transcript, language),
     ];
-
-    // Evaluate tool call criteria if provided and tool call data exists
-    const hasToolCallEval = spec.tool_call_eval && spec.tool_call_eval.length > 0;
-    if (hasToolCallEval) {
-      if (observedToolCalls.length > 0) {
-        judgePromises.push(
-          judge.evaluateToolCalls(transcript, observedToolCalls, spec.tool_call_eval!, language),
-        );
-      } else {
-        const unmetToolCallEvals: EvalResult[] = spec.tool_call_eval!.map((question) => ({
-          question,
-          passed: false,
-          reasoning: "No tool calls were observed in this run, so tool_call_eval criteria cannot be satisfied.",
-        }));
-        judgePromises.push(Promise.resolve(unmetToolCallEvals));
-      }
-    }
 
     // Run judge + prosody analysis in parallel
     const [judgeResults, prosodyResult] = await Promise.all([
       Promise.all(judgePromises) as Promise<[
         Awaited<ReturnType<typeof judge.evaluate>>,
         Awaited<ReturnType<typeof judge.evaluateAllBehavioral>>,
-        Awaited<ReturnType<typeof judge.evaluateToolCalls>> | undefined,
       ]>,
       spec.prosody ? analyzeProsody(agentAudioBuffers) : Promise.resolve(null),
     ]);
-    const [evalResults, behavioral, toolCallEvalResults] = judgeResults;
+    const [evalResults, behavioral] = judgeResults;
 
     // Compute deep metrics (instant — pure functions)
     const totalDurationMs = Math.round(performance.now() - startTime);
@@ -428,10 +444,11 @@ export async function runConversationTest(
       harness_overhead,
     };
 
-    // Status: pass only if all eval questions passed
-    // tool_call_eval results are observational — they don't affect pass/fail
-    const allPassed =
+    // Status: pass only if all eval questions passed AND safety thresholds met
+    const allEvalsPassed =
       evalResults.length > 0 && evalResults.every((r) => r.passed);
+    const safetyPassed = checkSafetyThresholds(behavioral, spec.safety_thresholds);
+    const allPassed = allEvalsPassed && safetyPassed;
 
     return {
       name: spec.name,
@@ -439,7 +456,7 @@ export async function runConversationTest(
       status: allPassed ? "pass" : "fail",
       transcript,
       eval_results: evalResults,
-      tool_call_eval_results: toolCallEvalResults,
+
       observed_tool_calls: observedToolCalls.length > 0 ? observedToolCalls : undefined,
       audio_action_results: audioActionResults.length > 0 ? audioActionResults : undefined,
       duration_ms: totalDurationMs,

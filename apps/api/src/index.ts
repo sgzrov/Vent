@@ -13,7 +13,6 @@ import { relayRoutes } from "./routes/relay.js";
 import { dbPlugin } from "./plugins/db.js";
 import { queuePlugin } from "./plugins/queue.js";
 import { authPlugin } from "./plugins/auth.js";
-import { drainLoadTests } from "./services/test-runner.js";
 
 const port = parseInt(process.env["API_PORT"] ?? "3000", 10);
 const host = process.env["API_HOST"] ?? "0.0.0.0";
@@ -82,7 +81,6 @@ async function main() {
 
   app.addHook("onClose", async () => {
     if (cleanupInterval) clearInterval(cleanupInterval);
-    await drainLoadTests();
   });
 
   await app.listen({ port, host });
@@ -123,7 +121,7 @@ async function main() {
         .set({
           status: "fail",
           finished_at: new Date(),
-          error_text: "Run was never activated — the relay command was not executed. Re-run voiceci_run_tests and execute the returned command.",
+          error_text: "Run was never activated — the relay command was not executed. Re-run vent_run_tests and execute the returned command.",
         })
         .where(
           and(

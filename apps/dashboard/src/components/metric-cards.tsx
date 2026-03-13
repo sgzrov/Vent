@@ -2,7 +2,6 @@ import { Card, CardContent } from "@/components/ui/card";
 import type { RunAggregateV2, TestSpec } from "@/lib/types";
 import { formatDuration } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import { RED_TEAM_LABELS } from "@/lib/audio-test-registry";
 
 interface MetricCardsProps {
   aggregate: RunAggregateV2;
@@ -11,8 +10,7 @@ interface MetricCardsProps {
 
 export function MetricCards({ aggregate, testSpec }: MetricCardsProps) {
   const hasConfig =
-    (testSpec?.conversation_tests?.length ?? 0) > 0 ||
-    (testSpec?.red_team?.length ?? 0) > 0;
+    (testSpec?.conversation_tests?.length ?? 0) > 0;
 
   const primary = {
     label: "Conversation tests",
@@ -100,23 +98,6 @@ export function MetricCards({ aggregate, testSpec }: MetricCardsProps) {
                 </div>
               )}
 
-              {(testSpec?.red_team?.length ?? 0) > 0 && (
-                <div>
-                  <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-2">
-                    Security
-                  </p>
-                  <div className="flex flex-wrap gap-1.5">
-                    {testSpec!.red_team!.map((attack) => (
-                      <span
-                        key={attack}
-                        className="inline-flex items-center rounded-md bg-red-500/10 text-red-600 dark:text-red-400 px-2 py-0.5 text-xs font-mono"
-                      >
-                        {RED_TEAM_LABELS[attack] ?? attack}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              )}
             </div>
           </CardContent>
         </Card>

@@ -1,9 +1,0 @@
-Run conversation tests and red-team attacks against a voice agent. CI/CD for voice AI.
-
-Workflow: After modifying voice agent code, analyze the codebase (system prompt, tools, conversation flows), generate a test config inline, and pass it as the `config` parameter. If .voiceci/suite.json exists, read it for full suite runs. Cache generated configs to .voiceci/.cache/last-run.json for quick reruns after fixes. Call voiceci_guide_reference for the full config schema and testing workflow.
-
-Each test uses CallerLLM-driven conversations with optional audio_actions (interrupt, silence, inject_noise, split_sentence, noise_on_caller) at specific turns. Every test returns full metrics: signal quality (SNR, clipping, energy), latency (TTFB/TTFW percentiles, drift), behavioral scores (intent accuracy, empathy, hallucination, context retention), audio analysis, tool call tracking, and prosody/emotion analysis.
-
-For deployed agents (SIP, WebRTC, platform adapters, or agent_url), the run queues immediately. For local WebSocket agents with start_command, a relay command is returned — run it EXACTLY ONCE in the background.
-
-After getting the run_id, spawn subagents to monitor results via voiceci_get_run_status.
