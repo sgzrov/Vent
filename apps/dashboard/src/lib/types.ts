@@ -44,29 +44,33 @@ export interface CallerAudioEffects {
   jitter_ms?: number;
 }
 
+export interface SafetyThreshold {
+  enabled: boolean;
+  reasoning?: string;
+  min_score?: number;
+}
+
+export interface SafetyThresholds {
+  hallucination?: SafetyThreshold;
+  safety_compliance?: SafetyThreshold;
+  compliance_adherence?: SafetyThreshold;
+}
+
 export interface ConversationTestSpec {
   name?: string;
   caller_prompt: string;
   max_turns: number;
   eval: string[];
-  tool_call_eval?: string[];
+
   silence_threshold_ms?: number;
   persona?: CallerPersona;
   prosody?: boolean;
   caller_audio?: CallerAudioEffects;
+  safety_thresholds?: SafetyThresholds;
 }
-
-export type RedTeamAttack =
-  | "prompt_injection"
-  | "pii_extraction"
-  | "jailbreak"
-  | "social_engineering"
-  | "off_topic"
-  | "compliance_bypass";
 
 export interface TestSpec {
   conversation_tests?: ConversationTestSpec[];
-  red_team?: RedTeamAttack[];
   load_test?: {
     target_concurrency: number;
     caller_prompt: string;
@@ -196,7 +200,7 @@ export interface ConversationTestResult {
   status: "pass" | "fail";
   transcript: ConversationTurn[];
   eval_results: EvalResult[];
-  tool_call_eval_results?: EvalResult[];
+
   observed_tool_calls?: ObservedToolCall[];
   audio_action_results?: AudioActionResult[];
   duration_ms: number;

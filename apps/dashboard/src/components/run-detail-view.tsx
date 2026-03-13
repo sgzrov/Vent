@@ -8,7 +8,6 @@ import { MetricCards } from "@/components/metric-cards";
 import { AudioTestResults } from "@/components/audio-test-results";
 import { AudioMetricConclusions } from "@/components/audio-metric-conclusions";
 import { ConversationTestResults } from "@/components/conversation-test-results";
-import { RedTeamResults } from "@/components/red-team-results";
 import { LoadTestResults } from "@/components/load-test-results";
 import { TestConfigSection } from "@/components/test-config-section";
 import { TestDocumentation } from "@/components/test-documentation";
@@ -26,8 +25,6 @@ function describeRunDetail(run: RunDetail): string {
       parts.push(
         `${spec.conversation_tests.length} conversation${spec.conversation_tests.length > 1 ? "s" : ""}`
       );
-    if (spec.red_team?.length)
-      parts.push(`${spec.red_team.length} red-team`);
     if (spec.load_test)
       parts.push(`load test (${spec.load_test.target_concurrency} concurrent)`);
     if (parts.length > 0) return parts.join(", ");
@@ -50,7 +47,7 @@ function describeRunDetail(run: RunDetail): string {
 // Tab types
 // ---------------------------------------------------------------------------
 
-type TabId = "overview" | "conversations" | "audio" | "security" | "load_test" | "artifacts";
+type TabId = "overview" | "conversations" | "audio" | "load_test" | "artifacts";
 
 interface TabDef {
   id: TabId;
@@ -104,15 +101,8 @@ export function RunDetailView({
   const audioScenarios = run.scenarios.filter(
     (s) => (s.test_type as string) === "audio"
   );
-  const redTeamScenarios = run.scenarios.filter(
-    (s) =>
-      s.test_type === "conversation" &&
-      s.name.toLowerCase().startsWith("red-team")
-  );
   const conversationScenarios = run.scenarios.filter(
-    (s) =>
-      s.test_type === "conversation" &&
-      !s.name.toLowerCase().startsWith("red-team")
+    (s) => s.test_type === "conversation"
   );
   const loadTestScenarios = run.scenarios.filter(
     (s) => s.test_type === "load_test"
@@ -145,17 +135,6 @@ export function RunDetailView({
       label: "Infrastructure",
       count: audioScenarios.length,
       status: hasErrors ? "fail" : "pass",
-    });
-  }
-
-  if (redTeamScenarios.length > 0) {
-    const allPassed = redTeamScenarios.every((s) => s.status === "pass");
-    const allFailed = redTeamScenarios.every((s) => s.status === "fail");
-    tabs.push({
-      id: "security",
-      label: "Security",
-      count: redTeamScenarios.length,
-      status: allPassed ? "pass" : allFailed ? "fail" : "mixed",
     });
   }
 
@@ -336,10 +315,6 @@ export function RunDetailView({
 
         {activeTab === "audio" && (
           <AudioTestResults scenarios={audioScenarios} />
-        )}
-
-        {activeTab === "security" && (
-          <RedTeamResults scenarios={redTeamScenarios} />
         )}
 
         {activeTab === "load_test" && loadTestScenarios.length > 0 && (

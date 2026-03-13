@@ -10,10 +10,7 @@ import type {
   RunAggregateV2,
 } from "@voiceci/shared";
 import { createAudioChannel, type AudioChannelConfig } from "@voiceci/adapters";
-import { runConversationTest, expandRedTeamTests } from "./conversation/index.js";
-
-// Re-export for consumers that import from @voiceci/runner/executor
-export { expandRedTeamTests };
+import { runConversationTest } from "./conversation/index.js";
 
 export interface TestStartInfo {
   test_name: string;
@@ -107,13 +104,11 @@ export async function executeTests(opts: ExecuteTestsOpts): Promise<ExecuteTests
   // Audio quality, latency drift, and echo detection are
   // integrated into each conversation test automatically.
   // =====================================================
-  const redTeamTests = testSpec.red_team ? expandRedTeamTests(testSpec.red_team) : [];
   // Expand conversation tests by repeat count for statistical confidence
-  const expandedConversationTests = (testSpec.conversation_tests ?? []).flatMap((spec) => {
+  const allConversationTests = (testSpec.conversation_tests ?? []).flatMap((spec) => {
     const repeatCount = spec.repeat ?? 1;
     return Array.from({ length: repeatCount }, () => spec);
   });
-  const allConversationTests = [...expandedConversationTests, ...redTeamTests];
 
   // Pre-flight health check — verify agent is reachable before running N tests
   if (allConversationTests.length > 0) {

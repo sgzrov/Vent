@@ -211,7 +211,7 @@ function ConversationDetailPanel({
           <TabsContent value="evals" className="mt-3">
             <EvalResults
               evalResults={result.eval_results}
-              toolCallEvalResults={result.tool_call_eval_results}
+
             />
           </TabsContent>
           <TabsContent value="transcript" className="mt-3">

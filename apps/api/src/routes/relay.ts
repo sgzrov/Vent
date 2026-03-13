@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { FastifyInstance } from "fastify";
 import { eq } from "drizzle-orm";
+import IORedis from "ioredis";
 import { schema } from "@voiceci/db";
 import { RUNNER_CALLBACK_HEADER } from "@voiceci/shared";
 import { broadcast } from "../lib/run-subscribers.js";
@@ -46,6 +47,10 @@ const relaySessions = new Map<string, RelaySession>();
 
 const PAIR_TIMEOUT_MS = 15_000;
 const PING_INTERVAL_MS = 30_000;
+
+// Redis pub/sub — notifies worker instantly when relay connects (no HTTP polling)
+const redisUrl = process.env["REDIS_URL"] ?? "redis://localhost:6379";
+const redisPub = new IORedis(redisUrl, { maxRetriesPerRequest: null });
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -202,6 +207,9 @@ async function relayRoutes(app: FastifyInstance) {
 
     relaySessions.set(runId, session);
     app.log.info({ runId }, "relay/control: connected");
+
+    // Notify worker via Redis pub/sub — instant, no polling needed
+    void redisPub.publish(`voiceci:relay-ready:${runId}`, "1");
 
     // Send agent env vars so relay-client can inject them into the agent process.
     // VoiceCI provides its own keys — users never need to set up their own.
@@ -370,6 +378,20 @@ async function relayRoutes(app: FastifyInstance) {
     });
   });
 
+  // GET /internal/relay-ready/:id — Worker polls this to know when relay tunnel is connected
+  app.get<{ Params: { id: string } }>("/internal/relay-ready/:id", async (request, reply) => {
+    const secret = (request.headers as Record<string, string>)[RUNNER_CALLBACK_HEADER];
+    const expectedSecret = process.env["RUNNER_CALLBACK_SECRET"];
+    if (!expectedSecret || secret !== expectedSecret) {
+      return reply.status(401).send({ error: "Unauthorized" });
+    }
+
+    if (relaySessions.has(request.params.id)) {
+      return reply.send({ ready: true });
+    }
+    return reply.status(404).send({ ready: false });
+  });
+
   // GET /relay/client.mjs — Serve the bundled relay client script
   app.get("/relay/client.mjs", async (_request, reply) => {
     return reply
@@ -383,6 +405,7 @@ async function relayRoutes(app: FastifyInstance) {
     for (const [runId] of relaySessions) {
       cleanupSession(runId);
     }
+    redisPub.disconnect();
   });
 }
 

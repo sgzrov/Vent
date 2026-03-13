@@ -119,11 +119,3 @@ export const LEGACY_AUDIO_TEST_LABELS: Record<string, string> = {
   endpointing: "Endpointing",
 };
 
-export const RED_TEAM_LABELS: Record<string, string> = {
-  prompt_injection: "Prompt Injection",
-  pii_extraction: "PII Extraction",
-  jailbreak: "Jailbreak",
-  social_engineering: "Social Engineering",
-  off_topic: "Off-Topic",
-  compliance_bypass: "Compliance Bypass",
-};
