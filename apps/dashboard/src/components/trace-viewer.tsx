@@ -5,14 +5,13 @@ import { Card, CardContent } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import type { ConversationTurn, EvalResult } from "@/lib/types";
+import type { ConversationTurn } from "@/lib/types";
 
 interface TraceViewerProps {
   trace: ConversationTurn[];
-  evalResults?: EvalResult[];
 }
 
-export function TraceViewer({ trace, evalResults }: TraceViewerProps) {
+export function TraceViewer({ trace }: TraceViewerProps) {
   const [showRaw, setShowRaw] = useState(false);
 
   if (trace.length === 0) {
@@ -115,38 +114,6 @@ export function TraceViewer({ trace, evalResults }: TraceViewerProps) {
               );
             })}
 
-            {/* Inline eval annotations */}
-            {evalResults && evalResults.length > 0 && (
-              <div className="border-t pt-3 mt-1">
-                <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-2">
-                  Eval Results
-                </p>
-                <div className="flex flex-wrap gap-1.5">
-                  {evalResults.map((e, i) => (
-                      <span
-                        key={i}
-                        className={cn(
-                          "inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs",
-                          e.passed
-                            ? "bg-emerald-50 text-emerald-700"
-                            : "bg-red-50 text-red-700"
-                        )}
-                        title={e.reasoning}
-                      >
-                        <span
-                          className={cn(
-                            "h-1.5 w-1.5 rounded-full",
-                            e.passed ? "bg-emerald-500" : "bg-red-500"
-                          )}
-                        />
-                        {e.question.length > 50
-                          ? e.question.slice(0, 50) + "..."
-                          : e.question}
-                      </span>
-                    ))}
-                </div>
-              </div>
-            )}
           </div>
         </ScrollArea>
       )}

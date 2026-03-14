@@ -106,13 +106,6 @@ function getMetaTags(spec: TestSpec | null): string[] {
   const tags: string[] = [];
 
   if (spec.conversation_tests?.length) {
-    const evalCount = spec.conversation_tests.reduce(
-      (sum, t) =>
-        sum + t.eval.length,
-      0
-    );
-    if (evalCount > 0) tags.push(`${evalCount} evals`);
-
     const personaTrait = getDominantPersonaTrait(spec.conversation_tests);
     if (personaTrait) tags.push(personaTrait);
 

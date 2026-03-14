@@ -12,7 +12,7 @@ import type {
 } from "@voiceci/shared";
 import type { AudioChannelConfig } from "@voiceci/adapters";
 import { executeTests } from "@voiceci/runner/executor";
-import { runLoadTest } from "@voiceci/runner/load-test";
+import { runLoadTest, computeTierSizes } from "@voiceci/runner/load-test";
 
 // ---------------------------------------------------------------------------
 // Event emission — writes to DB and notifies API for SSE/MCP broadcast
@@ -76,19 +76,30 @@ async function executeLoadTestPhase(
 
   await emitEvent(db, job.run_id, "load_test_started", `Starting load test — target concurrency: ${loadSpec.target_concurrency}`);
 
+  const phaseCount = computeTierSizes(loadSpec.target_concurrency, loadSpec.ramps).length
+    + (loadSpec.spike_multiplier ? 1 : 0)
+    + (loadSpec.soak_duration_min ? 1 : 0);
+
   let tierCount = 0;
   const result = await runLoadTest({
     channelConfig,
     targetConcurrency: loadSpec.target_concurrency,
     callerPrompt: loadSpec.caller_prompt,
+    callerPrompts: loadSpec.caller_prompts,
     maxTurns: loadSpec.max_turns,
-    evalQuestions: loadSpec.eval,
+    ramps: loadSpec.ramps,
     thresholds: loadSpec.thresholds,
     callerAudioPool: loadSpec.caller_audio,
     language: loadSpec.language,
+    spikeMultiplier: loadSpec.spike_multiplier,
+    soakDurationMin: loadSpec.soak_duration_min,
     onTierComplete: async (tier: LoadTestTierResult) => {
       tierCount++;
-      const tierName = `load-test:tier-${tier.concurrency}`;
+      const tierName = tier.phase === "spike"
+        ? "load-test:spike"
+        : tier.phase === "soak"
+          ? "load-test:soak"
+          : `load-test:tier-${tier.concurrency}`;
 
       try {
         await db.insert(schema.scenarioResults).values({
@@ -112,7 +123,7 @@ async function executeLoadTestPhase(
         body: JSON.stringify({
           run_id: job.run_id,
           completed: tierCount,
-          total: 4,
+          total: phaseCount,
           test_type: "load_test",
           test_name: tierName,
           status: tier.failed_calls > 0 ? "fail" : "pass",

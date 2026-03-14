@@ -112,17 +112,17 @@ export function RunDetailView({
   const tabs: TabDef[] = [{ id: "overview", label: "Overview" }];
 
   if (conversationScenarios.length > 0) {
-    const allPassed = conversationScenarios.every(
-      (s) => s.status === "pass"
+    const allCompleted = conversationScenarios.every(
+      (s) => s.status === "pass" || s.status === "completed"
     );
-    const allFailed = conversationScenarios.every(
-      (s) => s.status === "fail"
+    const allErrored = conversationScenarios.every(
+      (s) => s.status === "fail" || s.status === "error"
     );
     tabs.push({
       id: "conversations",
       label: "Conversations",
       count: conversationScenarios.length,
-      status: allPassed ? "pass" : allFailed ? "fail" : "mixed",
+      status: allCompleted ? "pass" : allErrored ? "fail" : "mixed",
     });
   }
 

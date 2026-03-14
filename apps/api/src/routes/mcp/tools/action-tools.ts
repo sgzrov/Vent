@@ -12,7 +12,7 @@ import {
   CallerAudioEffectsSchema,
 } from "@voiceci/shared";
 
-import { formatConversationResult } from "./format-result.js";
+import { formatConversationResult, formatLoadTestResult } from "./format-result.js";
 import { waitForRunEvent } from "../../../lib/run-subscribers.js";
 import {
   RUN_TESTS_DESCRIPTION,
@@ -394,7 +394,8 @@ export function registerActionTools(
       .filter(Boolean);
     const loadTestResults = newScenarios
       .filter((s) => s.test_type === "load_test")
-      .map((s) => s.metrics_json);
+      .map((s) => formatLoadTestResult(s.metrics_json))
+      .filter(Boolean);
 
     const isFinished = run.status !== "queued" && run.status !== "running";
 

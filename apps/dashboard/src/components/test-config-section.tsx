@@ -82,23 +82,6 @@ export function TestConfigSection({ testSpec }: TestConfigSectionProps) {
                       Max {test.max_turns} turns
                     </span>
                     {test.persona && <PersonaBadges persona={test.persona} />}
-                    {test.eval.length > 0 && (
-                      <div className="mt-2">
-                        <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1">
-                          Eval questions
-                        </p>
-                        <ul className="space-y-0.5">
-                          {test.eval.map((q, j) => (
-                            <li
-                              key={j}
-                              className="text-xs text-muted-foreground"
-                            >
-                              {q}
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
                   </div>
                 ))}
               </div>

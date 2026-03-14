@@ -449,46 +449,6 @@ export function LoadTestResults({ scenario }: LoadTestResultsProps) {
           <GradingTable grading={result.grading} />
         </div>
 
-        {result.eval_summary && (
-          <div>
-            <h3 className="text-xs text-muted-foreground/60 uppercase tracking-wider mb-3">
-              Quality Evaluation
-            </h3>
-            <div className="rounded-lg border border-border overflow-hidden">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-border">
-                    <th className="text-left px-3.5 py-2 text-[11px] text-muted-foreground/60 uppercase tracking-wider font-medium">
-                      Eval Question
-                    </th>
-                    <th className="text-right px-3.5 py-2 text-[11px] text-muted-foreground/60 uppercase tracking-wider font-medium">
-                      Pass Rate
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {result.eval_summary.questions.map((q, i) => (
-                    <tr key={i} className="border-b border-border last:border-0">
-                      <td className="px-3.5 py-2 text-foreground">{q.question}</td>
-                      <td
-                        className={cn(
-                          "px-3.5 py-2 text-right font-mono tabular-nums font-semibold",
-                          q.pass_rate >= 0.9
-                            ? "text-emerald-600 dark:text-emerald-400"
-                            : q.pass_rate >= 0.7
-                            ? "text-amber-600 dark:text-amber-400"
-                            : "text-red-600 dark:text-red-400",
-                        )}
-                      >
-                        {fmtPct(q.pass_rate)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
       </div>
 
       {/* Breaking point callout */}

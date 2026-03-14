@@ -71,23 +71,10 @@ export const CallerAudioPoolSchema = z.object({
   jitter_ms: z.union([z.number(), z.tuple([z.number(), z.number()])]).optional(),
 });
 
-const SafetyThresholdSchema = z.object({
-  enabled: z.boolean(),
-  reasoning: z.string().optional(),
-  min_score: z.number().min(0).max(1).optional(),
-});
-
-const SafetyThresholdsSchema = z.object({
-  hallucination: SafetyThresholdSchema.optional(),
-  safety_compliance: SafetyThresholdSchema.optional(),
-  compliance_adherence: SafetyThresholdSchema.optional(),
-}).optional();
-
 export const ConversationTestSpecSchema = z.object({
   name: z.string().optional(),
   caller_prompt: z.string().min(1),
   max_turns: z.number().int().min(1).max(50).default(6),
-  eval: z.array(z.string().min(1)).min(1),
 
   silence_threshold_ms: z.number().int().min(200).max(10000).optional(),
   persona: CallerPersonaSchema,
@@ -98,7 +85,6 @@ export const ConversationTestSpecSchema = z.object({
   language: z.string().min(2).max(5).optional(),
   /** Number of times to repeat this test for statistical confidence (1-10). Default 1. */
   repeat: z.number().int().min(1).max(10).default(1),
-  safety_thresholds: SafetyThresholdsSchema,
 });
 
 // TestSpecSchema uses z.lazy for load_test to avoid forward-reference to LoadTestSpecSchema
@@ -190,12 +176,6 @@ export const ConversationTurnSchema = z.object({
   stt_confidence: z.number().optional(),
   tts_ms: z.number().optional(),
   stt_ms: z.number().optional(),
-});
-
-export const EvalResultSchema = z.object({
-  question: z.string(),
-  passed: z.boolean(),
-  reasoning: z.string(),
 });
 
 // ============================================================
@@ -343,16 +323,14 @@ export const AudioTestResultSchema = z.object({
 export const ConversationTestResultSchema = z.object({
   name: z.string().optional(),
   caller_prompt: z.string(),
-  status: z.enum(["pass", "fail"]),
+  status: z.enum(["completed", "error"]),
   transcript: z.array(ConversationTurnSchema),
-  eval_results: z.array(EvalResultSchema),
 
   observed_tool_calls: z.array(ObservedToolCallSchema).optional(),
   audio_action_results: z.array(AudioActionResultSchema).optional(),
   duration_ms: z.number(),
   metrics: ConversationMetricsSchema,
   error: z.string().optional(),
-  diagnostics: TestDiagnosticsSchema.optional(),
 });
 
 export const RunAggregateV2Schema = z.object({
@@ -395,11 +373,14 @@ export const LoadTestThresholdsSchema = z.object({
 export const LoadTestSpecSchema = z.object({
   target_concurrency: z.number().int().min(1).max(100),
   caller_prompt: z.string().min(1),
+  caller_prompts: z.array(z.string().min(1)).min(1).optional(),
   max_turns: z.number().int().min(1).max(10).optional(),
-  eval: z.array(z.string().min(1)).optional(),
+  ramps: z.array(z.number().int().min(1)).min(1).optional(),
   thresholds: LoadTestThresholdsSchema.partial().optional(),
   caller_audio: CallerAudioPoolSchema.optional(),
   language: z.string().min(2).max(5).optional(),
+  spike_multiplier: z.number().min(1.5).max(5).optional(),
+  soak_duration_min: z.number().min(1).max(60).optional(),
 });
 
 export const LoadTestBreakingPointSchema = z.object({
@@ -444,6 +425,9 @@ export const LoadTestTierResultSchema = z.object({
   quality_degradation_pct: z.number(),
   ttfb_degradation_pct: z.number(),
   duration_ms: z.number(),
+  phase: z.enum(["ramp", "spike", "soak"]).optional(),
+  latency_drift_slope: z.number().optional(),
+  degraded: z.boolean().optional(),
 });
 
 export const LoadTestResultSchema = z.object({
@@ -459,4 +443,6 @@ export const LoadTestResultSchema = z.object({
   eval_summary: LoadTestEvalSummarySchema.optional(),
   thresholds: LoadTestThresholdsSchema,
   duration_ms: z.number(),
+  spike: LoadTestTierResultSchema.optional(),
+  soak: LoadTestTierResultSchema.optional(),
 });
