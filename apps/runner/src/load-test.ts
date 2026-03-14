@@ -11,8 +11,6 @@
  * Every concurrent call is a full multi-turn conversation:
  *   CallerLLM → TTS → send → collect via VAD → streaming STT → repeat.
  *
- * After all tiers, evaluate ALL transcripts with JudgeLLM for quality scoring.
- *
  * Breaking point: 2-of-3 signal detection (error rate, P95 latency, quality drop).
  * Severity grading: excellent / good / acceptable / critical.
  */
@@ -24,18 +22,16 @@ import type {
   LoadTestBreakingPoint,
   LoadTestGrading,
   LoadTestSeverity,
-  LoadTestEvalSummary,
-  ConversationTurn,
-  EvalResult,
+  LoadTestPhase,
   CallerAudioEffects,
   CallerAudioPool,
+  ConversationTurn,
 } from "@voiceci/shared";
 import { DEFAULT_LOAD_TEST_THRESHOLDS } from "@voiceci/shared";
 import { createAudioChannel, type AudioChannelConfig } from "@voiceci/adapters";
 import { synthesize, VoiceActivityDetector, StreamingTranscriber, applyEffects, resolveAccentVoiceId, resolveLanguageVoiceId } from "@voiceci/voice";
 import { collectUntilEndOfTurn } from "./audio-tests/helpers.js";
 import { CallerLLM } from "./conversation/caller-llm.js";
-import { JudgeLLM } from "./conversation/judge-llm.js";
 
 // ============================================================
 // Types
@@ -45,13 +41,20 @@ export interface LoadTestOpts {
   channelConfig: AudioChannelConfig;
   targetConcurrency: number;
   callerPrompt: string;
+  /** Array of caller prompts — one picked at random per caller */
+  callerPrompts?: string[];
   maxTurns?: number;
-  evalQuestions?: string[];
+  /** Custom ramp steps — overrides default tier computation */
+  ramps?: number[];
   thresholds?: Partial<LoadTestThresholds>;
   callerAudioPool?: CallerAudioPool;
   onTierComplete?: (tier: LoadTestTierResult) => void | Promise<void>;
   /** ISO 639-1 language code for multilingual load testing */
   language?: string;
+  /** Spike multiplier — fires spikeMultiplier × target calls at once */
+  spikeMultiplier?: number;
+  /** Soak duration in minutes — maintains target concurrency for this duration */
+  soakDurationMin?: number;
 }
 
 interface CallResult {
@@ -78,20 +81,25 @@ function percentile(sorted: number[], p: number): number {
   return sorted[lower]! + (sorted[upper]! - sorted[lower]!) * (index - lower);
 }
 
-function computeTierSizes(target: number): number[] {
-  const pcts = [0.1, 0.25, 0.5, 1.0];
-  const sizes: number[] = [];
-  for (const pct of pcts) {
-    const size = Math.max(5, Math.round(target * pct));
-    // Avoid duplicate sizes
-    if (sizes.length === 0 || size > sizes[sizes.length - 1]!) {
-      sizes.push(size);
-    }
+export function computeTierSizes(target: number, customRamps?: number[]): number[] {
+  if (customRamps && customRamps.length > 0) {
+    // Deduplicate and sort custom ramps
+    const sorted = [...new Set(customRamps)].sort((a, b) => a - b);
+    // Ensure target is included as the final tier
+    if (sorted[sorted.length - 1] !== target) sorted.push(target);
+    return sorted;
   }
-  // Ensure final tier is exactly the target
-  if (sizes[sizes.length - 1] !== target) {
-    sizes[sizes.length - 1] = target;
-  }
+
+  // Always start at 10, add ~50% midpoint if distinct, end at target
+  const FIRST_RAMP = 10;
+
+  if (target <= FIRST_RAMP) return [target];
+
+  const mid = Math.round(target * 0.5);
+  const sizes: number[] = [FIRST_RAMP];
+  if (mid > FIRST_RAMP && mid < target) sizes.push(mid);
+  sizes.push(target);
+
   return sizes;
 }
 
@@ -378,86 +386,6 @@ function buildTierMetrics(
 }
 
 // ============================================================
-// Post-call pipeline: evaluate transcripts with JudgeLLM
-// ============================================================
-
-async function runPostCallPipeline(
-  callResults: CallResult[],
-  evalQuestions: string[],
-): Promise<{
-  evalSummary: LoadTestEvalSummary | undefined;
-  perTierQuality: Map<number, number>;
-}> {
-  const successfulCalls = callResults.filter(
-    (r) => r.success && r.transcript.length > 0,
-  );
-
-  if (successfulCalls.length === 0 || evalQuestions.length === 0) {
-    return { evalSummary: undefined, perTierQuality: new Map() };
-  }
-
-  // Batch-evaluate all transcripts with JudgeLLM (100 concurrent)
-  console.log(`  Evaluating ${successfulCalls.length} transcript(s) against ${evalQuestions.length} question(s)...`);
-  const judge = new JudgeLLM();
-  const evalTasks = successfulCalls.map((call) => () =>
-    judge.evaluate(call.transcript, evalQuestions).then((results) => ({
-      tierId: call.tierId,
-      results,
-    })),
-  );
-  const evalResults = await promisePool(evalTasks, 100);
-
-  // Compute quality scores per call and per tier
-  const perTierScores = new Map<number, number[]>();
-  const perQuestionPassed = new Map<string, number>();
-  evalQuestions.forEach((q) => perQuestionPassed.set(q, 0));
-
-  for (const { tierId, results } of evalResults) {
-    const score = results.length > 0
-      ? results.filter((r: EvalResult) => r.passed).length / results.length
-      : 0;
-    if (!perTierScores.has(tierId)) perTierScores.set(tierId, []);
-    perTierScores.get(tierId)!.push(score);
-
-    for (const r of results) {
-      if (r.passed) {
-        perQuestionPassed.set(r.question, (perQuestionPassed.get(r.question) ?? 0) + 1);
-      }
-    }
-  }
-
-  // Mean quality per tier
-  const perTierQuality = new Map<number, number>();
-  for (const [tierId, scores] of perTierScores) {
-    const mean = scores.reduce((a, b) => a + b, 0) / scores.length;
-    perTierQuality.set(tierId, Math.round(mean * 1000) / 1000);
-  }
-
-  // Build eval summary
-  const allScores = evalResults.map((er) =>
-    er.results.length > 0
-      ? er.results.filter((r: EvalResult) => r.passed).length / er.results.length
-      : 0,
-  );
-  const meanQuality = allScores.length > 0
-    ? allScores.reduce((a, b) => a + b, 0) / allScores.length
-    : 0;
-
-  const evalSummary: LoadTestEvalSummary = {
-    total_evaluated: evalResults.length,
-    mean_quality_score: Math.round(meanQuality * 1000) / 1000,
-    questions: evalQuestions.map((q) => ({
-      question: q,
-      pass_rate: evalResults.length > 0
-        ? Math.round(((perQuestionPassed.get(q) ?? 0) / evalResults.length) * 1000) / 1000
-        : 0,
-    })),
-  };
-
-  return { evalSummary, perTierQuality };
-}
-
-// ============================================================
 // Breaking point detection (2-of-3 signals)
 // ============================================================
 
@@ -545,6 +473,77 @@ function gradeLoadTest(
 }
 
 // ============================================================
+// Soak phase — sustained concurrency for a duration
+// ============================================================
+
+function linearRegressionSlope(ys: number[]): number {
+  const n = ys.length;
+  if (n < 2) return 0;
+  const meanX = (n - 1) / 2;
+  const meanY = ys.reduce((s, v) => s + v, 0) / n;
+  let num = 0;
+  let den = 0;
+  for (let i = 0; i < n; i++) {
+    const dx = i - meanX;
+    num += dx * (ys[i]! - meanY);
+    den += dx * dx;
+  }
+  return den === 0 ? 0 : num / den;
+}
+
+async function runSoakPhase(
+  channelConfig: AudioChannelConfig,
+  pickPrompt: () => string,
+  maxTurns: number,
+  concurrency: number,
+  durationMin: number,
+  callerAudioPool?: CallerAudioPool,
+  language?: string,
+): Promise<CallResult[]> {
+  const results: CallResult[] = [];
+  const deadline = Date.now() + durationMin * 60_000;
+  let callId = 0;
+
+  async function worker() {
+    while (Date.now() < deadline) {
+      const id = callId++;
+      const effects = callerAudioPool ? randomizeEffects(callerAudioPool) : undefined;
+      const result = await runSingleCall(channelConfig, pickPrompt(), maxTurns, id, effects, language);
+      results.push(result);
+    }
+  }
+
+  const workers = Array.from({ length: concurrency }, () => worker());
+  await Promise.all(workers);
+  return results;
+}
+
+function buildSoakMetrics(
+  concurrency: number,
+  results: CallResult[],
+  baselineTtfb: number | undefined,
+): LoadTestTierResult {
+  const base = buildTierMetrics(concurrency, results, baselineTtfb);
+
+  // Compute latency drift: TTFB values in completion order
+  const ttfbsInOrder = results
+    .filter((r) => r.success)
+    .flatMap((r) => r.ttfbPerTurn);
+
+  const slope = linearRegressionSlope(ttfbsInOrder);
+
+  // Degraded if slope > 1 ms/call or error rate > 5%
+  const degraded = slope > 1.0 || base.error_rate > 0.05;
+
+  return {
+    ...base,
+    phase: "soak" as LoadTestPhase,
+    latency_drift_slope: Math.round(slope * 1000) / 1000,
+    degraded,
+  };
+}
+
+// ============================================================
 // Main entry point
 // ============================================================
 
@@ -553,12 +552,20 @@ export async function runLoadTest(opts: LoadTestOpts): Promise<LoadTestResult> {
     channelConfig,
     targetConcurrency,
     callerPrompt,
+    callerPrompts,
     maxTurns = 6,
-    evalQuestions = [],
+    ramps,
     callerAudioPool,
     onTierComplete,
     language,
+    spikeMultiplier,
+    soakDurationMin,
   } = opts;
+
+  // Pick a random prompt per caller when callerPrompts is set
+  const pickPrompt = callerPrompts && callerPrompts.length > 0
+    ? () => callerPrompts[Math.floor(Math.random() * callerPrompts.length)]!
+    : () => callerPrompt;
 
   // Merge user thresholds with defaults
   const thresholds: LoadTestThresholds = {
@@ -566,7 +573,7 @@ export async function runLoadTest(opts: LoadTestOpts): Promise<LoadTestResult> {
     ...opts.thresholds,
   };
 
-  const tierSizes = computeTierSizes(targetConcurrency);
+  const tierSizes = computeTierSizes(targetConcurrency, ramps);
   console.log(`Load test starting: target=${targetConcurrency}, tiers=[${tierSizes.join(", ")}]`);
 
   const startTime = Date.now();
@@ -585,7 +592,7 @@ export async function runLoadTest(opts: LoadTestOpts): Promise<LoadTestResult> {
     // Each caller gets independently randomized audio effects (if pool configured)
     const calls = Array.from({ length: concurrency }, () => {
       const effects = callerAudioPool ? randomizeEffects(callerAudioPool) : undefined;
-      return runSingleCall(channelConfig, callerPrompt, maxTurns, i, effects, language);
+      return runSingleCall(channelConfig, pickPrompt(), maxTurns, i, effects, language);
     });
     const results = await Promise.all(calls);
     allCallResults.push(...results);
@@ -606,21 +613,46 @@ export async function runLoadTest(opts: LoadTestOpts): Promise<LoadTestResult> {
     await onTierComplete?.(tierMetrics);
   }
 
-  // Post-call pipeline: evaluate ALL transcripts with JudgeLLM
-  console.log("  Running post-call evaluation...");
-  const { evalSummary, perTierQuality } = await runPostCallPipeline(
-    allCallResults,
-    evalQuestions,
-  );
+  // --- SPIKE PHASE ---
+  let spikeResult: LoadTestTierResult | undefined;
+  if (spikeMultiplier) {
+    const spikeConcurrency = Math.round(targetConcurrency * spikeMultiplier);
+    console.log(`  Spike: firing ${spikeConcurrency} concurrent calls...`);
 
-  // Fill in quality scores on tier results
-  const baselineQuality = perTierQuality.get(0) ?? 0;
-  for (let i = 0; i < tierResults.length; i++) {
-    const quality = perTierQuality.get(i) ?? 0;
-    tierResults[i]!.mean_quality_score = quality;
-    tierResults[i]!.quality_degradation_pct = baselineQuality > 0
-      ? Math.round(((baselineQuality - quality) / baselineQuality) * 100)
-      : 0;
+    const spikeStart = Date.now();
+    const calls = Array.from({ length: spikeConcurrency }, () => {
+      const effects = callerAudioPool ? randomizeEffects(callerAudioPool) : undefined;
+      return runSingleCall(channelConfig, pickPrompt(), maxTurns, tierSizes.length, effects, language);
+    });
+    const results = await Promise.all(calls);
+    allCallResults.push(...results);
+
+    const successful = results.filter((r) => r.success).length;
+    console.log(`  Spike complete: ${successful} success, ${results.length - successful} failed, ${Date.now() - spikeStart}ms`);
+
+    spikeResult = { ...buildTierMetrics(spikeConcurrency, results, baselineP95Ttfb), phase: "spike" as LoadTestPhase };
+    tierResults.push(spikeResult);
+    await onTierComplete?.(spikeResult);
+  }
+
+  // --- SOAK PHASE ---
+  let soakResult: LoadTestTierResult | undefined;
+  if (soakDurationMin) {
+    console.log(`  Soak: maintaining ${targetConcurrency} concurrent calls for ${soakDurationMin} min...`);
+
+    const soakStart = Date.now();
+    const results = await runSoakPhase(
+      channelConfig, pickPrompt, maxTurns, targetConcurrency,
+      soakDurationMin, callerAudioPool, language,
+    );
+    allCallResults.push(...results);
+
+    const successful = results.filter((r) => r.success).length;
+    console.log(`  Soak complete: ${results.length} calls, ${successful} success, ${results.length - successful} failed, ${Date.now() - soakStart}ms`);
+
+    soakResult = buildSoakMetrics(targetConcurrency, results, baselineP95Ttfb);
+    tierResults.push(soakResult);
+    await onTierComplete?.(soakResult);
   }
 
   // Detect breaking point (2-of-3 signals)
@@ -645,9 +677,10 @@ export async function runLoadTest(opts: LoadTestOpts): Promise<LoadTestResult> {
     failed_calls: failedCalls,
     breaking_point: breakingPoint,
     grading,
-    eval_summary: evalSummary,
     thresholds,
     duration_ms: Date.now() - startTime,
+    spike: spikeResult,
+    soak: soakResult,
   };
 
   console.log(

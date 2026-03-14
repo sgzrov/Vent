@@ -124,23 +124,11 @@ export async function executeTests(opts: ExecuteTestsOpts): Promise<ExecuteTests
       const failResult: ConversationTestResult = {
         name: "health_check",
         caller_prompt: "Pre-flight connectivity check",
-        status: "fail",
+        status: "error",
         transcript: [],
-        eval_results: [],
         duration_ms: 0,
         metrics: { mean_ttfb_ms: 0 },
         error: `Agent unreachable: ${errorMsg}`,
-        diagnostics: {
-          error_origin: "platform",
-          error_detail: `Pre-flight health check failed: ${errorMsg}`,
-          timing: { channel_connect_ms: probeChannel.stats.connectLatencyMs },
-          channel: {
-            connected: false,
-            error_events: probeChannel.stats.errorEvents,
-            audio_bytes_sent: 0,
-            audio_bytes_received: 0,
-          },
-        },
       };
       onTestComplete?.(failResult);
       return {
@@ -176,7 +164,6 @@ export async function executeTests(opts: ExecuteTestsOpts): Promise<ExecuteTests
       console.log(JSON.stringify({
         event: "test_complete", test_name: testName, test_type: "conversation",
         status: result.status, duration_ms: result.duration_ms,
-        error_origin: result.diagnostics?.error_origin ?? null,
         channel: { bytes_sent: channel.stats.bytesSent, bytes_received: channel.stats.bytesReceived, errors: channel.stats.errorEvents },
       }));
       onTestComplete?.(result);
@@ -201,28 +188,15 @@ export async function executeTests(opts: ExecuteTestsOpts): Promise<ExecuteTests
       const result: ConversationTestResult = {
         name: spec.name,
         caller_prompt: spec.caller_prompt,
-        status: "fail",
+        status: "error",
         transcript: [],
-        eval_results: [],
         duration_ms: Date.now() - start,
         metrics: { mean_ttfb_ms: 0 },
         error: errorMsg,
-        diagnostics: {
-          error_origin: "platform",
-          error_detail: errorMsg,
-          timing: { channel_connect_ms: channel.stats.connectLatencyMs },
-          channel: {
-            connected: channel.connected,
-            error_events: channel.stats.errorEvents,
-            audio_bytes_sent: channel.stats.bytesSent,
-            audio_bytes_received: channel.stats.bytesReceived,
-          },
-        },
       };
       console.log(JSON.stringify({
         event: "test_complete", test_name: testName, test_type: "conversation",
-        status: "fail", duration_ms: result.duration_ms,
-        error_origin: "platform", error_detail: errorMsg,
+        status: "error", duration_ms: result.duration_ms, error: errorMsg,
       }));
       onTestComplete?.(result);
       return result;
@@ -239,18 +213,11 @@ export async function executeTests(opts: ExecuteTestsOpts): Promise<ExecuteTests
   const makeAbortResult = (): ConversationTestResult => ({
     name: "aborted",
     caller_prompt: "Skipped — circuit breaker tripped",
-    status: "fail",
+    status: "error",
     transcript: [],
-    eval_results: [],
     duration_ms: 0,
     metrics: { mean_ttfb_ms: 0 },
     error: circuitState.abortReason ?? "Run aborted",
-    diagnostics: {
-      error_origin: "platform",
-      error_detail: circuitState.abortReason ?? "Run aborted due to consecutive connection failures",
-      timing: { channel_connect_ms: 0 },
-      channel: { connected: false, error_events: [], audio_bytes_sent: 0, audio_bytes_received: 0 },
-    },
   });
 
   const conversationResults = conversationTasks.length > 0
@@ -260,20 +227,20 @@ export async function executeTests(opts: ExecuteTestsOpts): Promise<ExecuteTests
   // =====================================================
   // Aggregate results
   // =====================================================
-  const convPassed = conversationResults.filter((r) => r.status === "pass").length;
-  const convFailed = conversationResults.filter((r) => r.status === "fail").length;
+  const convCompleted = conversationResults.filter((r) => r.status === "completed").length;
+  const convErrored = conversationResults.filter((r) => r.status === "error").length;
 
   const totalDurationMs = conversationResults.reduce((sum, r) => sum + r.duration_ms, 0);
 
   const aggregate: RunAggregateV2 = {
-    conversation_tests: { total: conversationResults.length, passed: convPassed, failed: convFailed },
+    conversation_tests: { total: conversationResults.length, passed: convCompleted, failed: convErrored },
     total_duration_ms: totalDurationMs,
   };
 
-  const status = convFailed === 0 ? "pass" : "fail";
+  const status = convErrored === 0 ? "pass" : "fail";
 
   console.log(
-    `Run complete: ${status} (conversation: ${convPassed}/${conversationResults.length})`,
+    `Run complete: ${status} (conversation: ${convCompleted}/${conversationResults.length})`,
   );
 
   return { status, conversationResults, aggregate };

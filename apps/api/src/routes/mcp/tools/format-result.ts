@@ -2,38 +2,30 @@
  * Transforms raw ConversationTestResult into a structured, grouped format
  * for coding agent consumption via MCP.
  *
- * Groups metrics by concern, removes Vent internals (harness overhead,
- * Hume API timing, our TTS/STT processing time), and adds eval summary counts.
+ * Groups metrics by concern and removes Vent internals (harness overhead,
+ * Hume API timing, our TTS/STT processing time).
  */
 
 import type {
   ConversationTestResult,
   ConversationTurn,
-  EvalResult,
   ObservedToolCall,
   AudioActionResult,
   LatencyMetrics,
-  HarnessOverhead,
   BehavioralMetrics,
   TranscriptMetrics,
-  SignalQualityMetrics,
   AudioAnalysisMetrics,
-  AudioAnalysisWarning,
   ProsodyMetrics,
-  ProsodyWarning,
   ToolCallMetrics,
-  TestDiagnostics,
   TurnEmotionProfile,
-  SentimentTrajectoryEntry,
+  LoadTestResult,
+  LoadTestTierResult,
+  LoadTestSeverity,
+  LoadTestBreakingPoint,
+  LoadTestGrading,
 } from "@voiceci/shared";
 
 // ---- Formatted types (MCP API-specific, not in shared) ----
-
-interface FormattedEvalSection {
-  passed: number;
-  failed: number;
-  results: Array<{ question: string; passed: boolean; reasoning: string }>;
-}
 
 interface FormattedTranscriptTurn {
   role: "caller" | "agent";
@@ -46,25 +38,17 @@ interface FormattedTranscriptTurn {
 }
 
 interface FormattedLatency {
-  mean_ttfb_ms: number;
-  mean_ttfw_ms?: number;
-  p50_ttfb_ms: number;
-  p90_ttfb_ms: number;
-  p95_ttfb_ms: number;
-  p99_ttfb_ms: number;
-  p50_ttfw_ms?: number;
-  p90_ttfw_ms?: number;
-  p95_ttfw_ms?: number;
-  p99_ttfw_ms?: number;
-  first_turn_ttfb_ms: number;
-  first_turn_ttfw_ms?: number;
+  mean_ttfw_ms: number;
+  p50_ttfw_ms: number;
+  p95_ttfw_ms: number;
+  p99_ttfw_ms: number;
+  first_turn_ttfw_ms: number;
   total_silence_ms: number;
   mean_turn_gap_ms: number;
+  ttfw_per_turn_ms: number[];
+  drift_slope_ms_per_turn?: number;
   mean_silence_pad_ms?: number;
   mouth_to_ear_est_ms?: number;
-  drift_slope_ms_per_turn?: number;
-  ttfb_per_turn_ms: number[];
-  ttfw_per_turn_ms?: number[];
 }
 
 interface FormattedAudioAnalysis {
@@ -73,8 +57,6 @@ interface FormattedAudioAnalysis {
   longest_monologue_ms: number;
   silence_gaps_over_2s: number;
   total_internal_silence_ms: number;
-  per_turn_speech_segments: number[];
-  per_turn_internal_silence_ms: number[];
   mean_agent_speech_segment_ms: number;
 }
 
@@ -103,52 +85,31 @@ interface FormattedEmotion {
   per_turn: TurnEmotionProfile[];
 }
 
-interface FormattedWarning {
-  metric: string;
-  value: number;
-  threshold: number;
-  severity: "warning" | "critical";
-  message: string;
-}
-
-interface FormattedLatencyBreakdown {
-  /** Voice agent processing time (ms) — endpointing + STT + LLM + TTS inside the agent */
-  agent_response_ms: number;
-  /** Network round-trip (ms) — connection overhead */
-  network_ms: number;
-  /** Dead audio before speech starts (ms) — agent sends silence before speaking */
-  silence_before_speech_ms: number;
-  /** Vent test infrastructure TTS overhead per turn (ms) — does not exist in production */
-  test_overhead_tts_ms: number;
-  /** Vent test infrastructure STT overhead per turn (ms) — does not exist in production */
-  test_overhead_stt_ms: number;
-}
-
-interface FormattedDiagnostics {
-  error_origin: "platform" | "agent" | null;
-  error_detail: string | null;
+interface FormattedBehavior {
+  intent_accuracy?: { score: number; reasoning: string };
+  context_retention?: { score: number; reasoning: string };
+  topic_drift?: { score: number; reasoning: string };
+  empathy_score?: { score: number; reasoning: string };
+  hallucination_detected?: { detected: boolean; reasoning: string };
+  safety_compliance?: { compliant: boolean; score?: number; reasoning: string };
+  escalation_handling?: { triggered: boolean; handled_appropriately: boolean; score: number; reasoning: string };
 }
 
 export interface FormattedConversationResult {
   name: string | null;
-  status: "pass" | "fail";
+  status: "completed" | "error";
   caller_prompt: string;
   duration_ms: number;
   error: string | null;
-  eval: FormattedEvalSection;
   transcript: FormattedTranscriptTurn[];
   latency: FormattedLatency | null;
-  behavior: BehavioralMetrics | null;
+  behavior: FormattedBehavior | null;
   transcript_quality: TranscriptMetrics | null;
-  signal_quality: SignalQualityMetrics | null;
   audio_analysis: FormattedAudioAnalysis | null;
   tool_calls: FormattedToolCalls;
-
+  warnings: string[];
   audio_actions: AudioActionResult[];
   emotion: FormattedEmotion | null;
-  latency_breakdown: FormattedLatencyBreakdown | null;
-  warnings: FormattedWarning[];
-  diagnostics: FormattedDiagnostics;
 }
 
 // ---- Public API ----
@@ -164,37 +125,23 @@ export function formatConversationResult(raw: unknown): FormattedConversationRes
     caller_prompt: r.caller_prompt,
     duration_ms: r.duration_ms,
     error: r.error ?? null,
-    eval: formatEvalSection(r.eval_results),
     transcript: formatTranscript(r.transcript),
     latency: r.metrics?.latency ? formatLatency(r.metrics.latency, r.metrics) : null,
-    behavior: r.metrics?.behavioral && hasContent(r.metrics.behavioral) ? r.metrics.behavioral : null,
+    behavior: r.metrics?.behavioral ? formatBehavior(r.metrics.behavioral) : null,
     transcript_quality: r.metrics?.transcript && hasContent(r.metrics.transcript) ? r.metrics.transcript : null,
-    signal_quality: r.metrics?.signal_quality ?? null,
     audio_analysis: r.metrics?.audio_analysis ? formatAudioAnalysis(r.metrics.audio_analysis) : null,
     tool_calls: formatToolCalls(r.metrics?.tool_calls, r.observed_tool_calls),
-
+    warnings: [
+      ...(r.metrics?.audio_analysis_warnings ?? []).map(w => w.message),
+      ...(r.metrics?.prosody_warnings ?? []).map(w => w.message),
+    ],
     audio_actions: r.audio_action_results ?? [],
     emotion: r.metrics?.prosody ? formatEmotion(r.metrics.prosody) : null,
-    latency_breakdown: formatLatencyBreakdown(r.metrics, r.diagnostics) ?? null,
-    warnings: consolidateWarnings(r.metrics?.audio_analysis_warnings, r.metrics?.prosody_warnings),
-    diagnostics: r.diagnostics ? formatDiagnostics(r.diagnostics) : { error_origin: null, error_detail: null },
   };
 }
 
 // ---- Helpers ----
 
-function formatEvalSection(results: EvalResult[] | undefined): FormattedEvalSection {
-  const items = results ?? [];
-  return {
-    passed: items.filter((e) => e.passed).length,
-    failed: items.filter((e) => !e.passed).length,
-    results: items.map((e) => ({
-      question: e.question,
-      passed: e.passed,
-      reasoning: e.reasoning,
-    })),
-  };
-}
 
 function formatTranscript(turns: ConversationTurn[] | undefined): FormattedTranscriptTurn[] {
   if (!turns) return [];
@@ -213,29 +160,23 @@ function formatTranscript(turns: ConversationTurn[] | undefined): FormattedTrans
   });
 }
 
-function formatLatency(latency: LatencyMetrics, metrics: ConversationTestResult["metrics"]): FormattedLatency {
+function formatLatency(latency: LatencyMetrics, metrics: ConversationTestResult["metrics"]): FormattedLatency | null {
+  if (metrics.mean_ttfw_ms == null || latency.p50_ttfw_ms == null || latency.p95_ttfw_ms == null) return null;
+
   const result: FormattedLatency = {
-    mean_ttfb_ms: metrics.mean_ttfb_ms,
-    p50_ttfb_ms: latency.p50_ttfb_ms,
-    p90_ttfb_ms: latency.p90_ttfb_ms,
-    p95_ttfb_ms: latency.p95_ttfb_ms,
-    p99_ttfb_ms: latency.p99_ttfb_ms,
-    first_turn_ttfb_ms: latency.first_turn_ttfb_ms,
+    mean_ttfw_ms: metrics.mean_ttfw_ms,
+    p50_ttfw_ms: latency.p50_ttfw_ms,
+    p95_ttfw_ms: latency.p95_ttfw_ms,
+    p99_ttfw_ms: latency.p99_ttfw_ms ?? latency.p99_ttfb_ms,
+    first_turn_ttfw_ms: latency.first_turn_ttfw_ms ?? latency.first_turn_ttfb_ms,
     total_silence_ms: latency.total_silence_ms,
     mean_turn_gap_ms: latency.mean_turn_gap_ms,
-    ttfb_per_turn_ms: latency.ttfb_per_turn_ms,
+    ttfw_per_turn_ms: latency.ttfw_per_turn_ms ?? latency.ttfb_per_turn_ms,
   };
 
-  if (metrics.mean_ttfw_ms != null) result.mean_ttfw_ms = metrics.mean_ttfw_ms;
-  if (latency.p50_ttfw_ms != null) result.p50_ttfw_ms = latency.p50_ttfw_ms;
-  if (latency.p90_ttfw_ms != null) result.p90_ttfw_ms = latency.p90_ttfw_ms;
-  if (latency.p95_ttfw_ms != null) result.p95_ttfw_ms = latency.p95_ttfw_ms;
-  if (latency.p99_ttfw_ms != null) result.p99_ttfw_ms = latency.p99_ttfw_ms;
-  if (latency.first_turn_ttfw_ms != null) result.first_turn_ttfw_ms = latency.first_turn_ttfw_ms;
-  if (latency.ttfw_per_turn_ms != null) result.ttfw_per_turn_ms = latency.ttfw_per_turn_ms;
+  if (latency.drift_slope_ms_per_turn != null) result.drift_slope_ms_per_turn = latency.drift_slope_ms_per_turn;
   if (latency.mean_silence_pad_ms != null) result.mean_silence_pad_ms = latency.mean_silence_pad_ms;
   if (latency.mouth_to_ear_est_ms != null) result.mouth_to_ear_est_ms = latency.mouth_to_ear_est_ms;
-  if (latency.drift_slope_ms_per_turn != null) result.drift_slope_ms_per_turn = latency.drift_slope_ms_per_turn;
 
   return result;
 }
@@ -247,8 +188,6 @@ function formatAudioAnalysis(audio: AudioAnalysisMetrics): FormattedAudioAnalysi
     longest_monologue_ms: audio.longest_monologue_ms,
     silence_gaps_over_2s: audio.silence_gaps_over_2s,
     total_internal_silence_ms: audio.total_internal_silence_ms,
-    per_turn_speech_segments: audio.per_turn_speech_segments,
-    per_turn_internal_silence_ms: audio.per_turn_internal_silence_ms,
     mean_agent_speech_segment_ms: audio.mean_agent_speech_segment_ms,
   };
 }
@@ -274,6 +213,29 @@ function formatToolCalls(
   };
 }
 
+function formatBehavior(b: BehavioralMetrics): FormattedBehavior | null {
+  const result: FormattedBehavior = {};
+
+  if (b.intent_accuracy) result.intent_accuracy = b.intent_accuracy;
+  if (b.context_retention) result.context_retention = b.context_retention;
+  if (b.topic_drift) result.topic_drift = b.topic_drift;
+  if (b.empathy_score) result.empathy_score = b.empathy_score;
+  if (b.hallucination_detected) result.hallucination_detected = b.hallucination_detected;
+
+  // Merge compliance_adherence score into safety_compliance
+  if (b.safety_compliance || b.compliance_adherence) {
+    result.safety_compliance = {
+      compliant: b.safety_compliance?.compliant ?? true,
+      score: b.compliance_adherence?.score,
+      reasoning: b.safety_compliance?.reasoning ?? b.compliance_adherence?.reasoning ?? "",
+    };
+  }
+
+  if (b.escalation_handling) result.escalation_handling = b.escalation_handling;
+
+  return hasContent(result) ? result : null;
+}
+
 function formatEmotion(prosody: ProsodyMetrics): FormattedEmotion {
   return {
     mean_calmness: prosody.mean_calmness,
@@ -286,64 +248,88 @@ function formatEmotion(prosody: ProsodyMetrics): FormattedEmotion {
   };
 }
 
-function consolidateWarnings(
-  audioWarnings: AudioAnalysisWarning[] | undefined,
-  prosodyWarnings: ProsodyWarning[] | undefined,
-): FormattedWarning[] {
-  const warnings: FormattedWarning[] = [];
-  if (audioWarnings) {
-    for (const w of audioWarnings) {
-      warnings.push({
-        metric: w.metric,
-        value: w.value,
-        threshold: w.threshold,
-        severity: w.severity,
-        message: w.message,
-      });
-    }
-  }
-  if (prosodyWarnings) {
-    for (const w of prosodyWarnings) {
-      warnings.push({
-        metric: w.metric,
-        value: w.value,
-        threshold: w.threshold,
-        severity: w.severity,
-        message: w.message,
-      });
-    }
-  }
-  return warnings;
-}
-
-function formatLatencyBreakdown(
-  metrics: ConversationTestResult["metrics"],
-  diagnostics: TestDiagnostics | undefined,
-): FormattedLatencyBreakdown | undefined {
-  const harness = metrics.harness_overhead;
-  const meanTtfb = metrics.mean_ttfb_ms;
-  if (!harness || meanTtfb <= 0) return undefined;
-
-  const networkRtt = diagnostics?.timing?.channel_connect_ms ?? 0;
-  const agentProcessing = Math.max(0, Math.round(meanTtfb - networkRtt));
-  const silencePad = metrics.latency?.mean_silence_pad_ms ?? 0;
-
-  return {
-    agent_response_ms: agentProcessing,
-    network_ms: Math.round(networkRtt),
-    silence_before_speech_ms: Math.round(silencePad),
-    test_overhead_tts_ms: Math.round(harness.mean_tts_ms),
-    test_overhead_stt_ms: Math.round(harness.mean_stt_ms),
-  };
-}
-
-function formatDiagnostics(diag: TestDiagnostics): FormattedDiagnostics {
-  return {
-    error_origin: diag.error_origin,
-    error_detail: diag.error_detail,
-  };
-}
-
 function hasContent(obj: object): boolean {
   return Object.values(obj).some((v) => v != null);
+}
+
+// ---- Load test formatting ----
+
+interface FormattedLoadTestTier {
+  concurrency: number;
+  total_calls: number;
+  successful_calls: number;
+  failed_calls: number;
+  error_rate: number;
+  ttfw_p50_ms: number;
+  ttfw_p95_ms: number;
+  ttfw_p99_ms: number;
+  ttfb_degradation_pct: number;
+  duration_ms: number;
+}
+
+interface FormattedLoadTestSoak extends FormattedLoadTestTier {
+  latency_drift_slope: number;
+  degraded: boolean;
+}
+
+export interface FormattedLoadTestResult {
+  status: "pass" | "fail";
+  severity: LoadTestSeverity;
+  target_concurrency: number;
+  total_calls: number;
+  successful_calls: number;
+  failed_calls: number;
+  duration_ms: number;
+  tiers: FormattedLoadTestTier[];
+  spike?: FormattedLoadTestTier;
+  soak?: FormattedLoadTestSoak;
+  breaking_point?: LoadTestBreakingPoint;
+  grading: LoadTestGrading;
+}
+
+export function formatLoadTestResult(raw: unknown): FormattedLoadTestResult | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as LoadTestResult;
+  if (typeof r.status !== "string") return null;
+
+  // Filter tiers to ramp-only (spike/soak live at top level)
+  const rampTiers = r.tiers.filter(t => !t.phase || t.phase === "ramp");
+
+  return {
+    status: r.status,
+    severity: r.severity,
+    target_concurrency: r.target_concurrency,
+    total_calls: r.total_calls,
+    successful_calls: r.successful_calls,
+    failed_calls: r.failed_calls,
+    duration_ms: r.duration_ms,
+    tiers: rampTiers.map(formatTier),
+    spike: r.spike ? formatTier(r.spike) : undefined,
+    soak: r.soak ? formatSoakTier(r.soak) : undefined,
+    breaking_point: r.breaking_point,
+    grading: r.grading,
+  };
+}
+
+function formatTier(t: LoadTestTierResult): FormattedLoadTestTier {
+  return {
+    concurrency: t.concurrency,
+    total_calls: t.total_calls,
+    successful_calls: t.successful_calls,
+    failed_calls: t.failed_calls,
+    error_rate: t.error_rate,
+    ttfw_p50_ms: t.ttfw_p50_ms,
+    ttfw_p95_ms: t.ttfw_p95_ms,
+    ttfw_p99_ms: t.ttfw_p99_ms,
+    ttfb_degradation_pct: t.ttfb_degradation_pct,
+    duration_ms: t.duration_ms,
+  };
+}
+
+function formatSoakTier(t: LoadTestTierResult): FormattedLoadTestSoak {
+  return {
+    ...formatTier(t),
+    latency_drift_slope: t.latency_drift_slope ?? 0,
+    degraded: t.degraded ?? false,
+  };
 }

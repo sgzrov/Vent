@@ -1,14 +1,13 @@
 /**
- * Judge LLM — evaluates conversation transcripts against eval questions.
+ * Judge LLM — evaluates behavioral metrics from conversation transcripts.
  *
- * Uses Anthropic Sonnet for accuracy. For each eval question, the judge
- * determines if the agent PASSES or FAILS the criterion based on the
- * conversation transcript. If the conversation didn't cover a topic,
- * that's a fail — the test didn't accomplish what it was designed to test.
+ * Uses Anthropic Sonnet for accuracy. Evaluates conversational quality,
+ * sentiment, and safety metrics. All results are observational — the
+ * coding agent interprets them with full codebase context.
  */
 
 import Anthropic from "@anthropic-ai/sdk";
-import type { ConversationTurn, EvalResult, BehavioralMetrics, ObservedToolCall } from "@voiceci/shared";
+import type { ConversationTurn, BehavioralMetrics } from "@voiceci/shared";
 import { LANGUAGE_NAMES } from "@voiceci/voice";
 
 const MODEL = "claude-sonnet-4-6";
@@ -36,32 +35,6 @@ export class JudgeLLM {
 
   constructor() {
     this.client = new Anthropic({ maxRetries: 5 });
-  }
-
-  /**
-   * Evaluate a transcript against a list of eval questions.
-   */
-  async evaluate(
-    transcript: ConversationTurn[],
-    evalQuestions: string[],
-    language?: string,
-    observedToolCalls?: ObservedToolCall[],
-  ): Promise<EvalResult[]> {
-    let context = formatTranscript(transcript);
-    if (observedToolCalls && observedToolCalls.length > 0) {
-      const toolCallLines = observedToolCalls.map((tc, i) => {
-        const args = JSON.stringify(tc.arguments);
-        const result = tc.result != null ? ` → ${JSON.stringify(tc.result)}` : "";
-        const timing = tc.latency_ms != null ? ` [${tc.latency_ms}ms]` : "";
-        const success = tc.successful != null ? (tc.successful ? " [ok]" : " [failed]") : "";
-        const turn = tc.turn_index != null ? ` [turn ${tc.turn_index}]` : "";
-        return `${i + 1}. ${tc.name}(${args})${result}${timing}${success}${turn}`;
-      }).join("\n");
-      context += `\n\nTOOL CALLS OBSERVED:\n${toolCallLines}`;
-    }
-    return Promise.all(
-      evalQuestions.map((q) => this.evaluateQuestion(context, q, language))
-    );
   }
 
   /**
@@ -192,46 +165,4 @@ Be strict but fair.`,
     }
   }
 
-  private async evaluateQuestion(
-    transcript: string,
-    question: string,
-    language?: string,
-  ): Promise<EvalResult> {
-    const langCtx = languageContext(language);
-    const response = await this.client.messages.create({
-      model: MODEL,
-      max_tokens: MAX_TOKENS,
-      temperature: 0,
-      system: `You are evaluating a voice agent's performance based on a conversation transcript and any observed tool calls.${langCtx}
-
-Determine if the agent PASSES or FAILS the given criterion. Be strict but fair. If tool call data is provided, use it as ground truth for what the agent actually did.
-
-If the conversation didn't cover the topic of the criterion, that is a FAIL — the test was designed to evaluate this and it didn't happen.
-
-Output raw JSON only — no markdown, no code fences, no explanation: {"passed": true/false, "reasoning": "brief explanation"}`,
-      messages: [
-        { role: "user", content: `TRANSCRIPT:\n${transcript}\n\nCRITERION: ${question}` },
-      ],
-    });
-
-    const text = stripFences(response.content[0]?.type === "text" ? response.content[0].text : "");
-
-    try {
-      const parsed = JSON.parse(text) as {
-        passed: boolean;
-        reasoning: string;
-      };
-      return {
-        question,
-        passed: parsed.passed,
-        reasoning: parsed.reasoning,
-      };
-    } catch {
-      return {
-        question,
-        passed: false,
-        reasoning: "Failed to parse judge response",
-      };
-    }
-  }
 }

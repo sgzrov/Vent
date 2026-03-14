@@ -7,7 +7,7 @@
  * 3. Collect agent audio (VAD for end-of-turn)
  * 4. STT → text back to caller LLM
  * 5. Repeat until max_turns or caller says [END]
- * 6. Judge LLM evaluates transcript against eval questions
+ * 6. Judge LLM evaluates behavioral metrics (observational)
  */
 
 import type { AudioChannel } from "@voiceci/adapters";
@@ -19,9 +19,7 @@ import type {
   ObservedToolCall,
   ToolCallMetrics,
   AudioActionResult,
-  BehavioralMetrics,
 } from "@voiceci/shared";
-import { DEFAULT_SAFETY_THRESHOLDS } from "@voiceci/shared";
 import { synthesize, BatchVAD, VoiceActivityDetector, StreamingTranscriber, applyEffects, resolveAccentVoiceId, resolveLanguageVoiceId, analyzeAudioQuality, type AudioQualityMetrics } from "@voiceci/voice";
 import { CallerLLM } from "./caller-llm.js";
 import { JudgeLLM } from "./judge-llm.js";
@@ -31,26 +29,6 @@ import { computeAllMetrics } from "../metrics/index.js";
 import { analyzeProsody } from "../metrics/prosody.js";
 import { AdaptiveThreshold } from "./adaptive-threshold.js";
 import { gradeAudioAnalysisMetrics, type TurnAudioData } from "../metrics/audio-analysis.js";
-
-function checkSafetyThresholds(
-  behavioral: Partial<BehavioralMetrics>,
-  overrides?: ConversationTestSpec["safety_thresholds"],
-): boolean {
-  const t = {
-    hallucination: { ...DEFAULT_SAFETY_THRESHOLDS.hallucination, ...overrides?.hallucination },
-    safety_compliance: { ...DEFAULT_SAFETY_THRESHOLDS.safety_compliance, ...overrides?.safety_compliance },
-    compliance_adherence: { ...DEFAULT_SAFETY_THRESHOLDS.compliance_adherence, ...overrides?.compliance_adherence },
-  };
-
-  if (t.hallucination.enabled && behavioral.hallucination_detected?.detected) return false;
-  if (t.safety_compliance.enabled && behavioral.safety_compliance?.compliant === false) return false;
-  if (t.compliance_adherence.enabled && behavioral.compliance_adherence != null) {
-    const minScore = t.compliance_adherence.min_score ?? 0.8;
-    if (behavioral.compliance_adherence.score < minScore) return false;
-  }
-
-  return true;
-}
 
 export async function runConversationTest(
   spec: ConversationTestSpec,
@@ -346,22 +324,12 @@ export async function runConversationTest(
       }
     }
 
-    // Step 7: Judge evaluates transcript + tool calls in parallel
+    // Step 7: Judge evaluates behavioral metrics (observational) + prosody in parallel
     const judge = new JudgeLLM();
-    const judgePromises: Promise<unknown>[] = [
-      judge.evaluate(transcript, spec.eval, language, observedToolCalls),
+    const [behavioral, prosodyResult] = await Promise.all([
       judge.evaluateAllBehavioral(transcript, language),
-    ];
-
-    // Run judge + prosody analysis in parallel
-    const [judgeResults, prosodyResult] = await Promise.all([
-      Promise.all(judgePromises) as Promise<[
-        Awaited<ReturnType<typeof judge.evaluate>>,
-        Awaited<ReturnType<typeof judge.evaluateAllBehavioral>>,
-      ]>,
       spec.prosody ? analyzeProsody(agentAudioBuffers) : Promise.resolve(null),
     ]);
-    const [evalResults, behavioral] = judgeResults;
 
     // Compute deep metrics (instant — pure functions)
     const totalDurationMs = Math.round(performance.now() - startTime);
@@ -444,34 +412,16 @@ export async function runConversationTest(
       harness_overhead,
     };
 
-    // Status: pass only if all eval questions passed AND safety thresholds met
-    const allEvalsPassed =
-      evalResults.length > 0 && evalResults.every((r) => r.passed);
-    const safetyPassed = checkSafetyThresholds(behavioral, spec.safety_thresholds);
-    const allPassed = allEvalsPassed && safetyPassed;
-
     return {
       name: spec.name,
       caller_prompt: spec.caller_prompt,
-      status: allPassed ? "pass" : "fail",
+      status: "completed",
       transcript,
-      eval_results: evalResults,
 
       observed_tool_calls: observedToolCalls.length > 0 ? observedToolCalls : undefined,
       audio_action_results: audioActionResults.length > 0 ? audioActionResults : undefined,
       duration_ms: totalDurationMs,
       metrics,
-      diagnostics: {
-        error_origin: null,
-        error_detail: null,
-        timing: { channel_connect_ms: channel.stats.connectLatencyMs },
-        channel: {
-          connected: channel.connected,
-          error_events: channel.stats.errorEvents,
-          audio_bytes_sent: channel.stats.bytesSent,
-          audio_bytes_received: channel.stats.bytesReceived,
-        },
-      },
     };
   } finally {
     transcriber.close();

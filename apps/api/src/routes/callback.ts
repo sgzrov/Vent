@@ -59,7 +59,7 @@ export async function callbackRoutes(app: FastifyInstance) {
       total: number;
       test_type: "conversation" | "load_test";
       test_name: string;
-      status: "pass" | "fail";
+      status: "pass" | "fail" | "completed" | "error";
       duration_ms: number;
       result?: Record<string, unknown>;
     };
