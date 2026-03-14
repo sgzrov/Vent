@@ -22,22 +22,12 @@ export const DEMO_RUN: RunDetail = {
         caller_prompt:
           "I need to book an appointment for tomorrow at 2pm for a haircut",
         max_turns: 8,
-        eval: [
-          "Did the agent confirm the appointment time?",
-          "Did the agent collect the customer's name?",
-          "Did the agent provide a confirmation number?",
-        ],
       },
       {
         name: "Refund Request",
         caller_prompt:
           "I want a refund for my order #12345, the product arrived damaged",
         max_turns: 10,
-        eval: [
-          "Did the agent acknowledge the issue?",
-          "Did the agent follow the refund policy correctly?",
-          "Did the agent offer to escalate to a supervisor when appropriate?",
-        ],
         persona: {
           emotion: "frustrated",
           pace: "fast",
@@ -57,13 +47,13 @@ export const DEMO_RUN: RunDetail = {
       id: "demo-conv-01",
       run_id: "demo-run-01",
       name: "Appointment Booking",
-      status: "pass",
+      status: "completed",
       test_type: "conversation",
       metrics_json: {
         name: "Appointment Booking",
         caller_prompt:
           "I need to book an appointment for tomorrow at 2pm for a haircut",
-        status: "pass",
+        status: "completed",
         transcript: [
           {
             role: "agent" as const,
@@ -102,29 +92,6 @@ export const DEMO_RUN: RunDetail = {
             ttfb_ms: 710,
             audio_duration_ms: 5800,
             stt_confidence: 0.98,
-          },
-        ],
-        eval_results: [
-          {
-            question: "Did the agent confirm the appointment time?",
-
-            passed: true,
-            reasoning:
-              "The agent confirmed 'tomorrow at 2pm' in the final response.",
-          },
-          {
-            question: "Did the agent collect the customer's name?",
-
-            passed: true,
-            reasoning:
-              "The agent asked for the name and addressed the caller as 'Sarah'.",
-          },
-          {
-            question: "Did the agent provide a confirmation number?",
-
-            passed: true,
-            reasoning:
-              "The agent provided confirmation number SC-4821.",
           },
         ],
         observed_tool_calls: [
@@ -231,13 +198,13 @@ export const DEMO_RUN: RunDetail = {
       id: "demo-conv-02",
       run_id: "demo-run-01",
       name: "Refund Request",
-      status: "fail",
+      status: "completed",
       test_type: "conversation",
       metrics_json: {
         name: "Refund Request",
         caller_prompt:
           "I want a refund for my order #12345, the product arrived damaged",
-        status: "fail",
+        status: "completed",
         transcript: [
           {
             role: "agent" as const,
@@ -291,30 +258,6 @@ export const DEMO_RUN: RunDetail = {
             ttfb_ms: 1240,
             audio_duration_ms: 3800,
             stt_confidence: 0.95,
-          },
-        ],
-        eval_results: [
-          {
-            question: "Did the agent acknowledge the issue?",
-
-            passed: true,
-            reasoning:
-              "The agent said 'I'm sorry to hear that' and looked up the order.",
-          },
-          {
-            question: "Did the agent follow the refund policy correctly?",
-
-            passed: false,
-            reasoning:
-              "The agent offered both a full refund AND a replacement without explaining the policy trade-off. Per policy, customers can choose one or the other, not both.",
-          },
-          {
-            question:
-              "Did the agent offer to escalate to a supervisor when appropriate?",
-
-            passed: true,
-            reasoning:
-              "Escalation was not needed in this context as the agent handled the request directly.",
           },
         ],
         duration_ms: 28600,

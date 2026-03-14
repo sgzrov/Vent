@@ -91,29 +91,10 @@ export interface AudioActionResult {
   transcriptions?: Record<string, string | null>;
 }
 
-export interface SafetyThreshold {
-  enabled: boolean;
-  reasoning?: string;
-  min_score?: number;
-}
-
-export interface SafetyThresholds {
-  hallucination?: SafetyThreshold;
-  safety_compliance?: SafetyThreshold;
-  compliance_adherence?: SafetyThreshold;
-}
-
-export const DEFAULT_SAFETY_THRESHOLDS: Required<SafetyThresholds> = {
-  hallucination: { enabled: true },
-  safety_compliance: { enabled: true },
-  compliance_adherence: { enabled: true, min_score: 0.8 },
-};
-
 export interface ConversationTestSpec {
   name?: string;
   caller_prompt: string;
   max_turns: number;
-  eval: string[];
 
   silence_threshold_ms?: number;
   persona?: CallerPersona;
@@ -127,8 +108,6 @@ export interface ConversationTestSpec {
   language?: string;
   /** Number of times to repeat this test for statistical confidence. Default 1. */
   repeat?: number;
-  /** Safety thresholds that auto-fail the test. Default: all enabled. */
-  safety_thresholds?: SafetyThresholds;
 }
 
 // ============================================================
@@ -231,11 +210,18 @@ export interface ProsodyWarning {
 export interface LoadTestSpec {
   target_concurrency: number;
   caller_prompt: string;
+  /** Array of caller prompts — one picked at random per caller. Use instead of caller_prompt. */
+  caller_prompts?: string[];
   max_turns?: number;
-  eval?: string[];
+  /** Custom ramp steps — overrides default tier computation. */
+  ramps?: number[];
   thresholds?: Partial<LoadTestThresholds>;
   caller_audio?: CallerAudioPool;
   language?: string;
+  /** Spike multiplier — fires spike_multiplier × target_concurrency calls at once. */
+  spike_multiplier?: number;
+  /** Soak duration in minutes — maintains target_concurrency active calls for this duration. */
+  soak_duration_min?: number;
 }
 
 export interface TestSpec {
@@ -291,12 +277,6 @@ export interface ConversationTurn {
   tts_ms?: number;
   /** Harness STT transcription time for this turn's agent audio (ms) */
   stt_ms?: number;
-}
-
-export interface EvalResult {
-  question: string;
-  passed: boolean;
-  reasoning: string;
 }
 
 // ============================================================
@@ -425,16 +405,14 @@ export interface ConversationMetrics {
 export interface ConversationTestResult {
   name?: string;
   caller_prompt: string;
-  status: "pass" | "fail";
+  status: "completed" | "error";
   transcript: ConversationTurn[];
-  eval_results: EvalResult[];
 
   observed_tool_calls?: ObservedToolCall[];
   audio_action_results?: AudioActionResult[];
   duration_ms: number;
   metrics: ConversationMetrics;
   error?: string;
-  diagnostics?: TestDiagnostics;
 }
 
 export interface RunAggregateV2 {
@@ -456,6 +434,7 @@ export interface RunnerCallbackPayloadV2 {
 // ============================================================
 
 export type LoadTestSeverity = "excellent" | "good" | "acceptable" | "critical";
+export type LoadTestPhase = "ramp" | "spike" | "soak";
 
 export interface LoadTestThresholds {
   /** [excellent, good, acceptable] — values above acceptable = critical */
@@ -512,6 +491,12 @@ export interface LoadTestTierResult {
   quality_degradation_pct: number;
   ttfb_degradation_pct: number;
   duration_ms: number;
+  /** Phase identifier — ramp (default), spike, or soak */
+  phase?: LoadTestPhase;
+  /** Soak: linear regression slope of TTFB over call completion order (ms/call). Positive = degradation. */
+  latency_drift_slope?: number;
+  /** Soak: true if drift slope is significantly positive or error rate trended upward */
+  degraded?: boolean;
 }
 
 export interface LoadTestResult {
@@ -527,4 +512,8 @@ export interface LoadTestResult {
   eval_summary?: LoadTestEvalSummary;
   thresholds: LoadTestThresholds;
   duration_ms: number;
+  /** Spike test result (if spike was configured) */
+  spike?: LoadTestTierResult;
+  /** Soak test result (if soak was configured) */
+  soak?: LoadTestTierResult;
 }

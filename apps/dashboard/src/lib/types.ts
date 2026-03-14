@@ -44,29 +44,15 @@ export interface CallerAudioEffects {
   jitter_ms?: number;
 }
 
-export interface SafetyThreshold {
-  enabled: boolean;
-  reasoning?: string;
-  min_score?: number;
-}
-
-export interface SafetyThresholds {
-  hallucination?: SafetyThreshold;
-  safety_compliance?: SafetyThreshold;
-  compliance_adherence?: SafetyThreshold;
-}
-
 export interface ConversationTestSpec {
   name?: string;
   caller_prompt: string;
   max_turns: number;
-  eval: string[];
 
   silence_threshold_ms?: number;
   persona?: CallerPersona;
   prosody?: boolean;
   caller_audio?: CallerAudioEffects;
-  safety_thresholds?: SafetyThresholds;
 }
 
 export interface TestSpec {
@@ -75,7 +61,6 @@ export interface TestSpec {
     target_concurrency: number;
     caller_prompt: string;
     max_turns?: number;
-    eval?: string[];
   };
 }
 
@@ -179,12 +164,6 @@ export interface ConversationTurn {
   stt_ms?: number;
 }
 
-export interface EvalResult {
-  question: string;
-  passed: boolean;
-  reasoning: string;
-}
-
 export interface ObservedToolCall {
   name: string;
   arguments: Record<string, unknown>;
@@ -197,15 +176,14 @@ export interface ObservedToolCall {
 export interface ConversationTestResult {
   name?: string;
   caller_prompt: string;
-  status: "pass" | "fail";
+  status: "completed" | "error";
   transcript: ConversationTurn[];
-  eval_results: EvalResult[];
 
   observed_tool_calls?: ObservedToolCall[];
   audio_action_results?: AudioActionResult[];
   duration_ms: number;
   metrics: ConversationMetrics;
-  diagnostics?: TestDiagnostics;
+  error?: string;
 }
 
 // --- Deep metric types ---
@@ -388,6 +366,9 @@ export interface LoadTestTierResult {
   quality_degradation_pct: number;
   ttfb_degradation_pct: number;
   duration_ms: number;
+  phase?: "ramp" | "spike" | "soak";
+  latency_drift_slope?: number;
+  degraded?: boolean;
 }
 
 export interface LoadTestResult {
@@ -403,6 +384,8 @@ export interface LoadTestResult {
   eval_summary?: LoadTestEvalSummary;
   thresholds: LoadTestThresholds;
   duration_ms: number;
+  spike?: LoadTestTierResult;
+  soak?: LoadTestTierResult;
 }
 
 // --- Artifact types ---
