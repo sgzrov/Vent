@@ -1,9 +1,9 @@
-export { VoiceCIServer } from "./server.js";
-export { VoiceCIConnection } from "./connection.js";
+export { VentServer } from "./server.js";
+export { VentConnection } from "./connection.js";
 export type {
   ToolCallEvent,
   AudioHandlerResult,
   AudioHandlerContext,
   AudioHandler,
-  VoiceCIServerConfig,
+  VentServerConfig,
 } from "./types.js";

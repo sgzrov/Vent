@@ -1,4 +1,4 @@
-app = "voiceci-runner"
+app = "vent-runner"
 primary_region = "iad"
 
 [build]

@@ -18,12 +18,12 @@ COPY packages/adapters packages/adapters
 COPY apps/runner apps/runner
 COPY apps/worker apps/worker
 COPY tsconfig.json tsconfig.json
-RUN pnpm --filter @voiceci/shared build
-RUN pnpm --filter @voiceci/db build
-RUN pnpm --filter @voiceci/voice build
-RUN pnpm --filter @voiceci/adapters build
-RUN pnpm --filter @voiceci/runner build
-RUN pnpm --filter @voiceci/worker build
+RUN pnpm --filter @vent/shared build
+RUN pnpm --filter @vent/db build
+RUN pnpm --filter @vent/voice build
+RUN pnpm --filter @vent/adapters build
+RUN pnpm --filter @vent/runner build
+RUN pnpm --filter @vent/worker build
 
 FROM base AS runtime
 WORKDIR /app

@@ -26,10 +26,10 @@ import type {
   CallerAudioEffects,
   CallerAudioPool,
   ConversationTurn,
-} from "@voiceci/shared";
-import { DEFAULT_LOAD_TEST_THRESHOLDS } from "@voiceci/shared";
-import { createAudioChannel, type AudioChannelConfig } from "@voiceci/adapters";
-import { synthesize, VoiceActivityDetector, StreamingTranscriber, applyEffects, resolveAccentVoiceId, resolveLanguageVoiceId } from "@voiceci/voice";
+} from "@vent/shared";
+import { DEFAULT_LOAD_TEST_THRESHOLDS } from "@vent/shared";
+import { createAudioChannel, type AudioChannelConfig } from "@vent/adapters";
+import { synthesize, VoiceActivityDetector, StreamingTranscriber, applyEffects, resolveAccentVoiceId, resolveLanguageVoiceId } from "@vent/voice";
 import { collectUntilEndOfTurn } from "./audio-tests/helpers.js";
 import { CallerLLM } from "./conversation/caller-llm.js";
 

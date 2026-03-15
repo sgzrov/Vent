@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import IORedis from "ioredis";
-import { createDb, schema, type Database } from "@voiceci/db";
-import { RUNNER_CALLBACK_HEADER } from "@voiceci/shared";
+import { createDb, schema, type Database } from "@vent/db";
+import { RUNNER_CALLBACK_HEADER } from "@vent/shared";
 import type {
   TestSpec,
   LoadTestSpec,
@@ -9,10 +9,10 @@ import type {
   LoadTestTierResult,
   AdapterType,
   PlatformConfig,
-} from "@voiceci/shared";
-import type { AudioChannelConfig } from "@voiceci/adapters";
-import { executeTests } from "@voiceci/runner/executor";
-import { runLoadTest, computeTierSizes } from "@voiceci/runner/load-test";
+} from "@vent/shared";
+import type { AudioChannelConfig } from "@vent/adapters";
+import { executeTests } from "@vent/runner/executor";
+import { runLoadTest, computeTierSizes } from "@vent/runner/load-test";
 
 // ---------------------------------------------------------------------------
 // Event emission — writes to DB and notifies API for SSE/MCP broadcast
@@ -28,7 +28,7 @@ async function emitEvent(
   try {
     // POST to API — it handles both DB write and SSE broadcast.
     // (Don't write to DB here too, or events get duplicated.)
-    const apiUrl = process.env["API_URL"] ?? "https://voiceci-api.fly.dev";
+    const apiUrl = process.env["API_URL"] ?? "https://vent-api.fly.dev";
     const secret = process.env["RUNNER_CALLBACK_SECRET"] ?? "";
     await fetch(`${apiUrl}/internal/run-event`, {
       method: "POST",
@@ -155,7 +155,7 @@ async function executeLoadTestPhase(
 // ---------------------------------------------------------------------------
 
 async function executeRemoteRun(db: Database, job: RunJob): Promise<void> {
-  const apiUrl = process.env["API_URL"] ?? "https://voiceci-api.fly.dev";
+  const apiUrl = process.env["API_URL"] ?? "https://vent-api.fly.dev";
   const callbackSecret = process.env["RUNNER_CALLBACK_SECRET"] ?? "";
   const callbackUrl = `${apiUrl}/internal/runner-callback`;
 
@@ -282,7 +282,7 @@ async function executeRemoteRun(db: Database, job: RunJob): Promise<void> {
 // ---------------------------------------------------------------------------
 
 async function executeRelayRun(db: Database, job: RunJob): Promise<void> {
-  const apiUrl = process.env["API_URL"] ?? "https://voiceci-api.fly.dev";
+  const apiUrl = process.env["API_URL"] ?? "https://vent-api.fly.dev";
   const callbackSecret = process.env["RUNNER_CALLBACK_SECRET"] ?? "";
   const callbackUrl = `${apiUrl}/internal/runner-callback`;
 
@@ -421,7 +421,7 @@ const db = createDb(process.env["DATABASE_URL"]!);
 async function waitForRelayReady(runId: string, timeoutMs = 90_000): Promise<void> {
   const redisUrl = process.env["REDIS_URL"] ?? "redis://localhost:6379";
   const sub = new IORedis(redisUrl, { maxRetriesPerRequest: null });
-  const channel = `voiceci:relay-ready:${runId}`;
+  const channel = `vent:relay-ready:${runId}`;
 
   try {
     await new Promise<void>((resolve, reject) => {
@@ -461,7 +461,7 @@ async function waitForRelayReady(runId: string, timeoutMs = 90_000): Promise<voi
 
         // Race condition guard: relay may have connected before we subscribed.
         // One HTTP check right after subscribe — if already ready, resolve immediately.
-        const apiUrl = process.env["API_URL"] ?? "https://voiceci-api.fly.dev";
+        const apiUrl = process.env["API_URL"] ?? "https://vent-api.fly.dev";
         const secret = process.env["RUNNER_CALLBACK_SECRET"] ?? "";
         fetch(`${apiUrl}/internal/relay-ready/${runId}`, {
           headers: { [RUNNER_CALLBACK_HEADER]: secret },

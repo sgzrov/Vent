@@ -1,5 +1,5 @@
 {
-  "name": "@voiceci/voice",
+  "name": "@vent/voice",
   "version": "0.0.1",
   "private": true,
   "main": "dist/index.js",
@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "@deepgram/sdk": "^4.11.3",
-    "@voiceci/shared": "workspace:*",
+    "@vent/shared": "workspace:*",
     "ws": "^8.18.0"
   },
   "devDependencies": {

@@ -8,8 +8,8 @@ import type {
   TestSpec,
   ConversationTestResult,
   RunAggregateV2,
-} from "@voiceci/shared";
-import { createAudioChannel, type AudioChannelConfig } from "@voiceci/adapters";
+} from "@vent/shared";
+import { createAudioChannel, type AudioChannelConfig } from "@vent/adapters";
 import { runConversationTest } from "./conversation/index.js";
 
 export interface TestStartInfo {

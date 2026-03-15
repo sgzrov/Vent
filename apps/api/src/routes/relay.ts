@@ -3,8 +3,8 @@ import { join } from "node:path";
 import type { FastifyInstance } from "fastify";
 import { eq } from "drizzle-orm";
 import IORedis from "ioredis";
-import { schema } from "@voiceci/db";
-import { RUNNER_CALLBACK_HEADER } from "@voiceci/shared";
+import { schema } from "@vent/db";
+import { RUNNER_CALLBACK_HEADER } from "@vent/shared";
 import { broadcast } from "../lib/run-subscribers.js";
 import type WebSocket from "ws";
 
@@ -209,10 +209,10 @@ async function relayRoutes(app: FastifyInstance) {
     app.log.info({ runId }, "relay/control: connected");
 
     // Notify worker via Redis pub/sub — instant, no polling needed
-    void redisPub.publish(`voiceci:relay-ready:${runId}`, "1");
+    void redisPub.publish(`vent:relay-ready:${runId}`, "1");
 
     // Send agent env vars so relay-client can inject them into the agent process.
-    // VoiceCI provides its own keys — users never need to set up their own.
+    // Vent provides its own keys — users never need to set up their own.
     const agentEnv: Record<string, string> = {};
     const FORWARDED_KEYS = ["DEEPGRAM_API_KEY", "ANTHROPIC_API_KEY"];
     for (const key of FORWARDED_KEYS) {

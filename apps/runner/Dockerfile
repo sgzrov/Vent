@@ -15,10 +15,10 @@ RUN pnpm install --frozen-lockfile
 COPY packages packages
 COPY apps/runner apps/runner
 COPY tsconfig.json tsconfig.json
-RUN pnpm --filter @voiceci/shared build
-RUN pnpm --filter @voiceci/voice build
-RUN pnpm --filter @voiceci/adapters build
-RUN pnpm --filter @voiceci/runner build
+RUN pnpm --filter @vent/shared build
+RUN pnpm --filter @vent/voice build
+RUN pnpm --filter @vent/adapters build
+RUN pnpm --filter @vent/runner build
 
 FROM base AS runtime
 WORKDIR /app

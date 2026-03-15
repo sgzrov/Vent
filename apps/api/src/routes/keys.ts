@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { randomBytes, createHash } from "node:crypto";
 import { eq, and, isNull, desc } from "drizzle-orm";
-import { schema } from "@voiceci/db";
+import { schema } from "@vent/db";
 
 export async function keyRoutes(app: FastifyInstance) {
   const authPreHandler = { preHandler: app.verifyAuth };
@@ -10,7 +10,7 @@ export async function keyRoutes(app: FastifyInstance) {
     const body = request.body as { name?: string } | undefined;
     const name = body?.name ?? "default";
 
-    const rawKey = `voiceci_${randomBytes(24).toString("hex")}`;
+    const rawKey = `vent_${randomBytes(24).toString("hex")}`;
     const keyHash = createHash("sha256").update(rawKey).digest("hex");
     const prefix = rawKey.slice(0, 12);
 

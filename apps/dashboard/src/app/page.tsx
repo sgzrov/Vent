@@ -30,11 +30,8 @@ export default async function LandingPage() {
         <div className="max-w-7xl mx-auto px-6">
           <div className="flex items-center justify-between h-16">
             <div className="flex items-center gap-1">
-              <span className="font-cursive text-xl tracking-tight text-foreground">
-                Light
-              </span>
               <span className="text-xl font-semibold tracking-tight text-foreground">
-                MCP
+                Vent
               </span>
             </div>
             <div className="flex items-center gap-3">
@@ -57,24 +54,22 @@ export default async function LandingPage() {
               <div>
                 <h1 className="text-5xl sm:text-6xl lg:text-7xl font-bold tracking-tight leading-[1.05]">
                   <span className="relative inline-block">
-                    <span className="font-cursive font-normal">Light</span>
+                    Vent
                     <HandDrawnUnderline />
                   </span>
-                  <span className="ml-1">MCP</span>
                 </h1>
               </div>
 
               <p className="text-lg sm:text-xl text-muted-foreground max-w-lg leading-relaxed">
-                The first MCP that lets coding agents test voice agents in real
-                time.
+                CLI tool for coding agents to test voice agents in real time.
               </p>
 
               <div className="space-y-4">
-                <CopyCommandButton command="npx lightmcp@latest init" />
+                <CopyCommandButton command="npx @vent-hq/cli setup" />
 
                 <div className="flex items-center gap-2 text-sm text-muted-foreground/70">
                   <span className="inline-block w-1.5 h-1.5 rounded-full bg-green-500" />
-                  Available with Claude Code and Cursor
+                  Available with Claude Code, Cursor, and Windsurf
                 </div>
               </div>
 

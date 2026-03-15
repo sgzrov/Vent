@@ -1,10 +1,10 @@
 {
-  "name": "@vent-hq/mcp",
-  "version": "0.5.2",
+  "name": "@vent-hq/cli",
+  "version": "0.1.0",
   "type": "module",
-  "description": "LightMCP — CI/CD for voice AI agents",
+  "description": "Vent CLI — CI/CD for voice AI agents",
   "bin": {
-    "lightmcp": "dist/index.mjs"
+    "vent": "dist/index.mjs"
   },
   "files": [
     "dist"
@@ -14,8 +14,8 @@
     "clean": "rm -rf dist"
   },
   "keywords": [
-    "lightmcp",
-    "mcp",
+    "vent",
+    "cli",
     "voice",
     "agent",
     "testing",
@@ -24,16 +24,17 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/voiceci/voiceci",
-    "directory": "packages/mcp"
+    "url": "https://github.com/vent-hq/vent",
+    "directory": "packages/cli"
   },
-  "homepage": "https://lightmcp.com",
+  "homepage": "https://ventmcp.dev",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.10.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {
     "@types/ws": "^8.5.0",
+    "@vent/shared": "workspace:*",
+    "@vent/relay-client": "workspace:*",
     "esbuild": "^0.24.0"
   }
 }

@@ -1,5 +1,5 @@
 {
-  "name": "@voiceci/runner",
+  "name": "@vent/runner",
   "version": "0.0.1",
   "private": true,
   "main": "dist/executor.js",
@@ -14,9 +14,9 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",
-    "@voiceci/adapters": "workspace:*",
-    "@voiceci/shared": "workspace:*",
-    "@voiceci/voice": "workspace:*",
+    "@vent/adapters": "workspace:*",
+    "@vent/shared": "workspace:*",
+    "@vent/voice": "workspace:*",
     "hume": "^0.15.15"
   },
   "devDependencies": {

@@ -91,7 +91,7 @@ export function TestDocumentation() {
                   How Conversation Tests Work
                 </p>
                 <p className="text-xs text-muted-foreground leading-relaxed">
-                  VoiceCI simulates a real caller using an LLM-driven persona.
+                  Vent simulates a real caller using an LLM-driven persona.
                   Each turn follows this pipeline:
                 </p>
                 <ol className="text-xs text-muted-foreground space-y-1 list-decimal list-inside">
@@ -174,7 +174,7 @@ export function TestDocumentation() {
               <div className="rounded-md bg-muted/30 p-3 space-y-2">
                 <p className="text-sm font-medium">Audio Analysis</p>
                 <p className="text-xs text-muted-foreground leading-relaxed">
-                  VoiceCI uses batch VAD (Voice Activity Detection) on the
+                  Vent uses batch VAD (Voice Activity Detection) on the
                   agent&apos;s audio to compute: speech ratio, talk ratio,
                   longest monologue, silence gaps, and per-turn speech
                   segmentation. These metrics help identify agents that

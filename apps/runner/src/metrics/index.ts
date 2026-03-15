@@ -8,7 +8,7 @@ import type {
   LatencyMetrics,
   AudioAnalysisMetrics,
   HarnessOverhead,
-} from "@voiceci/shared";
+} from "@vent/shared";
 import { computeTranscriptMetrics } from "./transcript.js";
 import { computeLatencyMetrics, computeHarnessOverhead } from "./latency.js";
 import { computeAudioAnalysisMetrics, type TurnAudioData } from "./audio-analysis.js";

@@ -20,8 +20,8 @@ export const queuePlugin = fp(async (app) => {
       const q = new Queue(name, { connection });
       queues.set(name, q);
       // Notify worker of new queue via Redis Set + pub/sub
-      void connection.sadd("voiceci:active-queues", name);
-      void connection.publish("voiceci:new-queue", name);
+      void connection.sadd("vent:active-queues", name);
+      void connection.publish("vent:new-queue", name);
     }
     return queues.get(name)!;
   });

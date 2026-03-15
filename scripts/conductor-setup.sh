@@ -12,7 +12,7 @@ CONDUCTOR_REPO_ROOT="${CONDUCTOR_ROOT:+$CONDUCTOR_ROOT/repos/$REPO_NAME}"
 
 cd "$PROJECT_ROOT"
 
-echo "==> Setting up VoiceCI workspace in $PROJECT_ROOT"
+echo "==> Setting up Vent workspace in $PROJECT_ROOT"
 
 # ── 1. Copy env files ─────────────────────────────────────────────────────────
 

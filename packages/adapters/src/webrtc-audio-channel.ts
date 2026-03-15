@@ -5,7 +5,7 @@
  * receives agent audio via AudioStream. Handles 24kHz <-> 48kHz
  * resampling internally (LiveKit uses 48kHz by default).
  *
- * Supports tool call capture via DataChannel on topic "voiceci:tool-calls".
+ * Supports tool call capture via DataChannel on topic "vent:tool-calls".
  * Agents emit JSON tool call events via publishData() or sendText(),
  * and this adapter collects them for getCallData().
  *
@@ -27,8 +27,8 @@ import {
   dispose,
 } from "@livekit/rtc-node";
 import { AccessToken } from "livekit-server-sdk";
-import { resample } from "@voiceci/voice";
-import type { ObservedToolCall } from "@voiceci/shared";
+import { resample } from "@vent/voice";
+import type { ObservedToolCall } from "@vent/shared";
 import { BaseAudioChannel } from "./audio-channel.js";
 
 interface WsToolCallEvent {
@@ -50,7 +50,7 @@ export interface WebRtcAudioChannelConfig {
 }
 
 export class WebRtcAudioChannel extends BaseAudioChannel {
-  private static readonly TOOL_CALL_TOPIC = "voiceci:tool-calls";
+  private static readonly TOOL_CALL_TOPIC = "vent:tool-calls";
 
   private config: WebRtcAudioChannelConfig;
   private room: Room | null = null;
@@ -76,7 +76,7 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
     const token = new AccessToken(
       this.config.apiKey,
       this.config.apiSecret,
-      { identity: "voiceci-tester" }
+      { identity: "vent-tester" }
     );
     token.addGrant({
       roomJoin: true,
@@ -112,7 +112,7 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
     // Set up audio source for publishing
     this.audioSource = new AudioSource(this.livekitSampleRate, 1);
     this.localTrack = LocalAudioTrack.createAudioTrack(
-      "voiceci-tester",
+      "vent-tester",
       this.audioSource
     );
     await this.room.localParticipant!.publishTrack(

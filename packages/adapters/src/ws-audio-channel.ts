@@ -9,7 +9,7 @@
  */
 
 import WebSocket from "ws";
-import type { ObservedToolCall } from "@voiceci/shared";
+import type { ObservedToolCall } from "@vent/shared";
 import { BaseAudioChannel } from "./audio-channel.js";
 
 export interface WsAudioChannelConfig {

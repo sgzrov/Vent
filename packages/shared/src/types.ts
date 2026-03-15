@@ -230,7 +230,7 @@ export interface TestSpec {
 }
 
 export interface TestDiagnostics {
-  /** "platform" = VoiceCI infra issue, "agent" = user's agent issue, null = test passed */
+  /** "platform" = Vent infra issue, "agent" = user's agent issue, null = test passed */
   error_origin: "platform" | "agent" | null;
   error_detail: string | null;
   timing: {

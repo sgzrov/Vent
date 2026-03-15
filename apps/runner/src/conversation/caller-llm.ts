@@ -10,8 +10,8 @@
  */
 
 import Anthropic from "@anthropic-ai/sdk";
-import type { ConversationTurn, CallerPersona } from "@voiceci/shared";
-import { LANGUAGE_NAMES } from "@voiceci/voice";
+import type { ConversationTurn, CallerPersona } from "@vent/shared";
+import { LANGUAGE_NAMES } from "@vent/voice";
 
 const MODEL = "claude-haiku-4-5-20251001";
 const MAX_TOKENS = 200;

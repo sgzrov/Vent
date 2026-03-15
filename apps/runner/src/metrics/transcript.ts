@@ -2,7 +2,7 @@
  * Transcript-level metrics — pure functions, no external deps.
  */
 
-import type { ConversationTurn, TranscriptMetrics } from "@voiceci/shared";
+import type { ConversationTurn, TranscriptMetrics } from "@vent/shared";
 
 const FILLER_WORDS = new Set([
   "um", "uh", "erm", "er", "ah", "like", "hmm", "hm",

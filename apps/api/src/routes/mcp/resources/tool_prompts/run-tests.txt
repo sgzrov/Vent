@@ -1,9 +1,0 @@
-Run conversation tests against a voice agent. CI/CD for voice AI.
-
-Workflow: After modifying voice agent code, analyze the codebase (system prompt, tools, conversation flows), generate a test config inline, and pass it as the `config` parameter. If .vent/suite.json exists, read it for full suite runs. Cache generated configs to .vent/.cache/last-run.json for quick reruns after fixes. Call vent_docs for the full config schema and testing workflow.
-
-Each test uses CallerLLM-driven conversations with optional audio_actions (interrupt, silence, inject_noise, split_sentence, noise_on_caller) at specific turns. Every test returns full metrics: signal quality (SNR, clipping, energy), latency (TTFB/TTFW percentiles, drift), behavioral scores (intent accuracy, empathy, hallucination, context retention), audio analysis, tool call tracking, and prosody/emotion analysis.
-
-Include `start_command` in the config for local agents. Vent starts the agent automatically — do NOT start it yourself. For deployed agents, set `agent_url` instead.
-
-After getting the run_id, spawn subagents to monitor results via vent_get_run_status. One subagent per test name (≤5 tests) or split across 5 subagents (>5 tests).

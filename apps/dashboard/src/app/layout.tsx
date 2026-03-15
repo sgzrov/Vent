@@ -7,7 +7,7 @@ import "./globals.css";
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "LightMCP Dashboard",
+  title: "Vent",
   description: "The first MCP that lets coding agents test voice agents in real time.",
 };
 

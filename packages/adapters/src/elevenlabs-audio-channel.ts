@@ -9,8 +9,8 @@
  */
 
 import WebSocket from "ws";
-import type { ObservedToolCall } from "@voiceci/shared";
-import { resample } from "@voiceci/voice";
+import type { ObservedToolCall } from "@vent/shared";
+import { resample } from "@vent/voice";
 import { BaseAudioChannel } from "./audio-channel.js";
 
 export interface ElevenLabsAudioChannelConfig {
