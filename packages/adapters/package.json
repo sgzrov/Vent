@@ -1,5 +1,5 @@
 {
-  "name": "@voiceci/adapters",
+  "name": "@vent/adapters",
   "version": "0.0.1",
   "private": true,
   "main": "dist/index.js",
@@ -10,8 +10,8 @@
   },
   "dependencies": {
     "@livekit/rtc-node": "^0.13.0",
-    "@voiceci/shared": "workspace:*",
-    "@voiceci/voice": "workspace:*",
+    "@vent/shared": "workspace:*",
+    "@vent/voice": "workspace:*",
     "livekit-server-sdk": "^2.0.0",
     "twilio": "^5.12.2",
     "ws": "^8.18.0"

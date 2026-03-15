@@ -1,5 +1,5 @@
 {
-  "name": "@voiceci/db",
+  "name": "@vent/db",
   "version": "0.0.1",
   "private": true,
   "main": "dist/index.js",

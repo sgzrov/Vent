@@ -2,7 +2,7 @@
  * Latency metrics — percentiles, turn gaps, silence detection, harness overhead.
  */
 
-import type { ConversationTurn, LatencyMetrics, HarnessOverhead } from "@voiceci/shared";
+import type { ConversationTurn, LatencyMetrics, HarnessOverhead } from "@vent/shared";
 
 /**
  * Compute percentile from a sorted array of numbers.
@@ -99,7 +99,7 @@ export function computeLatencyMetrics(turns: ConversationTurn[], connectLatencyM
 
 /**
  * Compute harness overhead — TTS and STT timing from test infrastructure.
- * These are VoiceCI's own API call durations, not the agent's internal timings.
+ * These are Vent's own API call durations, not the agent's internal timings.
  */
 export function computeHarnessOverhead(turns: ConversationTurn[]): HarnessOverhead | undefined {
   const ttsValues = turns

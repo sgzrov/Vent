@@ -2,8 +2,8 @@
  * Shared helpers for audio test executors.
  */
 
-import type { AudioChannel } from "@voiceci/adapters";
-import { VoiceActivityDetector, type VADState, transcribe as sttTranscribe } from "@voiceci/voice";
+import type { AudioChannel } from "@vent/adapters";
+import { VoiceActivityDetector, type VADState, transcribe as sttTranscribe } from "@vent/voice";
 import { generateSilence } from "./signals.js";
 
 /**

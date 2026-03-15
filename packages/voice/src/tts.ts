@@ -3,7 +3,7 @@
  */
 
 import { createClient, DeepgramApiError } from "@deepgram/sdk";
-import { withRetry } from "@voiceci/shared";
+import { withRetry } from "@vent/shared";
 
 const DEFAULT_MODEL = "aura-2-thalia-en";
 

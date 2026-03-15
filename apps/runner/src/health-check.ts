@@ -1,7 +1,7 @@
 import {
   DEFAULT_HEALTH_TIMEOUT_MS,
   DEFAULT_HEALTH_INTERVAL_MS,
-} from "@voiceci/shared";
+} from "@vent/shared";
 
 export async function waitForHealth(
   url: string,

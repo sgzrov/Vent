@@ -5,8 +5,8 @@
  * per-turn speech patterns from batch VAD speech segments.
  */
 
-import type { AudioAnalysisMetrics, AudioAnalysisGradeThresholds, AudioAnalysisWarning } from "@voiceci/shared";
-import type { SpeechSegment } from "@voiceci/voice";
+import type { AudioAnalysisMetrics, AudioAnalysisGradeThresholds, AudioAnalysisWarning } from "@vent/shared";
+import type { SpeechSegment } from "@vent/voice";
 
 export interface TurnAudioData {
   role: "caller" | "agent";

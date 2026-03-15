@@ -1,4 +1,4 @@
-app = "voiceci-api"
+app = "vent-api"
 primary_region = "iad"
 
 [build]

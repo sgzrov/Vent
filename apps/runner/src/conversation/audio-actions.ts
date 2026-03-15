@@ -5,8 +5,8 @@
  * measuring infrastructure signals while the conversation continues.
  */
 
-import type { AudioChannel } from "@voiceci/adapters";
-import type { AudioAction, AudioActionResult, CallerAudioEffects } from "@voiceci/shared";
+import type { AudioChannel } from "@vent/adapters";
+import type { AudioAction, AudioActionResult, CallerAudioEffects } from "@vent/shared";
 import {
   synthesize,
   generateBabbleNoise,
@@ -14,14 +14,14 @@ import {
   generatePinkNoise,
   mixAudio,
   applyEffects,
-} from "@voiceci/voice";
+} from "@vent/voice";
 import {
   collectUntilEndOfTurn,
   waitForSpeech,
   streamSilence,
   transcribeAudio,
 } from "../audio-tests/helpers.js";
-import type { VoiceActivityDetector, StreamingTranscriber } from "@voiceci/voice";
+import type { VoiceActivityDetector, StreamingTranscriber } from "@vent/voice";
 
 interface ActionContext {
   channel: AudioChannel;

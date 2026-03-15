@@ -10,7 +10,7 @@
  */
 
 import { EventEmitter } from "node:events";
-import type { ObservedToolCall, ChannelStats } from "@voiceci/shared";
+import type { ObservedToolCall, ChannelStats } from "@vent/shared";
 
 export interface AudioChannelEvents {
   audio: (chunk: Buffer) => void;

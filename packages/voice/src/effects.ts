@@ -4,7 +4,7 @@
  * clarity, packet loss, jitter, and accent (via TTS voice selection).
  */
 
-import type { CallerAudioEffects } from "@voiceci/shared";
+import type { CallerAudioEffects } from "@vent/shared";
 import { resample } from "./format.js";
 import {
   generateBabbleNoise,

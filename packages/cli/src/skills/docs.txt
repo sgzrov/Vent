@@ -110,7 +110,7 @@ WebRTC (LiveKit — requires LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET en
 vapi/retell/elevenlabs/bland: automatic via platform API (no user code needed).
 WebSocket/WebRTC/SIP: user's agent must emit tool calls:
   WebSocket — JSON text frame: {"type":"tool_call","name":"...","arguments":{},"result":{},"successful":true,"duration_ms":150}
-  WebRTC/LiveKit — publishData() or sendText() on topic "voiceci:tool-calls". Same JSON.
+  WebRTC/LiveKit — publishData() or sendText() on topic "vent:tool-calls". Same JSON.
   SIP — POST to callback URL Vent provides at call start.
 </tool_call_capture>
 

@@ -1,5 +1,5 @@
 {
-  "name": "@voiceci/dashboard",
+  "name": "@vent/dashboard",
   "version": "0.0.1",
   "private": true,
   "scripts": {

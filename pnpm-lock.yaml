@@ -35,16 +35,16 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: ^1.10.0
         version: 1.26.0(zod@3.25.76)
-      '@voiceci/adapters':
+      '@vent/adapters':
         specifier: workspace:*
         version: link:../../packages/adapters
-      '@voiceci/db':
+      '@vent/db':
         specifier: workspace:*
         version: link:../../packages/db
-      '@voiceci/runner':
+      '@vent/runner':
         specifier: workspace:*
         version: link:../runner
-      '@voiceci/shared':
+      '@vent/shared':
         specifier: workspace:*
         version: link:../../packages/shared
       '@workos-inc/node':
@@ -139,13 +139,13 @@ importers:
       '@anthropic-ai/sdk':
         specifier: ^0.78.0
         version: 0.78.0(zod@3.25.76)
-      '@voiceci/adapters':
+      '@vent/adapters':
         specifier: workspace:*
         version: link:../../packages/adapters
-      '@voiceci/shared':
+      '@vent/shared':
         specifier: workspace:*
         version: link:../../packages/shared
-      '@voiceci/voice':
+      '@vent/voice':
         specifier: workspace:*
         version: link:../../packages/voice
       hume:
@@ -158,16 +158,16 @@ importers:
 
   apps/worker:
     dependencies:
-      '@voiceci/adapters':
+      '@vent/adapters':
         specifier: workspace:*
         version: link:../../packages/adapters
-      '@voiceci/db':
+      '@vent/db':
         specifier: workspace:*
         version: link:../../packages/db
-      '@voiceci/runner':
+      '@vent/runner':
         specifier: workspace:*
         version: link:../runner
-      '@voiceci/shared':
+      '@vent/shared':
         specifier: workspace:*
         version: link:../../packages/shared
       bullmq:
@@ -189,10 +189,10 @@ importers:
       '@livekit/rtc-node':
         specifier: ^0.13.0
         version: 0.13.24
-      '@voiceci/shared':
+      '@vent/shared':
         specifier: workspace:*
         version: link:../shared
-      '@voiceci/voice':
+      '@vent/voice':
         specifier: workspace:*
         version: link:../voice
       livekit-server-sdk:
@@ -224,6 +224,25 @@ importers:
       typescript:
         specifier: ^5.7.0
         version: 5.9.3
+
+  packages/cli:
+    dependencies:
+      ws:
+        specifier: ^8.18.0
+        version: 8.19.0
+    devDependencies:
+      '@types/ws':
+        specifier: ^8.5.0
+        version: 8.18.1
+      '@vent/relay-client':
+        specifier: workspace:*
+        version: link:../relay-client
+      '@vent/shared':
+        specifier: workspace:*
+        version: link:../shared
+      esbuild:
+        specifier: ^0.24.0
+        version: 0.24.2
 
   packages/db:
     dependencies:
@@ -297,7 +316,7 @@ importers:
       '@deepgram/sdk':
         specifier: ^4.11.3
         version: 4.11.3
-      '@voiceci/shared':
+      '@vent/shared':
         specifier: workspace:*
         version: link:../shared
       ws:

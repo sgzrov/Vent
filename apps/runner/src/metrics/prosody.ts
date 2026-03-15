@@ -8,9 +8,9 @@ import type {
   TurnEmotionProfile,
   ProsodyMetrics,
   ProsodyWarning,
-} from "@voiceci/shared";
-import { withRetry } from "@voiceci/shared";
-import { pcmToWav } from "@voiceci/voice";
+} from "@vent/shared";
+import { withRetry } from "@vent/shared";
+import { pcmToWav } from "@vent/voice";
 import { HumeClient, HumeError, HumeTimeoutError } from "hume";
 
 // ============================================================

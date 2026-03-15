@@ -1,6 +1,6 @@
 /**
  * Transforms raw ConversationTestResult into a structured, grouped format
- * for coding agent consumption via MCP.
+ * for agent consumption (CLI and MCP).
  *
  * Groups metrics by concern and removes Vent internals (harness overhead,
  * Hume API timing, our TTS/STT processing time).
@@ -23,9 +23,9 @@ import type {
   LoadTestSeverity,
   LoadTestBreakingPoint,
   LoadTestGrading,
-} from "@voiceci/shared";
+} from "./types.js";
 
-// ---- Formatted types (MCP API-specific, not in shared) ----
+// ---- Formatted types ----
 
 interface FormattedTranscriptTurn {
   role: "caller" | "agent";

@@ -8,7 +8,7 @@ import type { FastifyReply } from "fastify";
 const subscribers = new Map<string, Set<FastifyReply>>();
 
 /**
- * Promise-based waiters for long-polling (MCP tools).
+ * Promise-based waiters for long-polling.
  * When broadcast fires, any pending waiters for that runId are resolved.
  */
 const waiters = new Map<string, Set<() => void>>();
@@ -86,7 +86,7 @@ export function broadcast(runId: string, event: RunEventPayload): void {
     }
   }
 
-  // Resolve any long-poll waiters (MCP tools)
+  // Resolve any long-poll waiters
   const waiterSet = waiters.get(runId);
   if (waiterSet && waiterSet.size > 0) {
     for (const handler of waiterSet) handler();

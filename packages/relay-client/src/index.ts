@@ -8,7 +8,7 @@ import { RelayClient } from "./client.js";
 function getArg(name: string, fallback?: string): string {
   const idx = process.argv.indexOf(`--${name}`);
   if (idx !== -1 && process.argv[idx + 1]) return process.argv[idx + 1]!;
-  const env = process.env[`VOICECI_${name.toUpperCase().replace(/-/g, "_")}`];
+  const env = process.env[`VENT_${name.toUpperCase().replace(/-/g, "_")}`];
   if (env) return env;
   if (fallback !== undefined) return fallback;
   console.error(`Missing required argument: --${name}`);
@@ -86,7 +86,7 @@ async function waitForHealth(port: number, path: string, timeoutMs = 60_000): Pr
 let agentProcess: ChildProcess | null = null;
 
 async function main() {
-  // 1. Connect relay first — receives env vars (API keys) from VoiceCI server
+  // 1. Connect relay first — receives env vars (API keys) from Vent server
   const client = new RelayClient({
     apiUrl,
     runId,
@@ -101,10 +101,10 @@ async function main() {
 
   const envKeys = Object.keys(client.agentEnv);
   if (envKeys.length > 0) {
-    console.error(`[relay] Received env vars from VoiceCI: ${envKeys.join(", ")}`);
+    console.error(`[relay] Received env vars from Vent: ${envKeys.join(", ")}`);
   }
 
-  // 2. Start agent if --start-command provided, with VoiceCI env vars injected
+  // 2. Start agent if --start-command provided, with Vent env vars injected
   if (startCommand) {
     await killPort(agentPort);
     console.error(`[relay] Starting agent: ${startCommand}`);

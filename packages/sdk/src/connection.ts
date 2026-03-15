@@ -1,7 +1,7 @@
 /**
  * Per-WebSocket connection state.
  *
- * Each VoiceCI test creates its own WS connection (see executor.ts:68,85).
+ * Each Vent test creates its own WS connection (see executor.ts:68,85).
  * This class provides per-connection isolation — no cross-talk between
  * concurrent tests.
  */
@@ -10,7 +10,7 @@ import { randomUUID } from "node:crypto";
 import type WebSocket from "ws";
 import type { ToolCallEvent, AudioHandler, AudioHandlerContext } from "./types.js";
 
-export class VoiceCIConnection {
+export class VentConnection {
   private ws: WebSocket;
   private handler: AudioHandler;
   private id: string;
@@ -29,7 +29,7 @@ export class VoiceCIConnection {
           data instanceof Buffer ? data : Buffer.from(data as ArrayBuffer);
         this.handleAudio(buf);
       }
-      // Text frames from VoiceCI are ignored — the runner only sends binary audio
+      // Text frames from Vent are ignored — the runner only sends binary audio
     });
   }
 
@@ -46,7 +46,7 @@ export class VoiceCIConnection {
         this.sendAudioFrame(result.audio);
       }
     } catch (err) {
-      console.error("[voiceci-sdk] onAudio handler error:", err);
+      console.error("[vent-sdk] onAudio handler error:", err);
     }
   }
 
