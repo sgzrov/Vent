@@ -1,5 +1,5 @@
 {
-  "name": "@voiceci/artifacts",
+  "name": "@vent/artifacts",
   "version": "0.0.1",
   "private": true,
   "main": "dist/index.js",

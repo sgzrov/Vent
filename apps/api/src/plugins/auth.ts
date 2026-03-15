@@ -1,7 +1,7 @@
 import fp from "fastify-plugin";
 import { createHash } from "node:crypto";
 import { eq, and, isNull } from "drizzle-orm";
-import { schema } from "@voiceci/db";
+import { schema } from "@vent/db";
 import { WorkOS } from "@workos-inc/node";
 
 declare module "fastify" {
@@ -97,7 +97,7 @@ export const authPlugin = fp(async (app) => {
   }
 
   async function verifyAuth(request: any, reply: any) {
-    // Path 1: Bearer API key (MCP/CLI)
+    // Path 1: Bearer API key (CLI)
     const apiKeyAuth = await tryAuthenticateApiKey(request, reply, false);
     if (apiKeyAuth === "ok" || apiKeyAuth === "invalid") {
       return;

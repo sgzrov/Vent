@@ -1,8 +1,8 @@
-# VoiceCI Agent Guidelines
+# Vent Agent Guidelines
 
 ## Testing Context
 
-This is the MCP src repo. There is a separate test repo used for testing the VoiceCI MCP server against actual codebases. When logs, errors, or test output from the MCP or integration tests are pasted here, they originate from that test repo.
+This is the MCP src repo. There is a separate test repo used for testing the Vent MCP server against actual codebases. When logs, errors, or test output from the MCP or integration tests are pasted here, they originate from that test repo.
 
 ## Workflow Orchestration
 
@@ -78,7 +78,7 @@ Use `type: small description` format for commits.
 Developers building voice AI agents who use coding agents (Claude Code, Cursor, Windsurf). They connect via MCP — no CLI install needed. They're technical, time-constrained, and care about test results, not UI chrome. They visit the dashboard to review run results, compare baselines, and manage API keys.
 
 ### Brand Personality
-**Bold, Innovative, Cutting-edge.** VoiceCI is a new category — CI/CD for voice agents — and the brand should reflect that pioneering position. The tone is confident and direct, never corporate or hand-wavy.
+**Bold, Innovative, Cutting-edge.** Vent is a new category — CI/CD for voice agents — and the brand should reflect that pioneering position. The tone is confident and direct, never corporate or hand-wavy.
 
 ### Emotional Goal
 **Calm clarity.** When developers land on the dashboard, everything should feel organized and immediately scannable. No cognitive overhead. Status is obvious, results are front-and-center, navigation is minimal.

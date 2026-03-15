@@ -20,13 +20,13 @@ COPY packages/relay-client packages/relay-client
 COPY apps/runner apps/runner
 COPY apps/api apps/api
 COPY tsconfig.json tsconfig.json
-RUN pnpm --filter @voiceci/shared build
-RUN pnpm --filter @voiceci/db build
-RUN pnpm --filter @voiceci/voice build
-RUN pnpm --filter @voiceci/adapters build
-RUN pnpm --filter @voiceci/runner build
-RUN pnpm --filter @voiceci/relay-client build
-RUN pnpm --filter @voiceci/api build
+RUN pnpm --filter @vent/shared build
+RUN pnpm --filter @vent/db build
+RUN pnpm --filter @vent/voice build
+RUN pnpm --filter @vent/adapters build
+RUN pnpm --filter @vent/runner build
+RUN pnpm --filter @vent/relay-client build
+RUN pnpm --filter @vent/api build
 
 FROM base AS runtime
 WORKDIR /app

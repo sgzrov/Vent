@@ -11,7 +11,7 @@
 #   memory_mb: 1024
 #   auto_destroy: true
 #   restart_policy: no
-#   image: registry.fly.io/voiceci-runner:latest
+#   image: registry.fly.io/vent-runner:latest
 #
 # Required env vars (set by worker):
 #   RUN_ID

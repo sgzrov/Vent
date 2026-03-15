@@ -10,7 +10,7 @@
  * 6. Judge LLM evaluates behavioral metrics (observational)
  */
 
-import type { AudioChannel } from "@voiceci/adapters";
+import type { AudioChannel } from "@vent/adapters";
 import type {
   ConversationTestSpec,
   ConversationTestResult,
@@ -19,8 +19,8 @@ import type {
   ObservedToolCall,
   ToolCallMetrics,
   AudioActionResult,
-} from "@voiceci/shared";
-import { synthesize, BatchVAD, VoiceActivityDetector, StreamingTranscriber, applyEffects, resolveAccentVoiceId, resolveLanguageVoiceId, analyzeAudioQuality, type AudioQualityMetrics } from "@voiceci/voice";
+} from "@vent/shared";
+import { synthesize, BatchVAD, VoiceActivityDetector, StreamingTranscriber, applyEffects, resolveAccentVoiceId, resolveLanguageVoiceId, analyzeAudioQuality, type AudioQualityMetrics } from "@vent/voice";
 import { CallerLLM } from "./caller-llm.js";
 import { JudgeLLM } from "./judge-llm.js";
 import { executeAudioAction, mixCallerWithNoise } from "./audio-actions.js";

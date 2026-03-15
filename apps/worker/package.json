@@ -1,5 +1,5 @@
 {
-  "name": "@voiceci/worker",
+  "name": "@vent/worker",
   "version": "0.0.1",
   "private": true,
   "main": "dist/index.js",
@@ -10,10 +10,10 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@voiceci/shared": "workspace:*",
-    "@voiceci/db": "workspace:*",
-    "@voiceci/runner": "workspace:*",
-    "@voiceci/adapters": "workspace:*",
+    "@vent/shared": "workspace:*",
+    "@vent/db": "workspace:*",
+    "@vent/runner": "workspace:*",
+    "@vent/adapters": "workspace:*",
     "bullmq": "^5.30.0",
     "ioredis": "^5.4.0"
   },

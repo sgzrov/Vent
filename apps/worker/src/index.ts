@@ -1,6 +1,6 @@
 import { Worker } from "bullmq";
 import IORedis from "ioredis";
-import type { PlatformConfig } from "@voiceci/shared";
+import type { PlatformConfig } from "@vent/shared";
 import { executeRun } from "./jobs/run-executor.js";
 
 const redisUrl = process.env["REDIS_URL"] ?? "redis://localhost:6379";
@@ -69,7 +69,7 @@ function createWorkerForQueue(queueName: string) {
 
 async function start() {
   // Discover existing per-user queues from Redis Set
-  const existingQueues = await connection.smembers("voiceci:active-queues");
+  const existingQueues = await connection.smembers("vent:active-queues");
   for (const queueName of existingQueues) {
     createWorkerForQueue(queueName);
   }
@@ -77,12 +77,12 @@ async function start() {
 
   // Subscribe to pub/sub for new queues created at runtime
   const sub = connection.duplicate();
-  await sub.subscribe("voiceci:new-queue");
+  await sub.subscribe("vent:new-queue");
   sub.on("message", (_channel, queueName) => {
     createWorkerForQueue(queueName);
   });
 
-  console.log(`VoiceCI Worker started (per-user concurrency: ${perUserConcurrency}), listening for queues...`);
+  console.log(`Vent Worker started (per-user concurrency: ${perUserConcurrency}), listening for queues...`);
 }
 
 start().catch((err) => {

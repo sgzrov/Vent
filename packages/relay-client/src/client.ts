@@ -26,7 +26,7 @@ export class RelayClient {
     this.config = config;
   }
 
-  /** Env vars received from VoiceCI server to inject into the agent process. */
+  /** Env vars received from Vent server to inject into the agent process. */
   get agentEnv(): Record<string, string> {
     return this._agentEnv;
   }

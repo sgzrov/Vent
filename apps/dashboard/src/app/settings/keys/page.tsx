@@ -105,7 +105,7 @@ export default function ApiKeysPage() {
             API Keys
           </h1>
           <p className="text-[14px] text-muted-foreground mt-2">
-            Manage API keys for authenticating with the VoiceCI MCP server.
+            Manage API keys for authenticating with the Vent MCP server.
           </p>
         </div>
         <Dialog
@@ -149,7 +149,7 @@ export default function ApiKeysPage() {
                     Usage in MCP config:
                   </p>
                   <code className="text-xs">
-                    {`"headers": { "Authorization": "Bearer $\{VOICECI_API_KEY\}" }`}
+                    {`"headers": { "Authorization": "Bearer $\{VENT_API_KEY\}" }`}
                   </code>
                 </div>
               </div>
@@ -189,7 +189,7 @@ export default function ApiKeysPage() {
             <Key className="h-8 w-8 mx-auto mb-3 text-muted-foreground" />
             <p className="text-muted-foreground">No API keys yet.</p>
             <p className="text-sm text-muted-foreground mt-1">
-              Create a key to authenticate with the VoiceCI MCP server.
+              Create a key to authenticate with the Vent MCP server.
             </p>
           </CardContent>
         </Card>

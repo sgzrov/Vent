@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { eq } from "drizzle-orm";
-import { schema } from "@voiceci/db";
-import { RunnerCallbackV2Schema, RUNNER_CALLBACK_HEADER } from "@voiceci/shared";
+import { schema } from "@vent/db";
+import { RunnerCallbackV2Schema, RUNNER_CALLBACK_HEADER } from "@vent/shared";
 import { broadcast } from "../lib/run-subscribers.js";
 
 export async function callbackRoutes(app: FastifyInstance) {
@@ -136,12 +136,12 @@ export async function callbackRoutes(app: FastifyInstance) {
     }
 
     if (run.status !== "queued") {
-      // Idempotent — job was already queued by the MCP tool. Return 200 so relay client doesn't crash.
+      // Idempotent — job was already queued. Return 200 so relay client doesn't crash.
       return reply.send({ status: run.status, run_id: runId, already_activated: true });
     }
 
     if (!run.test_spec_json) {
-      return reply.status(400).send({ error: "Run has no stored config — vent_run_tests must be called first" });
+      return reply.status(400).send({ error: "Run has no stored config — submit a run first" });
     }
 
     // Authenticate via relay token
@@ -204,7 +204,7 @@ export async function callbackRoutes(app: FastifyInstance) {
     const body = RunnerCallbackV2Schema.parse(request.body);
 
     // Atomic transaction: DELETE partials → INSERT final results → UPDATE run status.
-    // Without a transaction, the MCP long-poll can wake mid-operation and return incomplete data.
+    // Without a transaction, a long-poll can wake mid-operation and return incomplete data.
     await app.db.transaction(async (tx) => {
       // Clear any partial results inserted during test-progress — final batch is authoritative
       await tx
@@ -223,7 +223,7 @@ export async function callbackRoutes(app: FastifyInstance) {
         });
       }
 
-      // Update run status LAST — this is what triggers the MCP long-poll to wake up
+      // Update run status LAST — this is what triggers long-poll/SSE listeners to wake up
       await tx
         .update(schema.runs)
         .set({

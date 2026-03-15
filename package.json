@@ -1,13 +1,13 @@
 {
-  "name": "voiceci",
+  "name": "vent",
   "private": true,
   "scripts": {
     "build": "turbo run build",
     "dev": "turbo run dev",
     "lint": "turbo run lint",
     "clean": "turbo run clean",
-    "db:generate": "pnpm --filter @voiceci/db generate",
-    "db:migrate": "pnpm --filter @voiceci/db migrate",
+    "db:generate": "pnpm --filter @vent/db generate",
+    "db:migrate": "pnpm --filter @vent/db migrate",
     "verify:hardening": "bash scripts/verify-hardening.sh"
   },
   "devDependencies": {

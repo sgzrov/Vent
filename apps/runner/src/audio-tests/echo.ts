@@ -10,9 +10,9 @@
  * Returns raw metrics + transcriptions — no pass/fail.
  */
 
-import type { AudioChannel } from "@voiceci/adapters";
-import type { AudioTestResult } from "@voiceci/shared";
-import { synthesize } from "@voiceci/voice";
+import type { AudioChannel } from "@vent/adapters";
+import type { AudioTestResult } from "@vent/shared";
+import { synthesize } from "@vent/voice";
 import { collectUntilEndOfTurn, waitForSpeech, streamSilence, transcribeAudio } from "./helpers.js";
 
 const DEFAULT_PROMPT = "Hi, can you tell me about your services?";

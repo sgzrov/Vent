@@ -1,5 +1,5 @@
 import fp from "fastify-plugin";
-import { createDb, type Database } from "@voiceci/db";
+import { createDb, type Database } from "@vent/db";
 
 declare module "fastify" {
   interface FastifyInstance {

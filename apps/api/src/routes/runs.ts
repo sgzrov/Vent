@@ -1,8 +1,9 @@
 import type { FastifyInstance } from "fastify";
 import { eq, and, desc, asc } from "drizzle-orm";
-import { schema } from "@voiceci/db";
+import { schema } from "@vent/db";
 import { z } from "zod";
 import { subscribe, unsubscribe } from "../lib/run-subscribers.js";
+import { RunSubmitSchema, submitRun } from "../lib/run-submit.js";
 
 const CreateRunBody = z.object({
   source_type: z.enum(["bundle", "remote"]),
@@ -13,6 +14,29 @@ const CreateRunBody = z.object({
 export async function runRoutes(app: FastifyInstance) {
   const authPreHandler = { preHandler: app.verifyAuth };
   const apiKeyPreHandler = { preHandler: app.verifyApiKey };
+
+  // --- Submit a run with full test config (used by CLI) ---
+  app.post("/runs/submit", apiKeyPreHandler, async (request, reply) => {
+    const parsed = RunSubmitSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({
+        error: "Invalid config",
+        details: parsed.error.issues.map((i) => ({
+          path: i.path.join("."),
+          message: i.message,
+        })),
+      });
+    }
+
+    const result = await submitRun(app, {
+      apiKeyId: request.apiKeyId!,
+      userId: request.userId!,
+      config: parsed.data.config,
+      idempotencyKey: parsed.data.idempotency_key,
+    });
+
+    return reply.status(201).send(result);
+  });
 
   app.post("/runs", apiKeyPreHandler, async (request, reply) => {
     const body = CreateRunBody.parse(request.body);

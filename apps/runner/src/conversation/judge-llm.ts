@@ -7,8 +7,8 @@
  */
 
 import Anthropic from "@anthropic-ai/sdk";
-import type { ConversationTurn, BehavioralMetrics } from "@voiceci/shared";
-import { LANGUAGE_NAMES } from "@voiceci/voice";
+import type { ConversationTurn, BehavioralMetrics } from "@vent/shared";
+import { LANGUAGE_NAMES } from "@vent/voice";
 
 const MODEL = "claude-sonnet-4-6";
 const MAX_TOKENS = 300;

@@ -16,8 +16,8 @@ import { WebSocketServer, WebSocket } from "ws";
 import http from "node:http";
 import { randomBytes } from "node:crypto";
 import Twilio from "twilio";
-import { pcmToMulaw, mulawToPcm, resample } from "@voiceci/voice";
-import type { ObservedToolCall } from "@voiceci/shared";
+import { pcmToMulaw, mulawToPcm, resample } from "@vent/voice";
+import type { ObservedToolCall } from "@vent/shared";
 import { BaseAudioChannel } from "./audio-channel.js";
 
 export interface SipAudioChannelConfig {
@@ -184,7 +184,7 @@ export class SipAudioChannel extends BaseAudioChannel {
 
     // Create a temporary TwiML Application with our answer URL
     const app = await this.twilio.applications.create({
-      friendlyName: `voiceci-${Date.now()}`,
+      friendlyName: `vent-${Date.now()}`,
       voiceUrl: answerUrl,
       voiceMethod: "GET",
     });

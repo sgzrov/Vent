@@ -1,5 +1,5 @@
-import type { AdapterType, PlatformConfig } from "@voiceci/shared";
-import { RUNNER_CALLBACK_HEADER } from "@voiceci/shared";
+import type { AdapterType, PlatformConfig } from "@vent/shared";
+import { RUNNER_CALLBACK_HEADER } from "@vent/shared";
 import type { AudioChannel } from "./audio-channel.js";
 import { WsAudioChannel } from "./ws-audio-channel.js";
 import { WebRtcAudioChannel } from "./webrtc-audio-channel.js";
@@ -50,7 +50,7 @@ export function createAudioChannel(config: AudioChannelConfig): AudioChannel {
       const livekitUrl = process.env["LIVEKIT_URL"] ?? "";
       const apiKey = process.env["LIVEKIT_API_KEY"] ?? "";
       const apiSecret = process.env["LIVEKIT_API_SECRET"] ?? "";
-      const roomName = `voiceci-${process.env["RUN_ID"] ?? crypto.randomUUID().slice(0, 8)}`;
+      const roomName = `vent-${process.env["RUN_ID"] ?? crypto.randomUUID().slice(0, 8)}`;
 
       return new WebRtcAudioChannel({
         livekitUrl,

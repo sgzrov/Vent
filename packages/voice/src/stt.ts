@@ -4,7 +4,7 @@
 
 import { createClient, DeepgramApiError } from "@deepgram/sdk";
 import type { TranscriptionResult } from "./types.js";
-import { withRetry } from "@voiceci/shared";
+import { withRetry } from "@vent/shared";
 
 function isRetryableStatus(status: number): boolean {
   return status === 408 || status === 429 || status >= 500;

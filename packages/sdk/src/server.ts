@@ -1,24 +1,24 @@
 /**
- * VoiceCIServer — HTTP + WebSocket server that speaks the websocket protocol.
+ * VentServer — HTTP + WebSocket server that speaks the websocket protocol.
  *
  * - GET /health → { status: "ok" } (runner's waitForHealth() needs this)
- * - WS upgrades at root path → VoiceCIConnection per connection
+ * - WS upgrades at root path → VentConnection per connection
  * - Binary frames = PCM 16-bit 24kHz mono
  * - Text frames = JSON tool call events
  */
 
 import http from "node:http";
 import { WebSocketServer } from "ws";
-import type { VoiceCIServerConfig } from "./types.js";
-import { VoiceCIConnection } from "./connection.js";
+import type { VentServerConfig } from "./types.js";
+import { VentConnection } from "./connection.js";
 
-export class VoiceCIServer {
-  private config: Required<Pick<VoiceCIServerConfig, "port" | "healthPath">> &
-    VoiceCIServerConfig;
+export class VentServer {
+  private config: Required<Pick<VentServerConfig, "port" | "healthPath">> &
+    VentServerConfig;
   private server: http.Server | null = null;
   private wss: WebSocketServer | null = null;
 
-  constructor(config: VoiceCIServerConfig) {
+  constructor(config: VentServerConfig) {
     this.config = {
       port: 3001,
       healthPath: "/health",
@@ -41,12 +41,12 @@ export class VoiceCIServer {
       this.wss = new WebSocketServer({ server: this.server });
 
       this.wss.on("connection", (ws) => {
-        new VoiceCIConnection(ws, this.config.onAudio);
+        new VentConnection(ws, this.config.onAudio);
       });
 
       this.server.listen(this.config.port, () => {
         console.log(
-          `[voiceci-sdk] listening on port ${this.config.port} (health: ${this.config.healthPath})`,
+          `[vent-sdk] listening on port ${this.config.port} (health: ${this.config.healthPath})`,
         );
         resolve();
       });

@@ -7,9 +7,9 @@
  * Returns raw metrics + transcription — no pass/fail.
  */
 
-import type { AudioChannel } from "@voiceci/adapters";
-import type { AudioTestResult } from "@voiceci/shared";
-import { synthesize } from "@voiceci/voice";
+import type { AudioChannel } from "@vent/adapters";
+import type { AudioTestResult } from "@vent/shared";
+import { synthesize } from "@vent/voice";
 import { collectUntilEndOfTurn, transcribeAudio } from "./helpers.js";
 
 const DEFAULT_PROMPT = "Please describe the process of making a cup of coffee in detail.";

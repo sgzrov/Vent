@@ -13,7 +13,7 @@
  *   4. getCallData() — fetches tool calls from GET /v1/calls/{call_id}
  */
 
-import type { ObservedToolCall } from "@voiceci/shared";
+import type { ObservedToolCall } from "@vent/shared";
 import { BaseAudioChannel } from "./audio-channel.js";
 import { SipAudioChannel, type SipAudioChannelConfig } from "./sip-audio-channel.js";
 

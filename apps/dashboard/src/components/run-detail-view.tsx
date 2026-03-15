@@ -166,7 +166,7 @@ export function RunDetailView({
         <div className="rounded-md bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20 px-4 py-2.5 mt-4">
           <p className="text-sm text-amber-700 dark:text-amber-400">
             This is a demo run with example data. Trigger a real test from your
-            code editor via the VoiceCI MCP server.
+            code editor via the Vent MCP server.
           </p>
         </div>
       )}

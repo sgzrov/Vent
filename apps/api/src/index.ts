@@ -3,11 +3,10 @@ import cors from "@fastify/cors";
 import cookie from "@fastify/cookie";
 import websocket from "@fastify/websocket";
 import { eq, lt, ne, and } from "drizzle-orm";
-import { schema } from "@voiceci/db";
+import { schema } from "@vent/db";
 import { healthRoutes } from "./routes/health.js";
 import { runRoutes } from "./routes/runs.js";
 import { callbackRoutes } from "./routes/callback.js";
-import { mcpRoutes } from "./routes/mcp/index.js";
 import { keyRoutes } from "./routes/keys.js";
 import { relayRoutes } from "./routes/relay.js";
 import { dbPlugin } from "./plugins/db.js";
@@ -57,7 +56,6 @@ async function main() {
       cb(null, allowedOrigins.has(origin));
     },
     credentials: true,
-    exposedHeaders: ["Mcp-Session-Id", "Mcp-Protocol-Version"],
   });
   await app.register(cookie);
   await app.register(websocket);
@@ -69,7 +67,6 @@ async function main() {
   await app.register(callbackRoutes);
   await app.register(keyRoutes);
   await app.register(relayRoutes);
-  await app.register(mcpRoutes);
 
   // Stuck run cleanup
   const cleanupEnabled = (process.env["RUN_CLEANUP_ENABLED"] ?? "true") !== "false";
@@ -84,7 +81,7 @@ async function main() {
   });
 
   await app.listen({ port, host });
-  console.log(`VoiceCI API listening on ${host}:${port}`);
+  console.log(`Vent API listening on ${host}:${port}`);
 
   if (!cleanupEnabled) {
     console.log("Run cleanup disabled via RUN_CLEANUP_ENABLED=false");
@@ -121,7 +118,7 @@ async function main() {
         .set({
           status: "fail",
           finished_at: new Date(),
-          error_text: "Run was never activated — the relay command was not executed. Re-run vent_run_tests and execute the returned command.",
+          error_text: "Run was never activated — the relay command was not executed. Re-run 'vent run' with the same config.",
         })
         .where(
           and(

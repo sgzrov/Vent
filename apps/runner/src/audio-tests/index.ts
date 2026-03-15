@@ -3,8 +3,8 @@
  * Adds diagnostics (error origin classification + timing) to every result.
  */
 
-import type { AudioChannel } from "@voiceci/adapters";
-import type { AudioTestName, AudioTestResult, TestDiagnostics } from "@voiceci/shared";
+import type { AudioChannel } from "@vent/adapters";
+import type { AudioTestName, AudioTestResult, TestDiagnostics } from "@vent/shared";
 
 /** @deprecated Infrastructure probes are now integrated into conversation tests. */
 interface InfrastructureProbeConfig {

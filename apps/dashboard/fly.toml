@@ -1,16 +1,16 @@
-app = "voiceci-dashboard"
+app = "vent-dashboard"
 primary_region = "iad"
 
 [build]
   dockerfile = "Dockerfile"
 
 [build.args]
-  NEXT_PUBLIC_WORKOS_REDIRECT_URI = "https://voiceci-dashboard.fly.dev/auth/callback"
-  NEXT_PUBLIC_API_URL = "https://voiceci-api.fly.dev"
+  NEXT_PUBLIC_WORKOS_REDIRECT_URI = "https://vent-dashboard.fly.dev/auth/callback"
+  NEXT_PUBLIC_API_URL = "https://vent-api.fly.dev"
 
 [env]
   NODE_ENV = "production"
-  INTERNAL_API_URL = "http://voiceci-api.internal:3000"
+  INTERNAL_API_URL = "http://vent-api.internal:3000"
 
 [http_service]
   internal_port = 3000
