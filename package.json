@@ -10,6 +10,7 @@
     "db:migrate": "pnpm --filter @vent/db migrate"
   },
   "devDependencies": {
+    "@changesets/cli": "^2.30.0",
     "@types/node": "^20.0.0",
     "turbo": "^2.3.0",
     "typescript": "^5.7.0"
