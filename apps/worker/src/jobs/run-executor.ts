@@ -4,7 +4,6 @@ import { createDb, schema, type Database } from "@vent/db";
 import { RUNNER_CALLBACK_HEADER } from "@vent/shared";
 import type {
   TestSpec,
-  LoadTestSpec,
   LoadTestResult,
   LoadTestTierResult,
   AdapterType,
@@ -15,7 +14,7 @@ import { executeTests } from "@vent/runner/executor";
 import { runLoadTest, computeTierSizes } from "@vent/runner/load-test";
 
 // ---------------------------------------------------------------------------
-// Event emission — writes to DB and notifies API for SSE/MCP broadcast
+// Event emission — writes to DB and notifies API for SSE broadcast
 // ---------------------------------------------------------------------------
 
 async function emitEvent(
@@ -101,19 +100,6 @@ async function executeLoadTestPhase(
           ? "load-test:soak"
           : `load-test:tier-${tier.concurrency}`;
 
-      try {
-        await db.insert(schema.scenarioResults).values({
-          run_id: job.run_id,
-          name: tierName,
-          status: tier.failed_calls > 0 ? "fail" : "pass",
-          test_type: "load_test" as const,
-          metrics_json: tier as unknown as Record<string, unknown>,
-          trace_json: {},
-        });
-      } catch {
-        // Best-effort
-      }
-
       void fetch(`${apiUrl}/internal/test-progress`, {
         method: "POST",
         headers: {
@@ -132,20 +118,6 @@ async function executeLoadTestPhase(
       }).catch(() => {});
     },
   });
-
-  // Insert final load test summary
-  try {
-    await db.insert(schema.scenarioResults).values({
-      run_id: job.run_id,
-      name: "load-test:summary",
-      status: result.status,
-      test_type: "load_test" as const,
-      metrics_json: result as unknown as Record<string, unknown>,
-      trace_json: {},
-    });
-  } catch {
-    // Best-effort
-  }
 
   return { loadTestResult: result };
 }
@@ -209,19 +181,6 @@ async function executeRemoteRun(db: Database, job: RunJob): Promise<void> {
         onTestComplete: async (result) => {
           completedTests++;
           const testName = result.name ?? "conversation";
-
-          try {
-            await db.insert(schema.scenarioResults).values({
-              run_id: job.run_id,
-              name: testName,
-              status: result.status,
-              test_type: "conversation" as const,
-              metrics_json: result as unknown as Record<string, unknown>,
-              trace_json: result.transcript ?? [],
-            });
-          } catch {
-            // Best-effort
-          }
 
           void fetch(`${apiUrl}/internal/test-progress`, {
             method: "POST",
@@ -343,19 +302,6 @@ async function executeRelayRun(db: Database, job: RunJob): Promise<void> {
         onTestComplete: async (result) => {
           completedTests++;
           const testName = result.name ?? "conversation";
-
-          try {
-            await db.insert(schema.scenarioResults).values({
-              run_id: job.run_id,
-              name: testName,
-              status: result.status,
-              test_type: "conversation" as const,
-              metrics_json: result as unknown as Record<string, unknown>,
-              trace_json: result.transcript ?? [],
-            });
-          } catch {
-            // Best-effort
-          }
 
           void fetch(`${apiUrl}/internal/test-progress`, {
             method: "POST",

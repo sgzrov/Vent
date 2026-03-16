@@ -8,7 +8,7 @@ const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
   title: "Vent",
-  description: "The first MCP that lets coding agents test voice agents in real time.",
+  description: "CI/CD testing for voice AI agents. Test from your coding agent via the Vent CLI.",
 };
 
 export default async function RootLayout({

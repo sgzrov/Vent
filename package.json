@@ -7,8 +7,7 @@
     "lint": "turbo run lint",
     "clean": "turbo run clean",
     "db:generate": "pnpm --filter @vent/db generate",
-    "db:migrate": "pnpm --filter @vent/db migrate",
-    "verify:hardening": "bash scripts/verify-hardening.sh"
+    "db:migrate": "pnpm --filter @vent/db migrate"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

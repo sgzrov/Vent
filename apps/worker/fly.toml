@@ -8,6 +8,6 @@ primary_region = "iad"
   NODE_ENV = "production"
 
 [[vm]]
-  memory = "512mb"
-  cpu_kind = "shared"
+  memory = "2048mb"
+  cpu_kind = "performance"
   cpus = 1

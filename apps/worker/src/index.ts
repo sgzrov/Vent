@@ -52,6 +52,14 @@ function createWorkerForQueue(queueName: string) {
     {
       connection,
       concurrency: perUserConcurrency,
+      // Voice tests run 30-120s. Default lockDuration is 30s — any job over
+      // that gets falsely marked as stalled and restarted.
+      lockDuration: 150_000,       // 2.5 min — headroom above max 120s job
+      stalledInterval: 30_000,     // check every 30s (default, explicit for clarity)
+      // lockRenewTime auto-set to lockDuration/2 = 75s — do not override
+      maxStalledCount: 1,          // 1 retry on stall, then fail
+      removeOnComplete: { age: 3600, count: 1000 },
+      removeOnFail: { age: 86_400, count: 5000 },
     }
   );
 
