@@ -31,6 +31,18 @@ copy_env_file() {
     return
   fi
 
+  # Priority 1b: Any Conductor repo (handles repo renames)
+  if [ -n "$CONDUCTOR_ROOT" ] && [ -d "$CONDUCTOR_ROOT/repos" ]; then
+    for repo in "$CONDUCTOR_ROOT/repos"/*/; do
+      repo="${repo%/}"
+      if [ "$repo" != "$CONDUCTOR_REPO_ROOT" ] && [ -f "$repo/$filename" ]; then
+        cp "$repo/$filename" "$filename"
+        echo "    Copied $filename from $repo (Conductor repo)"
+        return
+      fi
+    done
+  fi
+
   # Priority 2: Any sibling Conductor workspace that has it
   for sibling in "$WORKSPACES_DIR"/*/; do
     sibling="${sibling%/}"
@@ -40,6 +52,13 @@ copy_env_file() {
       return
     fi
   done
+
+  # Priority 3: Home directory
+  if [ -f "$HOME/$filename" ]; then
+    cp "$HOME/$filename" "$filename"
+    echo "    Copied $filename from $HOME (home directory)"
+    return
+  fi
 
   # Last resort: create from example
   if [ -f ".env.example" ]; then
