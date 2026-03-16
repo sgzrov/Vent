@@ -65,7 +65,7 @@ export default async function LandingPage() {
               </p>
 
               <div className="space-y-4">
-                <CopyCommandButton command="npx @vent-hq/cli setup" />
+                <CopyCommandButton command="npx @vent-hq/cli init" />
 
                 <div className="flex items-center gap-2 text-sm text-muted-foreground/70">
                   <span className="inline-block w-1.5 h-1.5 rounded-full bg-green-500" />
