@@ -2,7 +2,7 @@
 
 ## Testing Context
 
-This is the MCP src repo. There is a separate test repo used for testing the Vent MCP server against actual codebases. When logs, errors, or test output from the MCP or integration tests are pasted here, they originate from that test repo.
+This is the Vent src repo. There is a separate test repo used for testing the Vent CLI against actual codebases. When logs, errors, or test output from integration tests are pasted here, they originate from that test repo.
 
 ## Workflow Orchestration
 
@@ -72,10 +72,15 @@ Use `type: small description` format for commits.
 | `style`    | Formatting only (no logic change)                        |
 | `revert`   | Revert a prior commit                                    |
 
+## Pull Requests
+- **Atomic commits**: Break changes into logical, self-contained commits. Don't lump all branch changes into a single commit with one message.
+- Each commit should represent one coherent change (e.g., separate "refactor: extract helper" from "feat: add new endpoint").
+- Commit as you go during implementation, not all at once at the end.
+
 ## Design Context
 
 ### Users
-Developers building voice AI agents who use coding agents (Claude Code, Cursor, Windsurf). They connect via MCP — no CLI install needed. They're technical, time-constrained, and care about test results, not UI chrome. They visit the dashboard to review run results, compare baselines, and manage API keys.
+Developers building voice AI agents who use coding agents (Claude Code, Cursor). They use the Vent CLI — installed via `vent init`, invoked by coding agent skill files. They're technical, time-constrained, and care about test results, not UI chrome. They visit the dashboard to review run results, compare baselines, and manage API keys.
 
 ### Brand Personality
 **Bold, Innovative, Cutting-edge.** Vent is a new category — CI/CD for voice agents — and the brand should reflect that pioneering position. The tone is confident and direct, never corporate or hand-wavy.

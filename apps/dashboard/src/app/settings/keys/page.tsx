@@ -105,7 +105,7 @@ export default function ApiKeysPage() {
             API Keys
           </h1>
           <p className="text-[14px] text-muted-foreground mt-2">
-            Manage API keys for authenticating with the Vent MCP server.
+            Manage API keys for authenticating with the Vent CLI.
           </p>
         </div>
         <Dialog
@@ -146,11 +146,14 @@ export default function ApiKeysPage() {
                 </div>
                 <div className="rounded-md bg-muted/50 p-3 text-sm text-muted-foreground">
                   <p className="font-medium text-foreground mb-1">
-                    Usage in MCP config:
+                    Usage:
                   </p>
                   <code className="text-xs">
-                    {`"headers": { "Authorization": "Bearer $\{VENT_API_KEY\}" }`}
+                    {`export VENT_API_KEY=<your-key>`}
                   </code>
+                  <p className="text-xs mt-1.5">
+                    Or run <code className="font-mono">vent login</code> to save it locally.
+                  </p>
                 </div>
               </div>
             ) : (
@@ -189,7 +192,7 @@ export default function ApiKeysPage() {
             <Key className="h-8 w-8 mx-auto mb-3 text-muted-foreground" />
             <p className="text-muted-foreground">No API keys yet.</p>
             <p className="text-sm text-muted-foreground mt-1">
-              Create a key to authenticate with the Vent MCP server.
+              Create a key to authenticate with the Vent CLI.
             </p>
           </CardContent>
         </Card>

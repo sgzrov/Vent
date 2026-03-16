@@ -343,7 +343,7 @@ export default function RunsPage() {
         <div className="text-center py-20">
           <p className="text-muted-foreground">No runs yet</p>
           <p className="text-sm text-muted-foreground mt-1">
-            Trigger a test from your code editor via the Vent MCP server.
+            Trigger a test from your code editor using the Vent CLI.
           </p>
           <Link href="/runs/demo">
             <Card className="mt-8 max-w-sm mx-auto hover:bg-accent/50 transition-colors cursor-pointer rounded-xl">
