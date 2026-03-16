@@ -31,7 +31,7 @@ export function SidebarNav({ userEmail, signOutAction }: SidebarNavProps) {
           href="/runs"
           className="text-[1.25rem] leading-none font-medium tracking-[-0.01em]"
         >
-          <span className="font-cursive font-normal">Light</span>MCP
+          Vent
         </Link>
       </div>
 

@@ -1,6 +1,6 @@
 /**
  * Transforms raw ConversationTestResult into a structured, grouped format
- * for agent consumption (CLI and MCP).
+ * for agent consumption (CLI).
  *
  * Groups metrics by concern and removes Vent internals (harness overhead,
  * Hume API timing, our TTS/STT processing time).

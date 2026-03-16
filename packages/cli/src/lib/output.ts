@@ -80,6 +80,69 @@ function printRunComplete(data: Record<string, unknown>): void {
   }
 }
 
+export function printSummary(
+  testResults: SSEEvent[],
+  runComplete: Record<string, unknown>,
+  runId: string,
+  jsonMode: boolean,
+): void {
+  if (jsonMode) {
+    const failedTests = testResults
+      .filter((e) => {
+        const r = e.data.result as FormattedConversationResult | undefined;
+        return r && r.status !== "completed";
+      })
+      .map((e) => {
+        const r = e.data.result as FormattedConversationResult;
+        return {
+          name: r.name,
+          status: r.status,
+          duration_ms: r.duration_ms,
+          intent_accuracy: r.behavior?.intent_accuracy?.score,
+          p50_ttfw_ms: r.latency?.p50_ttfw_ms,
+        };
+      });
+
+    process.stdout.write(
+      JSON.stringify({
+        event_type: "summary",
+        data: {
+          run_id: runId,
+          status: runComplete.status,
+          total: runComplete.total_tests,
+          passed: runComplete.passed_tests,
+          failed: runComplete.failed_tests,
+          failed_tests: failedTests,
+          check: `vent status ${runId} --json`,
+        },
+      }) + "\n",
+    );
+    return;
+  }
+
+  // TTY: list failed tests with details
+  const failures = testResults.filter((e) => {
+    const r = e.data.result as FormattedConversationResult | undefined;
+    return r && r.status !== "completed";
+  });
+
+  if (failures.length > 0) {
+    process.stdout.write("\n" + bold("Failed tests:") + "\n");
+    for (const event of failures) {
+      const r = event.data.result as FormattedConversationResult;
+      const name = r.name ?? "test";
+      const duration = (r.duration_ms / 1000).toFixed(1) + "s";
+      const parts = [red("✘"), bold(name), dim(duration)];
+      if (r.behavior?.intent_accuracy) {
+        parts.push(`intent: ${r.behavior.intent_accuracy.score}`);
+      }
+      process.stdout.write("  " + parts.join("  ") + "\n");
+    }
+  }
+
+  process.stderr.write(dim(`Full details: vent status ${runId} --json`) + "\n");
+}
+
 export function printError(message: string): void {
   process.stderr.write(red(bold("error")) + ` ${message}\n`);
 }

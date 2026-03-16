@@ -17,7 +17,15 @@ export const queuePlugin = fp(async (app) => {
   app.decorate("getRunQueue", (userId: string) => {
     const name = `voice-ci-runs-${userId}`;
     if (!queues.has(name)) {
-      const q = new Queue(name, { connection });
+      const q = new Queue(name, {
+        connection,
+        defaultJobOptions: {
+          attempts: 2,
+          backoff: { type: "exponential", delay: 5000 },
+          removeOnComplete: { age: 3600, count: 1000 },
+          removeOnFail: { age: 86_400, count: 5000 },
+        },
+      });
       queues.set(name, q);
       // Notify worker of new queue via Redis Set + pub/sub
       void connection.sadd("vent:active-queues", name);

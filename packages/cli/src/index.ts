@@ -2,18 +2,18 @@ import { parseArgs } from "node:util";
 import { runCommand } from "./commands/run.js";
 import { statusCommand } from "./commands/status.js";
 import { loginCommand } from "./commands/login.js";
-import { setupCommand } from "./commands/setup.js";
+import { initCommand } from "./commands/init.js";
 import { docsCommand } from "./commands/docs.js";
 import { printError } from "./lib/output.js";
 
 const USAGE = `Usage: vent <command> [options]
 
 Commands:
-  run       Run voice tests and stream results
+  init      Set up Vent (auth + skill files + test scaffold)
+  run       Run voice tests
   status    Check status of a previous run
-  login     Save API key to ~/.vent/credentials
-  setup     Generate agent skill files for detected editors
-  docs      Print config schema reference
+  login     Save API key (for CI/scripts)
+  docs      Print full config schema reference
 
 Options:
   --help    Show help
@@ -28,7 +28,7 @@ Options:
   --file, -f     Path to config JSON file
   --api-key      API key (overrides env/credentials)
   --json         Output NDJSON instead of colored text
-  --no-stream    Submit only, don't stream results`;
+  --submit       Submit and return immediately (print run_id, don't wait for results)`;
 
 const STATUS_USAGE = `Usage: vent status <run-id> [options]
 
@@ -57,6 +57,18 @@ async function main(): Promise<void> {
   let exitCode: number;
 
   switch (command) {
+    case "init": {
+      const { values } = parseArgs({
+        args: commandArgs,
+        options: {
+          "api-key": { type: "string" },
+        },
+        strict: true,
+      });
+      exitCode = await initCommand({ apiKey: values["api-key"] });
+      break;
+    }
+
     case "run": {
       if (commandArgs.includes("--help")) {
         process.stdout.write(RUN_USAGE + "\n");
@@ -69,6 +81,7 @@ async function main(): Promise<void> {
           file: { type: "string", short: "f" },
           "api-key": { type: "string" },
           json: { type: "boolean", default: false },
+          submit: { type: "boolean", default: false },
           "no-stream": { type: "boolean", default: false },
         },
         strict: true,
@@ -78,7 +91,7 @@ async function main(): Promise<void> {
         file: values.file,
         apiKey: values["api-key"],
         json: values.json!,
-        noStream: values["no-stream"]!,
+        submit: values.submit! || values["no-stream"]!,
       });
       break;
     }
@@ -116,11 +129,6 @@ async function main(): Promise<void> {
         strict: true,
       });
       exitCode = await loginCommand({ apiKey: values["api-key"] });
-      break;
-    }
-
-    case "setup": {
-      exitCode = await setupCommand();
       break;
     }
 

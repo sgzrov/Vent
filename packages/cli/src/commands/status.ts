@@ -30,18 +30,61 @@ export async function statusCommand(args: StatusArgs): Promise<number> {
       process.stdout.write(JSON.stringify(data, null, 2) + "\n");
     } else {
       const status = data.status as string;
-      const testCount = (data.results as unknown[] | undefined)?.length ?? 0;
-      printInfo(`Run ${args.runId}: ${status} (${testCount} tests)`);
+      const results = data.results as unknown[] | undefined;
+      const testCount = results?.length ?? 0;
 
-      if (data.results && Array.isArray(data.results)) {
-        for (const raw of data.results) {
-          const formatted = formatConversationResult(raw);
-          if (formatted) {
-            const s = formatted.status === "completed" ? "\x1b[32m✔\x1b[0m" : "\x1b[31m✘\x1b[0m";
-            const name = formatted.name ?? "test";
-            const dur = (formatted.duration_ms / 1000).toFixed(1) + "s";
-            process.stdout.write(`  ${s} ${name}  ${dur}\n`);
+      if (status === "running" || status === "queued") {
+        printInfo(`Run ${args.runId}: ${status} (${testCount} tests completed so far)`);
+      } else {
+        // Completed run — show rich output
+        const isTTY = process.stdout.isTTY;
+        const bold = (s: string) => (isTTY ? `\x1b[1m${s}\x1b[0m` : s);
+        const dim = (s: string) => (isTTY ? `\x1b[2m${s}\x1b[0m` : s);
+        const green = (s: string) => (isTTY ? `\x1b[32m${s}\x1b[0m` : s);
+        const red = (s: string) => (isTTY ? `\x1b[31m${s}\x1b[0m` : s);
+
+        if (status === "pass") {
+          process.stdout.write(green(bold("Run passed")) + "\n");
+        } else {
+          process.stdout.write(red(bold("Run failed")) + "\n");
+        }
+
+        let passed = 0;
+        let failed = 0;
+
+        if (results && Array.isArray(results)) {
+          for (const raw of results) {
+            const formatted = formatConversationResult(raw);
+            if (formatted) {
+              const isPass = formatted.status === "completed";
+              if (isPass) passed++;
+              else failed++;
+
+              const s = isPass ? green("✔") : red("✘");
+              const name = formatted.name ?? "test";
+              const dur = (formatted.duration_ms / 1000).toFixed(1) + "s";
+              const parts = [s, bold(name), dim(dur)];
+
+              if (formatted.behavior?.intent_accuracy) {
+                parts.push(`intent: ${formatted.behavior.intent_accuracy.score}`);
+              }
+              if (formatted.latency?.p50_ttfw_ms != null) {
+                parts.push(`p50: ${formatted.latency.p50_ttfw_ms}ms`);
+              }
+
+              process.stdout.write("  " + parts.join("  ") + "\n");
+            }
           }
+        }
+
+        // Summary line
+        const total = passed + failed;
+        if (total > 0) {
+          const parts: string[] = [];
+          if (passed) parts.push(green(`${passed} passed`));
+          if (failed) parts.push(red(`${failed} failed`));
+          parts.push(`${total} total`);
+          process.stdout.write(parts.join(dim(" · ")) + "\n");
         }
       }
     }

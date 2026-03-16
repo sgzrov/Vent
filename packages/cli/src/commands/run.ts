@@ -2,16 +2,17 @@ import * as fs from "node:fs/promises";
 import { apiFetch } from "../lib/api.js";
 import { streamRunEvents } from "../lib/sse.js";
 import { startRelay } from "../lib/relay.js";
-import { printEvent, printError, printInfo } from "../lib/output.js";
+import { printEvent, printError, printInfo, printSummary } from "../lib/output.js";
 import { loadApiKey } from "../lib/config.js";
 import type { RelayHandle } from "../lib/relay.js";
+import type { SSEEvent } from "../lib/sse.js";
 
 interface RunArgs {
   config?: string;
   file?: string;
   apiKey?: string;
   json: boolean;
-  noStream: boolean;
+  submit: boolean;
 }
 
 export async function runCommand(args: RunArgs): Promise<number> {
@@ -68,7 +69,27 @@ export async function runCommand(args: RunArgs): Promise<number> {
   const { run_id } = submitResult;
   printInfo(`Run ${run_id} created.`);
 
-  // 4. Start relay if needed (local agent)
+  // 4. Handle --submit (fire-and-forget)
+  if (args.submit) {
+    if (submitResult.relay_config) {
+      printError(
+        "Cannot use --submit with local agents (start_command). " +
+        "The CLI must stay running to manage the relay. " +
+        "Use agent_url for deployed agents, or run without --submit."
+      );
+      return 2;
+    }
+    process.stdout.write(
+      JSON.stringify({
+        run_id,
+        status: submitResult.status,
+        check: `vent status ${run_id} --json`,
+      }) + "\n"
+    );
+    return 0;
+  }
+
+  // 5. Start relay if needed (local agent)
   let relay: RelayHandle | null = null;
   if (submitResult.relay_config) {
     printInfo("Starting relay for local agent…");
@@ -81,14 +102,11 @@ export async function runCommand(args: RunArgs): Promise<number> {
     }
   }
 
-  if (args.noStream) {
-    process.stdout.write(JSON.stringify({ run_id, status: submitResult.status }) + "\n");
-    return 0;
-  }
-
-  // 5. Stream results
+  // 6. Stream results
   const abortController = new AbortController();
   let exitCode = 0;
+  const testResults: SSEEvent[] = [];
+  let runCompleteData: Record<string, unknown> | null = null;
 
   const onSignal = () => {
     abortController.abort();
@@ -100,7 +118,12 @@ export async function runCommand(args: RunArgs): Promise<number> {
     for await (const event of streamRunEvents(run_id, apiKey, abortController.signal)) {
       printEvent(event, args.json);
 
+      if (event.event_type === "test_completed") {
+        testResults.push(event);
+      }
+
       if (event.event_type === "run_complete") {
+        runCompleteData = event.data;
         const status = (event.data as { status?: string }).status;
         exitCode = status === "pass" ? 0 : 1;
       }
@@ -116,6 +139,11 @@ export async function runCommand(args: RunArgs): Promise<number> {
     if (relay) {
       await relay.cleanup();
     }
+  }
+
+  // 7. Print summary (useful when agent reads buffered output all at once)
+  if (runCompleteData && testResults.length > 0) {
+    printSummary(testResults, runCompleteData, run_id, args.json);
   }
 
   return exitCode;

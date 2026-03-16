@@ -1,15 +1,8 @@
 import type { FastifyInstance } from "fastify";
 import { eq, and, desc, asc } from "drizzle-orm";
 import { schema } from "@vent/db";
-import { z } from "zod";
 import { subscribe, unsubscribe } from "../lib/run-subscribers.js";
 import { RunSubmitSchema, submitRun } from "../lib/run-submit.js";
-
-const CreateRunBody = z.object({
-  source_type: z.enum(["bundle", "remote"]),
-  bundle_key: z.string().min(1).optional(),
-  bundle_hash: z.string().min(1).optional(),
-});
 
 export async function runRoutes(app: FastifyInstance) {
   const authPreHandler = { preHandler: app.verifyAuth };
@@ -36,30 +29,6 @@ export async function runRoutes(app: FastifyInstance) {
     });
 
     return reply.status(201).send(result);
-  });
-
-  app.post("/runs", apiKeyPreHandler, async (request, reply) => {
-    const body = CreateRunBody.parse(request.body);
-
-    const [run] = await app.db
-      .insert(schema.runs)
-      .values({
-        api_key_id: request.apiKeyId!,
-        user_id: request.userId!,
-        source_type: body.source_type,
-        bundle_key: body.bundle_key,
-        bundle_hash: body.bundle_hash,
-        status: "queued",
-      })
-      .returning();
-
-    await app.getRunQueue(request.userId!).add("execute-run", {
-      run_id: run!.id,
-      bundle_key: body.bundle_key,
-      bundle_hash: body.bundle_hash,
-    });
-
-    return reply.status(201).send(run);
   });
 
   app.get("/runs", authPreHandler, async (request, reply) => {
