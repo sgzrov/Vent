@@ -127,6 +127,7 @@ Requires LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET env vars.
 | `agent_url` | Deployed only | Agent URL (`wss://` or `https://`) |
 | `agent_port` | Local only | Agent port (default: `3001`) |
 | `target_phone_number` | SIP/Retell/Bland | Agent's phone number |
+| `caller_audio` | No | Default audio effects for all conversation tests (see Caller audio effects) |
 | `platform` | Vapi/Retell/ElevenLabs/Bland | `{ provider, api_key_env, agent_id }` |
 
 ## Conversation Tests
@@ -322,27 +323,55 @@ WebSocket, WebRTC, SIP: your agent must emit tool calls:
 {
   "name": "sarah-hotel-booking",
   "status": "completed",
+  "caller_prompt": "You are Sarah, calling to book a hotel room...",
   "duration_ms": 45200,
+  "error": null,
   "transcript": [
     { "role": "caller", "text": "Hi, I'd like to book..." },
-    { "role": "agent", "text": "Sure! What date?", "ttfb_ms": 650, "ttfw_ms": 780 }
+    { "role": "agent", "text": "Sure! What date?", "ttfb_ms": 650, "ttfw_ms": 780, "stt_confidence": 0.97, "audio_duration_ms": 2100, "silence_pad_ms": 130 }
   ],
   "latency": {
     "mean_ttfw_ms": 890, "p50_ttfw_ms": 850, "p95_ttfw_ms": 1400, "p99_ttfw_ms": 1550,
-    "first_turn_ttfw_ms": 1950, "drift_slope_ms_per_turn": -45.2
+    "first_turn_ttfw_ms": 1950, "total_silence_ms": 3200, "mean_turn_gap_ms": 450,
+    "ttfw_per_turn_ms": [1950, 780, 850, 920],
+    "drift_slope_ms_per_turn": -45.2, "mean_silence_pad_ms": 120, "mouth_to_ear_est_ms": 1010
   },
   "behavior": {
     "intent_accuracy": { "score": 0.95, "reasoning": "..." },
     "context_retention": { "score": 0.9, "reasoning": "..." },
+    "topic_drift": { "score": 0.1, "reasoning": "..." },
+    "empathy_score": { "score": 0.85, "reasoning": "..." },
     "hallucination_detected": { "detected": false, "reasoning": "..." },
-    "safety_compliance": { "compliant": true, "score": 0.95, "reasoning": "..." }
+    "safety_compliance": { "compliant": true, "score": 0.95, "reasoning": "..." },
+    "escalation_handling": { "triggered": false, "handled_appropriately": true, "score": 1.0, "reasoning": "..." }
+  },
+  "transcript_quality": {
+    "wer": 0.05, "repetition_score": 0.02, "reprompt_count": 0,
+    "filler_word_rate": 0.01, "words_per_minute": 145, "vocabulary_diversity": 0.82
+  },
+  "audio_analysis": {
+    "agent_speech_ratio": 0.65, "talk_ratio_vad": 0.45, "longest_monologue_ms": 8500,
+    "silence_gaps_over_2s": 0, "total_internal_silence_ms": 1200, "mean_agent_speech_segment_ms": 3400
   },
   "tool_calls": {
     "total": 2, "successful": 2, "failed": 0, "mean_latency_ms": 340,
-    "names": ["check_availability", "book_appointment"]
+    "names": ["check_availability", "book_appointment"],
+    "observed": [
+      { "name": "check_availability", "arguments": { "date": "2025-03-20" }, "result": { "available": true }, "successful": true, "latency_ms": 280, "turn_index": 2 },
+      { "name": "book_appointment", "arguments": { "date": "2025-03-20", "guest": "Sarah" }, "result": { "confirmation": "ABC123" }, "successful": true, "latency_ms": 400, "turn_index": 4 }
+    ]
+  },
+  "warnings": ["agent_speech_ratio below 0.5 threshold"],
+  "audio_actions": [],
+  "emotion": {
+    "mean_calmness": 0.82, "mean_confidence": 0.78, "peak_frustration": 0.12,
+    "emotion_consistency": 0.88, "naturalness": 0.85, "emotion_trajectory": "stable",
+    "per_turn": [{ "turn_index": 0, "emotions": { "Joy": 0.4, "Calmness": 0.8 }, "calmness": 0.8, "confidence": 0.75, "frustration": 0.05, "warmth": 0.6, "uncertainty": 0.1 }]
   }
 }
 ```
+
+All fields are optional except `name`, `status`, `caller_prompt`, `duration_ms`, and `transcript`. Fields appear only when the relevant analysis ran (e.g., `emotion` requires `prosody: true` in config).
 
 ### Load test result
 
@@ -354,12 +383,17 @@ WebSocket, WebRTC, SIP: your agent must emit tool calls:
   "total_calls": 85,
   "successful_calls": 82,
   "failed_calls": 3,
+  "duration_ms": 245000,
   "tiers": [
-    { "concurrency": 10, "error_rate": 0, "ttfw_p95_ms": 350 },
-    { "concurrency": 25, "error_rate": 0, "ttfw_p95_ms": 480 },
-    { "concurrency": 50, "error_rate": 0.06, "ttfw_p95_ms": 920 }
+    { "concurrency": 10, "total_calls": 10, "successful_calls": 10, "failed_calls": 0, "error_rate": 0, "ttfw_p50_ms": 280, "ttfw_p95_ms": 350, "ttfw_p99_ms": 380, "ttfb_degradation_pct": 0, "duration_ms": 45000 },
+    { "concurrency": 25, "total_calls": 25, "successful_calls": 25, "failed_calls": 0, "error_rate": 0, "ttfw_p50_ms": 350, "ttfw_p95_ms": 480, "ttfw_p99_ms": 520, "ttfb_degradation_pct": 15, "duration_ms": 62000 },
+    { "concurrency": 50, "total_calls": 50, "successful_calls": 47, "failed_calls": 3, "error_rate": 0.06, "ttfw_p50_ms": 680, "ttfw_p95_ms": 920, "ttfw_p99_ms": 1100, "ttfb_degradation_pct": 85, "duration_ms": 138000 }
   ],
-  "breaking_point": { "concurrency": 50, "triggered_by": ["error_rate"] },
-  "grading": { "ttfw": "acceptable", "error_rate": "critical", "overall": "acceptable" }
+  "spike": { "concurrency": 100, "total_calls": 100, "successful_calls": 92, "failed_calls": 8, "error_rate": 0.08, "ttfw_p50_ms": 900, "ttfw_p95_ms": 1400, "ttfw_p99_ms": 1800, "ttfb_degradation_pct": 120, "duration_ms": 95000 },
+  "soak": { "concurrency": 50, "total_calls": 200, "successful_calls": 195, "failed_calls": 5, "error_rate": 0.025, "ttfw_p50_ms": 700, "ttfw_p95_ms": 950, "ttfw_p99_ms": 1150, "ttfb_degradation_pct": 90, "duration_ms": 600000, "latency_drift_slope": 2.3, "degraded": true },
+  "breaking_point": { "concurrency": 50, "triggered_by": ["error_rate"], "error_rate": 0.06, "p95_ttfb_ms": 920, "quality_score": 0.72 },
+  "grading": { "ttfw": "acceptable", "p95_latency": "good", "error_rate": "critical", "quality": "good", "overall": "acceptable" }
 }
 ```
+
+`spike` and `soak` only appear when configured. `breaking_point` only appears when a threshold is breached. Severity values: `"excellent"`, `"good"`, `"acceptable"`, `"critical"`.
