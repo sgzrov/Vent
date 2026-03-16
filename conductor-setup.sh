@@ -77,7 +77,7 @@ fi
 echo "==> Checking voice testing keys..."
 VOICE_MISSING=()
 for key in ELEVENLABS_API_KEY DEEPGRAM_API_KEY; do
-  val="$(grep "^${key}=" .env 2>/dev/null | cut -d= -f2-)"
+  val="$(grep "^${key}=" .env 2>/dev/null | cut -d= -f2- || true)"
   if [ -z "$val" ]; then
     VOICE_MISSING+=("$key")
   fi

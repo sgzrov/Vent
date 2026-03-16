@@ -269,19 +269,6 @@ importers:
         specifier: ^0.24.0
         version: 0.24.2
 
-  packages/sdk:
-    dependencies:
-      ws:
-        specifier: ^8.18.0
-        version: 8.19.0
-    devDependencies:
-      '@types/ws':
-        specifier: ^8.5.0
-        version: 8.18.1
-      typescript:
-        specifier: ^5.7.0
-        version: 5.9.3
-
   packages/shared:
     dependencies:
       zod:
