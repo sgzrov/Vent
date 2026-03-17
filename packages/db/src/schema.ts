@@ -22,7 +22,7 @@ export const sourceTypeEnum = pgEnum("source_type", ["bundle", "remote", "relay"
 
 export const scenarioStatusEnum = pgEnum("scenario_status", ["pass", "fail", "completed", "error"]);
 
-export const testTypeEnum = pgEnum("test_type", ["audio", "conversation", "load_test"]);
+export const testTypeEnum = pgEnum("test_type", ["audio", "conversation", "load_test", "red_team"]);
 
 export const runs = pgTable(
   "runs",
