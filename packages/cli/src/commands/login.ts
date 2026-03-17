@@ -1,29 +1,39 @@
-import * as readline from "node:readline/promises";
-import { saveApiKey, validateApiKeyFormat } from "../lib/config.js";
-import { printError, printSuccess } from "../lib/output.js";
+import { saveApiKey, validateApiKeyFormat, loadApiKey } from "../lib/config.js";
+import { deviceAuthFlow } from "../lib/auth.js";
+import { printError, printInfo, printSuccess } from "../lib/output.js";
 
 interface LoginArgs {
   apiKey?: string;
+  status?: boolean;
 }
 
 export async function loginCommand(args: LoginArgs): Promise<number> {
-  let key = args.apiKey;
-
-  if (!key) {
-    const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
-    try {
-      key = await rl.question("API key: ");
-    } finally {
-      rl.close();
+  // Check login status
+  if (args.status) {
+    const key = await loadApiKey();
+    if (key) {
+      printSuccess(`Logged in (${key.slice(0, 12)}...)`);
+      return 0;
     }
+    printInfo("Not logged in. Run `npx vent-hq login`.");
+    return 1;
   }
 
-  if (!key || !validateApiKeyFormat(key)) {
-    printError("Invalid API key. Keys start with 'vent_'.");
-    return 2;
+  // Direct key save (CI / non-interactive)
+  if (args.apiKey) {
+    if (!validateApiKeyFormat(args.apiKey)) {
+      printError("Invalid API key. Keys start with 'vent_'.");
+      return 2;
+    }
+    await saveApiKey(args.apiKey);
+    printSuccess("API key saved to ~/.vent/credentials");
+    return 0;
   }
 
-  await saveApiKey(key);
-  printSuccess("API key saved to ~/.vent/credentials");
-  return 0;
+  const result = await deviceAuthFlow();
+  if (result.ok) {
+    printSuccess("Logged in! API key saved to ~/.vent/credentials");
+    return 0;
+  }
+  return 1;
 }
