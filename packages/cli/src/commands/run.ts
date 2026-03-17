@@ -85,6 +85,13 @@ export async function runCommand(args: RunArgs): Promise<number> {
     log(`auto-port assigned: ${freePort}`);
   }
 
+  // 2c. Auto-assign a free port for local agents so parallel runs don't collide
+  const cfg = config as { connection?: { start_command?: string; agent_port?: number } };
+  if (cfg.connection?.start_command) {
+    const freePort = await findFreePort();
+    cfg.connection.agent_port = freePort;
+  }
+
   // 3. Submit run
   log("submitting run to API…");
   printInfo("Submitting run…");
