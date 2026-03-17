@@ -9,9 +9,13 @@ const middleware = authkitMiddleware({
   },
 });
 
-export default function wrappedMiddleware(request: NextRequest, event: NextFetchEvent) {
+export default async function wrappedMiddleware(request: NextRequest, event: NextFetchEvent) {
   console.log("[middleware] path:", request.nextUrl.pathname, "origin:", request.nextUrl.origin);
-  return middleware(request, event);
+  const response = await middleware(request, event);
+  if (response) {
+    response.headers.set("x-pathname", request.nextUrl.pathname);
+  }
+  return response;
 }
 
 export const config = {
