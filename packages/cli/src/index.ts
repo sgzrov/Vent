@@ -4,7 +4,7 @@ import { statusCommand } from "./commands/status.js";
 import { loginCommand } from "./commands/login.js";
 import { logoutCommand } from "./commands/logout.js";
 import { initCommand } from "./commands/init.js";
-import { docsCommand } from "./commands/docs.js";
+
 import { printError } from "./lib/output.js";
 
 const USAGE = `Usage: vent-hq <command> [options]
@@ -15,8 +15,6 @@ Commands:
   status    Check status of a previous run
   login     Save API key (for re-auth or CI/scripts)
   logout    Remove saved credentials
-  docs      Print full config schema reference
-
 Options:
   --help    Show help
   --version Show version
@@ -169,11 +167,6 @@ async function main(): Promise<void> {
 
     case "logout": {
       exitCode = await logoutCommand();
-      break;
-    }
-
-    case "docs": {
-      exitCode = await docsCommand();
       break;
     }
 
