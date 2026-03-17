@@ -39,25 +39,23 @@ Options:
   --json         Output raw JSON
   --stream       Stream live results instead of fetching current state`;
 
-async function main(): Promise<void> {
+async function main(): Promise<number> {
   const args = process.argv.slice(2);
   const command = args[0];
 
   if (!command || command === "--help" || command === "-h") {
-    process.stdout.write(USAGE + "\n");
-    process.exit(0);
+    console.log(USAGE);
+    return 0;
   }
 
   if (command === "--version" || command === "-v") {
     const pkg = await import("../package.json", { with: { type: "json" } });
-    process.stdout.write(`vent-hq ${pkg.default.version}\n`);
-    process.exit(0);
+    console.log(`vent-hq ${pkg.default.version}`);
+    return 0;
   }
 
   // Remove the command name for parseArgs
   const commandArgs = args.slice(1);
-
-  let exitCode: number;
 
   switch (command) {
     case "init": {
@@ -68,14 +66,13 @@ async function main(): Promise<void> {
         },
         strict: true,
       });
-      exitCode = await initCommand({ apiKey: values["api-key"] });
-      break;
+      return initCommand({ apiKey: values["api-key"] });
     }
 
     case "run": {
       if (commandArgs.includes("--help")) {
-        process.stdout.write(RUN_USAGE + "\n");
-        process.exit(0);
+        console.log(RUN_USAGE);
+        return 0;
       }
       const { values } = parseArgs({
         args: commandArgs,
@@ -104,20 +101,20 @@ async function main(): Promise<void> {
             config = JSON.parse(values.config);
           } else {
             printError("--list requires --config or --file.");
-            process.exit(2);
+            return 2;
           }
         } catch (err) {
           printError(`Invalid config JSON: ${(err as Error).message}`);
-          process.exit(2);
+          return 2;
         }
         const tests = config!.conversation_tests ?? [];
         for (let i = 0; i < tests.length; i++) {
-          process.stdout.write((tests[i]!.name ?? `test-${i}`) + "\n");
+          console.log(tests[i]!.name ?? `test-${i}`);
         }
-        process.exit(0);
+        return 0;
       }
 
-      exitCode = await runCommand({
+      return runCommand({
         config: values.config,
         file: values.file,
         test: values.test,
@@ -125,13 +122,12 @@ async function main(): Promise<void> {
         json: values.json!,
         submit: values.submit! || values["no-stream"]!,
       });
-      break;
     }
 
     case "status": {
       if (commandArgs.includes("--help") || commandArgs.length === 0) {
-        process.stdout.write(STATUS_USAGE + "\n");
-        process.exit(0);
+        console.log(STATUS_USAGE);
+        return 0;
       }
       const runId = commandArgs[0]!;
       const { values } = parseArgs({
@@ -143,13 +139,12 @@ async function main(): Promise<void> {
         },
         strict: true,
       });
-      exitCode = await statusCommand({
+      return statusCommand({
         runId,
         apiKey: values["api-key"],
         json: values.json!,
         stream: values.stream!,
       });
-      break;
     }
 
     case "login": {
@@ -161,25 +156,27 @@ async function main(): Promise<void> {
         },
         strict: true,
       });
-      exitCode = await loginCommand({ apiKey: values["api-key"], status: values.status! });
-      break;
+      return loginCommand({ apiKey: values["api-key"], status: values.status! });
     }
 
     case "logout": {
-      exitCode = await logoutCommand();
-      break;
+      return logoutCommand();
     }
 
     default:
       printError(`Unknown command: ${command}`);
-      process.stdout.write(USAGE + "\n");
-      exitCode = 2;
+      console.log(USAGE);
+      return 2;
   }
-
-  process.exit(exitCode);
 }
 
-main().catch((err) => {
+// IMPORTANT: Do NOT use process.exit() — it kills the process before stdout flushes.
+// When coding agents run CLI commands, stdout is a pipe (non-TTY) and writes are
+// async/buffered. process.exit() drops all buffered output → agent sees "undefined".
+// Instead, set process.exitCode and let Node.js exit naturally after I/O drains.
+main().then((code) => {
+  process.exitCode = code;
+}).catch((err) => {
   printError((err as Error).message);
-  process.exit(2);
+  process.exitCode = 2;
 });

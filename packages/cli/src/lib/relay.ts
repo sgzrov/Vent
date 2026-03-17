@@ -27,6 +27,13 @@ export async function startRelay(relayConfig: {
   };
 
   const client = new RelayClient(clientConfig);
+
+  // Activate FIRST — this queues the BullMQ job so the worker subscribes to
+  // Redis pub/sub BEFORE the relay WebSocket connects. Fixes the race condition
+  // where the relay-ready message fires before the worker is listening.
+  await client.activate();
+
+  // Now connect the relay WebSocket — worker is already waiting for the signal
   await client.connect();
 
   let agentProcess: ChildProcess | null = null;
@@ -44,11 +51,10 @@ export async function startRelay(relayConfig: {
     });
   }
 
-  // Wait briefly for agent health, then activate
+  // Wait for agent health
   if (relayConfig.start_command) {
     await waitForHealth(relayConfig.agent_port, relayConfig.health_endpoint);
   }
-  await client.activate();
 
   const cleanup = async () => {
     if (agentProcess && !agentProcess.killed) {

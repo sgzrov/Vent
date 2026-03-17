@@ -205,23 +205,8 @@ export async function submitRun(
 
   const runId = run!.id;
 
-  await app.getRunQueue(userId).add("execute-run", {
-    run_id: runId,
-    bundle_key: null,
-    bundle_hash: null,
-    lockfile_hash: null,
-    adapter,
-    test_spec: {
-      conversation_tests: conversationTests ?? null,
-      load_test: cfg.load_test ?? null,
-    },
-    target_phone_number: targetPhoneNumber,
-    voice_config: voiceConfig,
-    start_command: startCommand,
-    health_endpoint: cfg.health_endpoint as string | undefined,
-    platform: cfg.platform ?? null,
-    relay: true,
-  });
+  // Do NOT enqueue here — relay runs are enqueued by /internal/runs/:id/activate
+  // after the relay tunnel is connected. Enqueuing here causes duplicate job processing.
 
   const agentPort = (cfg.agent_port as number | undefined) ?? 3001;
 

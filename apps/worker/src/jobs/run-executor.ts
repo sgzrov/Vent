@@ -240,7 +240,7 @@ async function executeRemoteRun(db: Database, job: RunJob): Promise<void> {
 // Relay execution — tests run in worker, audio flows through relay to local agent
 // ---------------------------------------------------------------------------
 
-async function executeRelayRun(db: Database, job: RunJob): Promise<void> {
+async function executeRelayRun(db: Database, job: RunJob, relayMachineId?: string): Promise<void> {
   const apiUrl = process.env["API_URL"] ?? "https://vent-api.fly.dev";
   const callbackSecret = process.env["RUNNER_CALLBACK_SECRET"] ?? "";
   const callbackUrl = `${apiUrl}/internal/runner-callback`;
@@ -248,10 +248,20 @@ async function executeRelayRun(db: Database, job: RunJob): Promise<void> {
   // Build relay connect URL — the WsAudioChannel will append conn_id automatically
   const relayWsUrl = apiUrl.replace(/^http/, "ws") + `/relay/connect?run_id=${job.run_id}`;
 
+  // Pin all relay connections to the API machine that holds the relay session.
+  // Without this, Fly.io load-balances across machines and connections hit
+  // instances that have no in-memory session → 4404 → "WebSocket not connected".
+  const relayHeaders: Record<string, string> = {};
+  if (relayMachineId && relayMachineId !== "local") {
+    relayHeaders["fly-force-instance-id"] = relayMachineId;
+    console.log(`[relay] Pinning connections to Fly machine ${relayMachineId}`);
+  }
+
   const channelConfig: AudioChannelConfig = {
     adapter: "websocket",
     agentUrl: relayWsUrl,
     targetPhoneNumber: job.target_phone_number,
+    relayHeaders,
   };
 
   const testSpec = job.test_spec as TestSpec;
@@ -364,72 +374,38 @@ const db = createDb(process.env["DATABASE_URL"]!);
 // Uses Redis pub/sub — instant notification, no HTTP polling
 // ---------------------------------------------------------------------------
 
-async function waitForRelayReady(runId: string, timeoutMs = 90_000): Promise<void> {
+async function waitForRelayReady(runId: string, timeoutMs = 90_000): Promise<string> {
+  // Direct Redis key poll — no HTTP, no load balancer, no in-memory session map.
+  // The API sets `vent:relay-session:{runId}` in Redis when the relay WebSocket connects.
+  // We just check that key directly. Simple, reliable, no race conditions.
   const redisUrl = process.env["REDIS_URL"] ?? "redis://localhost:6379";
-  const sub = new IORedis(redisUrl, { maxRetriesPerRequest: null });
-  const channel = `vent:relay-ready:${runId}`;
+  const redis = new IORedis(redisUrl, { maxRetriesPerRequest: null });
+  const key = `vent:relay-session:${runId}`;
 
   try {
-    await new Promise<void>((resolve, reject) => {
-      let settled = false;
-      const settle = (fn: () => void) => {
-        if (settled) return;
-        settled = true;
-        fn();
-      };
-
-      const timeout = setTimeout(() => {
-        settle(() => {
-          sub.unsubscribe(channel).catch(() => {});
-          sub.disconnect();
-          reject(new Error("Relay connection timeout — local agent relay did not connect within 90s"));
-        });
-      }, timeoutMs);
-
-      sub.on("message", () => {
-        settle(() => {
-          clearTimeout(timeout);
-          sub.unsubscribe(channel).catch(() => {});
-          sub.disconnect();
-          resolve();
-        });
-      });
-
-      sub.subscribe(channel, (err) => {
-        if (err) {
-          settle(() => {
-            clearTimeout(timeout);
-            sub.disconnect();
-            reject(err);
-          });
-          return;
+    console.log(`[relay-wait] ${runId}: starting poll — redis=${redisUrl.replace(/\/\/.*@/, "//***@")} key=${key}`);
+    const deadline = Date.now() + timeoutMs;
+    let pollCount = 0;
+    while (Date.now() < deadline) {
+      pollCount++;
+      try {
+        const ready = await redis.get(key);
+        if (pollCount <= 5 || pollCount % 10 === 0) {
+          console.log(`[relay-wait] ${runId}: poll #${pollCount} result=${JSON.stringify(ready)}`);
         }
-
-        // Race condition guard: relay may have connected before we subscribed.
-        // One HTTP check right after subscribe — if already ready, resolve immediately.
-        const apiUrl = process.env["API_URL"] ?? "https://vent-api.fly.dev";
-        const secret = process.env["RUNNER_CALLBACK_SECRET"] ?? "";
-        fetch(`${apiUrl}/internal/relay-ready/${runId}`, {
-          headers: { [RUNNER_CALLBACK_HEADER]: secret },
-        })
-          .then((res) => {
-            if (res.ok) {
-              settle(() => {
-                clearTimeout(timeout);
-                sub.unsubscribe(channel).catch(() => {});
-                sub.disconnect();
-                resolve();
-              });
-            }
-          })
-          .catch(() => {
-            // Not ready yet — wait for pub/sub message
-          });
-      });
-    });
-  } catch (err) {
-    sub.disconnect();
-    throw err;
+        if (ready) {
+          console.log(`[relay-wait] ${runId}: relay ready after ${pollCount} polls (machine=${ready})`);
+          return ready;
+        }
+      } catch (err) {
+        console.error(`[relay-wait] ${runId}: poll #${pollCount} Redis GET error:`, err);
+      }
+      await new Promise(r => setTimeout(r, 1_000));
+    }
+    console.error(`[relay-wait] ${runId}: TIMEOUT after ${pollCount} polls (${timeoutMs}ms)`);
+    throw new Error("Relay connection timeout — local agent relay did not connect within 90s");
+  } finally {
+    redis.disconnect();
   }
 }
 
@@ -440,10 +416,11 @@ async function waitForRelayReady(runId: string, timeoutMs = 90_000): Promise<voi
 export async function executeRun(job: RunJob): Promise<void> {
 
   // For relay runs, wait for the relay tunnel before starting tests
+  let relayMachineId: string | undefined;
   if (job.relay) {
     await emitEvent(db, job.run_id, "waiting_for_relay", "Waiting for local agent relay tunnel to connect...");
     try {
-      await waitForRelayReady(job.run_id);
+      relayMachineId = await waitForRelayReady(job.run_id);
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : "Relay timeout";
       console.error(`Relay wait failed for ${job.run_id}:`, errorMessage);
@@ -480,5 +457,5 @@ export async function executeRun(job: RunJob): Promise<void> {
 
   // Local WebSocket agent — route through relay
   await emitEvent(db, job.run_id, "connecting", "Connecting to local agent via relay tunnel...");
-  return executeRelayRun(db, job);
+  return executeRelayRun(db, job, relayMachineId);
 }

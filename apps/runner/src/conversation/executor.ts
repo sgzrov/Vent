@@ -20,7 +20,7 @@ import type {
   ToolCallMetrics,
   AudioActionResult,
 } from "@vent/shared";
-import { synthesize, BatchVAD, VoiceActivityDetector, StreamingTranscriber, applyEffects, resolveAccentVoiceId, resolveLanguageVoiceId, analyzeAudioQuality, type AudioQualityMetrics } from "@vent/voice";
+import { synthesize, TTSSession, BatchVAD, VoiceActivityDetector, StreamingTranscriber, applyEffects, resolveAccentVoiceId, resolveLanguageVoiceId, analyzeAudioQuality, type AudioQualityMetrics } from "@vent/voice";
 import { CallerLLM } from "./caller-llm.js";
 import { JudgeLLM } from "./judge-llm.js";
 import { executeAudioAction, mixCallerWithNoise } from "./audio-actions.js";
@@ -65,13 +65,17 @@ export async function runConversationTest(
       : undefined;
   const ttsOpts = ttsVoiceId ? { voiceId: ttsVoiceId } : undefined;
 
+  // Persistent TTS session — one WebSocket for all turns (avoids REST rate limit)
+  const ttsSession = new TTSSession(ttsOpts);
+  await ttsSession.connect();
+
   // Pre-synthesize first turn TTS
   let prefetchedAudio: Buffer | null = null;
   let prefetchedText: string | null = firstUtterance;
   let prefetchedTtsMs = 0;
   if (firstUtterance) {
     const ttsStart = performance.now();
-    prefetchedAudio = await synthesize(firstUtterance, ttsOpts);
+    prefetchedAudio = await ttsSession.synthesize(firstUtterance);
     if (spec.caller_audio) prefetchedAudio = applyEffects(prefetchedAudio, spec.caller_audio);
     prefetchedTtsMs = Math.round(performance.now() - ttsStart);
   }
@@ -105,7 +109,7 @@ export async function runConversationTest(
 
         const { result: actionResult, agentText: actionAgentText } = await executeAudioAction(
           audioAction,
-          { channel, vad: turnVAD, transcriber, callerAudioEffects: spec.caller_audio, ttsVoiceId },
+          { channel, vad: turnVAD, transcriber, callerAudioEffects: spec.caller_audio, ttsVoiceId, ttsSession },
         );
         audioActionResults.push(actionResult);
         agentText = actionAgentText;
@@ -136,7 +140,7 @@ export async function runConversationTest(
         if (callerText === null) break;
 
         const ttsStart = performance.now();
-        callerAudio = await synthesize(callerText, ttsOpts);
+        callerAudio = await ttsSession.synthesize(callerText);
         if (spec.caller_audio) callerAudio = applyEffects(callerAudio, spec.caller_audio);
         ttsMs = Math.round(performance.now() - ttsStart);
       }
@@ -177,7 +181,7 @@ export async function runConversationTest(
       if (audioAction?.action === "interrupt") {
         const { result: actionResult, agentText: actionAgentText } = await executeAudioAction(
           audioAction,
-          { channel, vad: turnVAD, transcriber, callerAudioEffects: spec.caller_audio, ttsVoiceId },
+          { channel, vad: turnVAD, transcriber, callerAudioEffects: spec.caller_audio, ttsVoiceId, ttsSession },
         );
         audioActionResults.push(actionResult);
         channel.off("audio", feedSTT);
@@ -197,7 +201,7 @@ export async function runConversationTest(
       if (audioAction?.action === "inject_noise") {
         const { result: actionResult, agentText: actionAgentText } = await executeAudioAction(
           audioAction,
-          { channel, vad: turnVAD, transcriber, callerAudioEffects: spec.caller_audio, ttsVoiceId },
+          { channel, vad: turnVAD, transcriber, callerAudioEffects: spec.caller_audio, ttsVoiceId, ttsSession },
         );
         audioActionResults.push(actionResult);
         channel.off("audio", feedSTT);
@@ -424,6 +428,7 @@ export async function runConversationTest(
       metrics,
     };
   } finally {
+    await ttsSession.close();
     transcriber.close();
     turnVAD.destroy();
     batchVAD.destroy();

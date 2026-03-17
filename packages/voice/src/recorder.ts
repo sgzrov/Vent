@@ -3,6 +3,7 @@
  */
 
 import { BYTES_PER_SECOND } from "./types.js";
+import { concatPcm } from "./format.js";
 
 export class AudioRecorder {
   private chunks: Buffer[] = [];
@@ -23,7 +24,7 @@ export class AudioRecorder {
 
   /** Get the combined audio buffer. */
   getBuffer(): Buffer {
-    return Buffer.concat(this.chunks);
+    return concatPcm(this.chunks);
   }
 
   /** Total audio duration in ms (based on PCM byte count at 24kHz 16-bit mono). */

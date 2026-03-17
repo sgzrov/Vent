@@ -1,6 +1,6 @@
 {
   "name": "vent-hq",
-  "version": "0.3.10",
+  "version": "0.7.1",
   "type": "module",
   "description": "Vent CLI — CI/CD for voice AI agents",
   "bin": {

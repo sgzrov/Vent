@@ -32,8 +32,10 @@ Test voice agents from the terminal. Tests run in the cloud (30-120s).
 ## Critical Rules
 
 1. **One test per command** — Always use `--test <name>`. Never run the full suite in one command.
-2. **Run tests in parallel** — Each test is a separate shell command, run them all at once.
-3. **This skill is self-contained** — The full config schema is below.
+2. **Run tests in parallel with 5min timeout** — Each test is a separate shell command, run them all at once. Set a 300-second (5 min) timeout on each — tests can take up to 5 minutes.
+3. **Handle backgrounded commands** — If a test command gets moved to background by the system, wait for it to complete before proceeding. Never end your response without delivering test results.
+4. **Output format** — In non-TTY mode (when run by an agent), every SSE event is written to stdout as a JSON line. Results are always in stdout.
+5. **This skill is self-contained** — The full config schema is below.
 
 ## Full Config Schema
 

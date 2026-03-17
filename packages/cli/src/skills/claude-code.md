@@ -28,10 +28,11 @@ Test voice agents from the terminal. Tests run in the cloud — results stream b
 
 ## Critical Rules
 
-1. **One test per command** — Always use `--test <name>` to run a single test. Never run the full suite in one command.
-2. **Parallel Bash calls** — Run all tests as separate parallel Bash tool calls in a single response. Do NOT use `run_in_background`. Each call blocks (30-120s) and returns one test's result.
-3. **This skill is self-contained** — The full config schema is below. Do NOT re-read this file.
-4. **Always analyze results** — After all tests complete, read every output, identify failures, correlate with the codebase, and fix.
+1. **Run ALL tests in ONE command** — Do NOT use `--test`. Run the entire suite with the exact command below. The server runs all tests concurrently within one relay session.
+2. **5-minute timeout** — Set `timeout: 300000` on the Bash call. The full suite takes 1-3 minutes (tests run concurrently), but can reach 5 minutes.
+3. **If the call gets backgrounded** — The system may move long-running calls to background automatically. If this happens, immediately call `TaskOutput` with `block: true` and `timeout: 300000` to wait for the result.
+4. **This skill is self-contained** — The full config schema is below. Do NOT re-read this file.
+5. **Always analyze results** — After the run completes, identify failures, correlate with the codebase, and fix.
 
 ## Workflow
 
@@ -47,23 +48,18 @@ Test voice agents from the terminal. Tests run in the cloud — results stream b
 
 ### Run tests
 
-1. List available tests:
+1. Run the full suite (all tests run concurrently on the server):
    ```bash
-   npx vent-hq run -f .vent/suite.json --list
+   # timeout: 300000
+   npx vent-hq run -f .vent/suite.json
    ```
 
-2. Run each test as a separate **parallel** Bash tool call (all in the same response):
-   ```bash
-   npx vent-hq run -f .vent/suite.json --test greeting-and-hours
-   ```
-   ```bash
-   npx vent-hq run -f .vent/suite.json --test book-cleaning
-   ```
-   ```bash
-   npx vent-hq run -f .vent/suite.json --test red-team-prompt-extraction
-   ```
+2. Analyze all results, identify failures, correlate with the codebase, and fix.
 
-3. Wait for all to complete. Read all outputs, identify failures, correlate with the codebase, and fix.
+3. To re-run a single failing test for debugging:
+   ```bash
+   npx vent-hq run -f .vent/suite.json --test <failing-test-name>
+   ```
 
 ### After modifying voice agent code
 

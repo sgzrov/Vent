@@ -20,8 +20,7 @@ export const queuePlugin = fp(async (app) => {
       const q = new Queue(name, {
         connection,
         defaultJobOptions: {
-          attempts: 2,
-          backoff: { type: "exponential", delay: 5000 },
+
           removeOnComplete: { age: 3600, count: 1000 },
           removeOnFail: { age: 86_400, count: 5000 },
         },

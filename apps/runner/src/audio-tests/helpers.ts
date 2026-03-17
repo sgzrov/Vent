@@ -3,7 +3,7 @@
  */
 
 import type { AudioChannel } from "@vent/adapters";
-import { VoiceActivityDetector, type VADState, transcribe as sttTranscribe } from "@vent/voice";
+import { VoiceActivityDetector, type VADState, transcribe as sttTranscribe, concatPcm } from "@vent/voice";
 import { generateSilence } from "./signals.js";
 
 /**
@@ -123,7 +123,7 @@ export async function collectUntilEndOfTurn(
   }
 
   return {
-    audio: Buffer.concat(chunks),
+    audio: concatPcm(chunks),
     timedOut,
     stats: { speechSegments, maxInternalSilenceMs, totalSpeechMs, firstChunkAt, speechOnsetAt },
   };
@@ -160,7 +160,7 @@ export async function collectForDuration(
     channel.on("error", onError);
   });
 
-  return Buffer.concat(chunks);
+  return concatPcm(chunks);
 }
 
 /**
