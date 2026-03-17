@@ -182,20 +182,6 @@ export async function initCommand(args: InitArgs): Promise<number> {
     await fs.writeFile(suitePath, SUITE_SCAFFOLD + "\n");
   }
 
-  // 4. Install vent-hq as dev dependency (silent)
-  if (existsSync(path.join(cwd, "package.json"))) {
-    const pm = detectPackageManager(cwd);
-    const installCmd = pm === "npm"
-      ? "npm install vent-hq --save-dev"
-      : `${pm} add -D vent-hq`;
-
-    try {
-      execSync(installCmd, { cwd, stdio: "pipe" });
-    } catch {
-      // silent — not critical
-    }
-  }
-
   printSuccess("Ready — your coding agent can now make test calls with `npx vent-hq run`.");
   return 0;
 }

@@ -24,6 +24,7 @@ export interface AudioChannelConfig {
   agentUrl?: string;
   targetPhoneNumber?: string;
   platform?: PlatformConfig;
+  relayHeaders?: Record<string, string>;
 }
 
 export function createAudioChannel(config: AudioChannelConfig): AudioChannel {
@@ -37,11 +38,12 @@ export function createAudioChannel(config: AudioChannelConfig): AudioChannel {
         const connId = crypto.randomUUID();
         wsUrl += (wsUrl.includes("?") ? "&" : "?") + `conn_id=${connId}`;
       }
-      // Pass runner auth header for relay connections
+      // Pass runner auth header + Fly routing header for relay connections
       const headers: Record<string, string> = {};
       if (wsUrl.includes("/relay/connect")) {
         const secret = process.env["RUNNER_CALLBACK_SECRET"] ?? "";
         if (secret) headers[RUNNER_CALLBACK_HEADER] = secret;
+        if (config.relayHeaders) Object.assign(headers, config.relayHeaders);
       }
       return new WsAudioChannel({ wsUrl, headers });
     }

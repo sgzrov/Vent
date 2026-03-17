@@ -54,8 +54,11 @@ export class StreamingTranscriber {
   /** KeepAlive interval to prevent Deepgram's 10s idle timeout. */
   private keepAliveInterval: ReturnType<typeof setInterval> | null = null;
 
-  /** Track dropped audio chunks for diagnostics. */
-  private droppedChunks = 0;
+  /** Whether a reconnection is in progress. */
+  private reconnecting = false;
+
+  /** Audio buffered during reconnection — replayed once connected. */
+  private pendingAudio: Buffer[] = [];
 
   constructor(config?: StreamingTranscriberConfig) {
     this.apiKeyEnv = config?.apiKeyEnv ?? "DEEPGRAM_API_KEY";
@@ -95,15 +98,7 @@ export class StreamingTranscriber {
       const rejectOnce = (err: unknown) => {
         if (settled) return;
         settled = true;
-        const msg =
-          err instanceof Error
-            ? err.message
-            : typeof err === "object" &&
-                err !== null &&
-                "message" in err &&
-                typeof (err as { message?: unknown }).message === "string"
-              ? (err as { message: string }).message
-              : String(err);
+        const msg = err instanceof Error ? err.message : String(err);
         reject(new Error(`Deepgram streaming STT connection failed: ${msg}`));
       };
 
@@ -159,7 +154,10 @@ export class StreamingTranscriber {
         }
 
         if (settled) {
-          console.warn("[STT] Deepgram connection closed unexpectedly mid-session");
+          console.warn("[STT] Deepgram connection closed — will reconnect on next feedAudio()");
+          // Mark connection as dead so feedAudio() triggers reconnect
+          this.connection?.removeAllListeners();
+          this.connection = null;
         } else {
           rejectOnce("socket closed before connection opened");
         }
@@ -170,6 +168,7 @@ export class StreamingTranscriber {
   /**
    * Feed raw PCM audio into the WebSocket.
    * Call this for every audio chunk received from the channel.
+   * Auto-reconnects if the connection was lost.
    */
   feedAudio(chunk: Buffer): void {
     if (this.connection?.isConnected()) {
@@ -180,9 +179,34 @@ export class StreamingTranscriber {
       this.connection.send(audio);
       this.hasFedAudio = true;
     } else {
-      this.droppedChunks++;
-      if (this.droppedChunks === 1) {
-        console.warn("[STT] Deepgram connection lost — dropping audio chunks");
+      // Buffer audio so it can be replayed after reconnect
+      this.pendingAudio.push(Buffer.from(chunk));
+
+      if (!this.reconnecting) {
+        console.warn("[STT] Deepgram connection lost — reconnecting…");
+        this.reconnecting = true;
+        this.connect()
+          .then(() => {
+            console.log(`[STT] Reconnected to Deepgram — replaying ${this.pendingAudio.length} buffered chunks`);
+            this.reconnecting = false;
+            // Replay buffered audio
+            for (const buffered of this.pendingAudio) {
+              if (this.connection?.isConnected()) {
+                const audio = buffered.buffer.slice(
+                  buffered.byteOffset,
+                  buffered.byteOffset + buffered.byteLength,
+                );
+                this.connection.send(audio);
+                this.hasFedAudio = true;
+              }
+            }
+            this.pendingAudio = [];
+          })
+          .catch((err) => {
+            console.warn(`[STT] Reconnect failed: ${err instanceof Error ? err.message : err}`);
+            this.reconnecting = false;
+            this.pendingAudio = [];
+          });
       }
     }
   }
@@ -230,7 +254,7 @@ export class StreamingTranscriber {
     this.finalizeResolve = null;
     this.finalizeCalled = false;
     this.hasFedAudio = false;
-    this.droppedChunks = 0;
+    this.pendingAudio = [];
   }
 
   /** Close the WebSocket connection. */

@@ -103,7 +103,8 @@ async function streamStatus(runId: string, apiKey: string, json: boolean): Promi
     for await (const event of streamRunEvents(runId, apiKey)) {
       printEvent(event, json);
       if (event.event_type === "run_complete") {
-        const status = (event.data as { status?: string }).status;
+        const meta = (event.metadata_json ?? {}) as Record<string, unknown>;
+        const status = meta.status as string | undefined;
         exitCode = status === "pass" ? 0 : 1;
       }
     }

@@ -23,18 +23,18 @@ try {
 // Types
 // ---------------------------------------------------------------------------
 
-interface RelayConnection {
-  runner: WebSocket | null;
-  agent: WebSocket | null;
-  pairedAt: number | null;
-  pairTimeout: ReturnType<typeof setTimeout> | null;
+interface RunnerConnection {
+  runner: WebSocket;
+  connId: string;
+  buffered: Buffer[];
+  ready: boolean;
 }
 
 interface RelaySession {
   runId: string;
   userId: string;
   controlWs: WebSocket;
-  connections: Map<string, RelayConnection>;
+  connections: Map<string, RunnerConnection>;
   createdAt: number;
   pingInterval: ReturnType<typeof setInterval>;
 }
@@ -45,12 +45,32 @@ interface RelaySession {
 
 const relaySessions = new Map<string, RelaySession>();
 
-const PAIR_TIMEOUT_MS = 15_000;
 const PING_INTERVAL_MS = 30_000;
+const MAX_BUFFER_BYTES = 1_048_576; // 1 MB safety limit per connection
 
-// Redis pub/sub — notifies worker instantly when relay connects (no HTTP polling)
+// Redis — pub/sub for instant notification + key for cross-instance relay-ready checks
 const redisUrl = process.env["REDIS_URL"] ?? "redis://localhost:6379";
 const redisPub = new IORedis(redisUrl, { maxRetriesPerRequest: null });
+
+// ---------------------------------------------------------------------------
+// Binary framing helpers
+// ---------------------------------------------------------------------------
+
+function sendDataFrame(session: RelaySession, connId: string, payload: Buffer): void {
+  if (session.controlWs.readyState !== session.controlWs.OPEN) return;
+  const header = Buffer.alloc(37);
+  header[0] = 0x01;
+  header.write(connId, 1, 36, "ascii");
+  const frame = Buffer.concat([header, payload]);
+  session.controlWs.send(frame, { binary: true });
+}
+
+function parseDataFrame(data: Buffer): { connId: string; payload: Buffer } | null {
+  if (data.length < 37 || data[0] !== 0x01) return null;
+  const connId = data.toString("ascii", 1, 37);
+  const payload = data.subarray(37);
+  return { connId, payload };
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -70,39 +90,6 @@ function sendControl(session: RelaySession, payload: Record<string, unknown>): v
   }
 }
 
-function pairConnections(connId: string, conn: RelayConnection): void {
-  if (!conn.runner || !conn.agent) return;
-
-  if (conn.pairTimeout) {
-    clearTimeout(conn.pairTimeout);
-    conn.pairTimeout = null;
-  }
-
-  conn.pairedAt = Date.now();
-
-  const runner = conn.runner;
-  const agent = conn.agent;
-
-  runner.on("message", (data: Buffer, isBinary: boolean) => {
-    if (agent.readyState === agent.OPEN) {
-      agent.send(data, { binary: isBinary });
-    }
-  });
-
-  agent.on("message", (data: Buffer, isBinary: boolean) => {
-    if (runner.readyState === runner.OPEN) {
-      runner.send(data, { binary: isBinary });
-    }
-  });
-
-  runner.on("close", () => {
-    if (agent.readyState === agent.OPEN) agent.close();
-  });
-  agent.on("close", () => {
-    if (runner.readyState === runner.OPEN) runner.close();
-  });
-}
-
 function cleanupSession(runId: string): void {
   const session = relaySessions.get(runId);
   if (!session) return;
@@ -110,13 +97,14 @@ function cleanupSession(runId: string): void {
   clearInterval(session.pingInterval);
 
   for (const [, conn] of session.connections) {
-    if (conn.pairTimeout) clearTimeout(conn.pairTimeout);
-    if (conn.runner?.readyState === conn.runner?.OPEN) conn.runner?.close();
-    if (conn.agent?.readyState === conn.agent?.OPEN) conn.agent?.close();
+    if (conn.runner.readyState === conn.runner.OPEN) conn.runner.close();
   }
 
   session.connections.clear();
   relaySessions.delete(runId);
+
+  // Clean up Redis key
+  void redisPub.del(`vent:relay-session:${runId}`);
 }
 
 function notifyRunComplete(runId: string): void {
@@ -142,7 +130,7 @@ function isValidUUID(value: string): boolean {
 // ---------------------------------------------------------------------------
 
 async function relayRoutes(app: FastifyInstance) {
-  // GET /relay/control — Control channel from the relay client
+  // GET /relay/control — Control + data channel from the relay client (multiplexed)
   app.get("/relay/control", { websocket: true }, async (socket, req) => {
     const query = req.query as { run_id?: string; token?: string };
     const runId = query.run_id;
@@ -208,11 +196,24 @@ async function relayRoutes(app: FastifyInstance) {
     relaySessions.set(runId, session);
     app.log.info({ runId }, "relay/control: connected");
 
-    // Notify worker via Redis pub/sub — instant, no polling needed
-    void redisPub.publish(`vent:relay-ready:${runId}`, "1");
+    // Set a persistent Redis key so the worker can confirm relay is ready.
+    try {
+      const machineId = process.env["FLY_MACHINE_ID"] ?? "local";
+      await redisPub.set(`vent:relay-session:${runId}`, machineId, "EX", 600);
+      app.log.info({ runId }, "relay/control: Redis key SET confirmed");
+    } catch (err) {
+      app.log.error({ runId, err }, "relay/control: FAILED to set Redis key");
+    }
+
+    // Notify worker via Redis pub/sub — instant notification
+    try {
+      await redisPub.publish(`vent:relay-ready:${runId}`, "1");
+      app.log.info({ runId }, "relay/control: Redis PUBLISH confirmed");
+    } catch (err) {
+      app.log.error({ runId, err }, "relay/control: FAILED to publish relay-ready");
+    }
 
     // Send agent env vars so relay-client can inject them into the agent process.
-    // Vent provides its own keys — users never need to set up their own.
     const agentEnv: Record<string, string> = {};
     const FORWARDED_KEYS = ["DEEPGRAM_API_KEY", "ANTHROPIC_API_KEY"];
     for (const key of FORWARDED_KEYS) {
@@ -226,6 +227,44 @@ async function relayRoutes(app: FastifyInstance) {
       event_type: "relay_connected",
       message: "Local dev tunnel connected",
       created_at: new Date().toISOString(),
+    });
+
+    // Handle multiplexed data + control messages from CLI
+    socket.on("message", (data: Buffer, isBinary: boolean) => {
+      if (isBinary) {
+        // Binary frame: data from local agent → forward to runner
+        const frame = parseDataFrame(data);
+        if (!frame) return;
+        const conn = session.connections.get(frame.connId);
+        if (conn && conn.runner.readyState === conn.runner.OPEN) {
+          conn.runner.send(frame.payload, { binary: true });
+        }
+      } else {
+        // Text frame: control message from CLI
+        try {
+          const msg = JSON.parse(data.toString()) as { type: string; conn_id?: string };
+          if (msg.type === "open_ack" && msg.conn_id) {
+            const conn = session.connections.get(msg.conn_id);
+            if (conn) {
+              conn.ready = true;
+              // Flush buffered runner data
+              for (const buf of conn.buffered) {
+                sendDataFrame(session, msg.conn_id, buf);
+              }
+              conn.buffered = [];
+              app.log.info({ runId, connId: msg.conn_id }, "relay/control: open_ack received, flushed buffer");
+            }
+          } else if (msg.type === "close" && msg.conn_id) {
+            const conn = session.connections.get(msg.conn_id);
+            if (conn && conn.runner.readyState === conn.runner.OPEN) {
+              conn.runner.close();
+            }
+            session.connections.delete(msg.conn_id);
+          }
+        } catch {
+          // Ignore malformed
+        }
+      }
     });
 
     socket.on("close", () => {
@@ -264,117 +303,48 @@ async function relayRoutes(app: FastifyInstance) {
       return;
     }
 
-    let conn = session.connections.get(connId);
-    if (!conn) {
-      conn = {
-        runner: null,
-        agent: null,
-        pairedAt: null,
-        pairTimeout: null,
-      };
-      session.connections.set(connId, conn);
-    }
-
-    if (conn.runner) {
-      socket.close(4409, "Runner already connected for this conn_id");
+    if (session.connections.has(connId)) {
+      socket.close(4409, "Connection already exists for this conn_id");
       return;
     }
 
-    conn.runner = socket;
+    const conn: RunnerConnection = {
+      runner: socket,
+      connId,
+      buffered: [],
+      ready: false,
+    };
+    session.connections.set(connId, conn);
     app.log.info({ runId, connId }, "relay/connect: runner connected");
 
+    // Notify CLI of new connection
     sendControl(session, { type: "new_connection", conn_id: connId });
 
-    if (conn.agent) {
-      pairConnections(connId, conn);
-    } else {
-      conn.pairTimeout = setTimeout(() => {
-        app.log.warn({ runId, connId }, "relay/connect: pair timeout");
-        if (socket.readyState === socket.OPEN) {
-          socket.close(4408, "Pair timeout: agent did not connect");
+    // Forward runner data to CLI over control WS (multiplexed)
+    let bufferedBytes = 0;
+    socket.on("message", (data: Buffer) => {
+      const payload = Buffer.from(data);
+      if (conn.ready) {
+        sendDataFrame(session, connId, payload);
+      } else {
+        bufferedBytes += payload.length;
+        if (bufferedBytes > MAX_BUFFER_BYTES) {
+          app.log.warn({ runId, connId, bufferedBytes }, "relay/connect: buffer limit exceeded, closing");
+          socket.close(4413, "Buffer limit exceeded");
+          return;
         }
-        session.connections.delete(connId);
-      }, PAIR_TIMEOUT_MS);
-    }
+        conn.buffered.push(payload);
+      }
+    });
 
     socket.on("close", () => {
-      const c = session.connections.get(connId);
-      if (c) {
-        if (c.pairTimeout) clearTimeout(c.pairTimeout);
-        session.connections.delete(connId);
-      }
+      // Notify CLI that this connection closed
+      sendControl(session, { type: "close", conn_id: connId });
+      session.connections.delete(connId);
     });
 
     socket.on("error", (err) => {
       app.log.error({ runId, connId, err: err.message }, "relay/connect: socket error");
-    });
-  });
-
-  // GET /relay/data — Agent data channel from relay client, one per test
-  app.get("/relay/data", { websocket: true }, async (socket, req) => {
-    const query = req.query as { run_id?: string; conn_id?: string; token?: string };
-    const runId = query.run_id;
-    const connId = query.conn_id;
-    const token = query.token;
-
-    if (!runId || !connId || !token || !isValidUUID(runId) || !isValidUUID(connId)) {
-      socket.close(4400, "Missing or invalid run_id/conn_id/token");
-      return;
-    }
-
-    const session = relaySessions.get(runId);
-    if (!session) {
-      socket.close(4404, "No relay session for this run");
-      return;
-    }
-
-    let run: { relay_token: string | null } | undefined;
-    try {
-      const [row] = await app.db
-        .select({ relay_token: schema.runs.relay_token })
-        .from(schema.runs)
-        .where(eq(schema.runs.id, runId))
-        .limit(1);
-      run = row;
-    } catch (err) {
-      app.log.error({ runId, connId, err }, "relay/data: DB lookup failed");
-      socket.close(4500, "Internal error");
-      return;
-    }
-
-    if (!run || !run.relay_token || run.relay_token !== token) {
-      socket.close(4401, "Invalid relay token");
-      return;
-    }
-
-    const conn = session.connections.get(connId);
-    if (!conn) {
-      socket.close(4404, "No connection slot for this conn_id");
-      return;
-    }
-
-    if (conn.agent) {
-      socket.close(4409, "Agent already connected for this conn_id");
-      return;
-    }
-
-    conn.agent = socket;
-    app.log.info({ runId, connId }, "relay/data: agent connected");
-
-    if (conn.runner) {
-      pairConnections(connId, conn);
-    }
-
-    socket.on("close", () => {
-      const c = session.connections.get(connId);
-      if (c) {
-        if (c.pairTimeout) clearTimeout(c.pairTimeout);
-        session.connections.delete(connId);
-      }
-    });
-
-    socket.on("error", (err) => {
-      app.log.error({ runId, connId, err: err.message }, "relay/data: socket error");
     });
   });
 
@@ -386,9 +356,16 @@ async function relayRoutes(app: FastifyInstance) {
       return reply.status(401).send({ error: "Unauthorized" });
     }
 
+    // Check local in-memory first (fast path), then Redis (cross-instance)
     if (relaySessions.has(request.params.id)) {
       return reply.send({ ready: true });
     }
+
+    const redisReady = await redisPub.get(`vent:relay-session:${request.params.id}`);
+    if (redisReady) {
+      return reply.send({ ready: true });
+    }
+
     return reply.status(404).send({ ready: false });
   });
 
@@ -419,4 +396,4 @@ export {
   getRelaySession,
   notifyRunComplete,
 };
-export type { RelaySession, RelayConnection };
+export type { RelaySession, RunnerConnection };

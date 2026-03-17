@@ -128,3 +128,14 @@ export function pcmToWav(pcm: Buffer, sampleRate = 24000): Buffer {
 
   return Buffer.concat([header, pcm]);
 }
+
+/**
+ * Concatenate PCM Int16LE chunks into a single aligned buffer.
+ * WebSocket frames are not guaranteed to be sample-aligned (RFC 6455 §5.4),
+ * so the concatenated result may have an odd byte count. This function
+ * truncates the trailing byte to maintain Int16LE alignment.
+ */
+export function concatPcm(chunks: Buffer[]): Buffer {
+  const buf = Buffer.concat(chunks);
+  return buf.length % 2 !== 0 ? buf.subarray(0, buf.length - 1) : buf;
+}
