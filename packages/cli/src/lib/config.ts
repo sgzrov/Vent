@@ -6,6 +6,7 @@ const CONFIG_DIR = path.join(homedir(), ".vent");
 const CREDENTIALS_FILE = path.join(CONFIG_DIR, "credentials");
 
 export const API_BASE = process.env.VENT_API_URL ?? "https://vent-api.fly.dev";
+export const DASHBOARD_URL = process.env.VENT_DASHBOARD_URL ?? "https://ventmcp.dev";
 
 export async function loadApiKey(): Promise<string | null> {
   // 1. Environment variable (highest priority)
@@ -26,6 +27,14 @@ export async function loadApiKey(): Promise<string | null> {
 export async function saveApiKey(key: string): Promise<void> {
   await fs.mkdir(CONFIG_DIR, { recursive: true });
   await fs.writeFile(CREDENTIALS_FILE, key + "\n", { mode: 0o600 });
+}
+
+export async function deleteCredentials(): Promise<void> {
+  try {
+    await fs.rm(CREDENTIALS_FILE);
+  } catch {
+    // File doesn't exist, that's fine
+  }
 }
 
 export function validateApiKeyFormat(key: string): boolean {

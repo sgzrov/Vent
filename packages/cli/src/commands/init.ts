@@ -1,14 +1,19 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { statSync } from "node:fs";
-import * as readline from "node:readline/promises";
+import { existsSync } from "node:fs";
+import { execSync } from "node:child_process";
+import { homedir } from "node:os";
+import { multiselect, isCancel } from "@clack/prompts";
 import { loadApiKey, saveApiKey, validateApiKeyFormat } from "../lib/config.js";
+import { deviceAuthFlow } from "../lib/auth.js";
 import { printError, printInfo, printSuccess, printWarn } from "../lib/output.js";
 
 // @ts-ignore — embedded at build time via esbuild text loader
 import claudeCodeSkill from "../skills/claude-code.md";
 // @ts-ignore
 import cursorSkill from "../skills/cursor.md";
+// @ts-ignore
+import codexSkill from "../skills/codex.md";
 
 interface InitArgs {
   apiKey?: string;
@@ -34,18 +39,43 @@ const SUITE_SCAFFOLD = JSON.stringify(
   2,
 );
 
-function dirExists(p: string): boolean {
+function detectPackageManager(cwd: string): string {
+  if (existsSync(path.join(cwd, "pnpm-lock.yaml"))) return "pnpm";
+  if (existsSync(path.join(cwd, "yarn.lock"))) return "yarn";
+  if (existsSync(path.join(cwd, "bun.lockb"))) return "bun";
+  return "npm";
+}
+
+interface Editor {
+  id: string;
+  name: string;
+  detect: () => boolean;
+  install: (cwd: string) => Promise<void>;
+}
+
+function findBinary(name: string): boolean {
   try {
-    return statSync(p).isDirectory();
+    execSync(`which ${name}`, { stdio: "pipe" });
+    return true;
   } catch {
     return false;
   }
 }
 
-const editors = [
+function detectActiveEditor(): string | null {
+  // Claude Code sets CLAUDECODE=1 (confirmed via docs)
+  if (process.env.CLAUDECODE) return "claude-code";
+  // No reliable env vars for Cursor or Codex — return null to fall back to detected editors
+  return null;
+}
+
+const home = homedir();
+
+const allEditors: Editor[] = [
   {
+    id: "claude-code",
     name: "Claude Code",
-    detect: () => true,
+    detect: () => existsSync(path.join(home, ".claude")) || findBinary("claude"),
     install: async (cwd: string) => {
       const dir = path.join(cwd, ".claude", "skills", "vent");
       await fs.mkdir(dir, { recursive: true });
@@ -54,13 +84,23 @@ const editors = [
     },
   },
   {
+    id: "cursor",
     name: "Cursor",
-    detect: () => dirExists(path.join(process.cwd(), ".cursor")),
+    detect: () => existsSync(path.join(home, ".cursor")),
     install: async (cwd: string) => {
       const dir = path.join(cwd, ".cursor", "rules");
       await fs.mkdir(dir, { recursive: true });
       await fs.writeFile(path.join(dir, "vent.mdc"), cursorSkill);
       printSuccess("Cursor: .cursor/rules/vent.mdc");
+    },
+  },
+  {
+    id: "codex",
+    name: "Codex",
+    detect: () => existsSync(path.join(home, ".codex")) || findBinary("codex"),
+    install: async (cwd: string) => {
+      await fs.writeFile(path.join(cwd, "AGENTS.md"), codexSkill);
+      printSuccess("Codex: AGENTS.md");
     },
   },
 ];
@@ -71,41 +111,60 @@ export async function initCommand(args: InitArgs): Promise<number> {
   // 1. Check/save API key
   let key = args.apiKey ?? (await loadApiKey());
 
-  if (!key) {
-    if (!process.stdin.isTTY) {
-      printError("No API key found. Pass --api-key or set VENT_API_KEY.");
-      return 2;
-    }
-
-    const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
-    try {
-      key = await rl.question("API key: ");
-    } finally {
-      rl.close();
-    }
-
-    if (!key || !validateApiKeyFormat(key)) {
+  if (args.apiKey) {
+    if (!validateApiKeyFormat(args.apiKey)) {
       printError("Invalid API key. Keys start with 'vent_'.");
       return 2;
     }
-
-    await saveApiKey(key);
+    await saveApiKey(args.apiKey);
     printSuccess("API key saved to ~/.vent/credentials");
+  } else if (key) {
+    printSuccess("Authenticated.");
   } else {
-    printInfo("API key found.");
+    // No key — run device auth flow (opens browser, polls for approval)
+    const result = await deviceAuthFlow();
+    if (!result.ok) {
+      printError("Authentication failed. Run `npx vent-hq init` to try again.");
+      return 1;
+    }
+    printSuccess("Logged in! API key saved to ~/.vent/credentials");
   }
 
-  // 2. Install skill files
-  printInfo("Detecting editors…");
-  let installed = 0;
-  for (const editor of editors) {
-    if (editor.detect()) {
-      await editor.install(cwd);
-      installed++;
+  // 2. Detect editors and let user select
+  const detectedIds = allEditors.filter((e) => e.detect()).map((e) => e.id);
+
+  let selected: string[];
+
+  if (process.stdin.isTTY) {
+    const result = await multiselect({
+      message: "Which coding agent do you use?",
+      options: allEditors.map((e) => ({
+        value: e.id,
+        label: e.name,
+        hint: detectedIds.includes(e.id) ? undefined : "not detected",
+      })),
+      initialValues: detectedIds,
+    });
+
+    if (isCancel(result)) {
+      printInfo("Cancelled.");
+      return 0;
+    }
+    selected = result;
+  } else {
+    // Non-TTY (coding agent) — detect which editor is currently active
+    const activeId = detectActiveEditor();
+    if (activeId) {
+      selected = [activeId];
+    } else {
+      selected = detectedIds.length > 0 ? detectedIds : allEditors.map((e) => e.id);
     }
   }
-  if (installed === 0) {
-    printWarn("No supported editors detected.");
+
+  // Install selected skill files
+  for (const id of selected) {
+    const editor = allEditors.find((e) => e.id === id);
+    if (editor) await editor.install(cwd);
   }
 
   // 3. Scaffold .vent/suite.json if missing
@@ -121,11 +180,22 @@ export async function initCommand(args: InitArgs): Promise<number> {
   if (!suiteExists) {
     await fs.mkdir(path.dirname(suitePath), { recursive: true });
     await fs.writeFile(suitePath, SUITE_SCAFFOLD + "\n");
-    printSuccess(".vent/suite.json created — edit connection and tests for your agent");
-  } else {
-    printInfo(".vent/suite.json already exists, skipping.");
   }
 
-  printSuccess("Vent initialized. Run `vent run -f .vent/suite.json` to test.");
+  // 4. Install vent-hq as dev dependency (silent)
+  if (existsSync(path.join(cwd, "package.json"))) {
+    const pm = detectPackageManager(cwd);
+    const installCmd = pm === "npm"
+      ? "npm install vent-hq --save-dev"
+      : `${pm} add -D vent-hq`;
+
+    try {
+      execSync(installCmd, { cwd, stdio: "pipe" });
+    } catch {
+      // silent — not critical
+    }
+  }
+
+  printSuccess("Ready — your coding agent can now make test calls with `npx vent-hq run`.");
   return 0;
 }

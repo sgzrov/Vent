@@ -1,5 +1,5 @@
 ---
-description: Vent — Voice agent testing. Submit tests, poll for results. Use when the user asks to test their voice agent or when you need to verify voice agent behavior after code changes.
+description: Vent — Voice agent testing. Run tests against your voice agent, get pass/fail results. Use when the user asks to test their voice agent or when you need to verify voice agent behavior after code changes.
 alwaysApply: true
 ---
 
@@ -18,19 +18,25 @@ Test voice agents from the terminal. Tests run in the cloud (30-120s).
 
 | Command | Purpose |
 |---------|---------|
-| `vent run -f .vent/suite.json --submit` | Submit tests, return immediately with run_id |
-| `vent run -f .vent/suite.json` | Run tests and block until done (required for local agents) |
-| `vent run --config '{...}'` | Run from inline JSON (one-off, no file needed) |
-| `vent status <run-id> --json` | Check results (full JSON when complete) |
-| `vent docs` | Print full config schema reference |
-| `vent login` | Save API key |
+| `npx vent-hq run -f .vent/suite.json --list` | List test names from suite |
+| `npx vent-hq run -f .vent/suite.json --test <name>` | Run a single test by name |
+| `npx vent-hq run -f .vent/suite.json --test <name> --submit` | Submit a single test, return immediately with run_id |
+| `npx vent-hq run --config '{...}'` | Run from inline JSON (one-off, no file needed) |
+| `npx vent-hq status <run-id> --json` | Check results (full JSON when complete) |
+| `npx vent-hq docs` | Print full config schema reference |
+
+## Critical Rules
+
+1. **One test per command** — Always use `--test <name>` to run a single test. Never run the full suite in one command.
+2. **This skill is auto-injected** — Everything you need is here. Do NOT re-read this file or run `npx vent-hq docs` unless you're creating a suite for the first time.
+3. **Always analyze results** — After tests complete, read every output, identify failures, correlate with the codebase, and fix.
 
 ## Workflow
 
 ### First time: create the test suite
 
 1. Read the voice agent's codebase — understand its system prompt, tools, intents, and domain.
-2. Run `vent docs` to see the full config schema.
+2. Run `npx vent-hq docs` to see the full config schema (first time only).
 3. Create `.vent/suite.json` with tests tailored to the agent's actual behavior:
    - Name tests after specific flows (e.g., `"reschedule-appointment"`, not `"test-1"`)
    - Write `caller_prompt` as a realistic persona with a specific goal, based on the agent's domain
@@ -41,28 +47,35 @@ Test voice agents from the terminal. Tests run in the cloud (30-120s).
 
 `.vent/suite.json` already exists? Just re-run it. No need to recreate.
 
-### Deployed agents (agent_url) — submit + poll
+### Deployed agents (agent_url) — submit + poll per test
 
-1. Submit: `vent run -f .vent/suite.json --submit`
-   Returns: `{"run_id":"...","status":"queued","check":"vent status <id> --json"}`
-2. Wait ~60 seconds, then check: `vent status <run-id> --json`
-3. If status is `"running"`, wait 30 more seconds and check again.
-4. When complete, correlate any failures with the codebase and fix.
+1. List tests: `npx vent-hq run -f .vent/suite.json --list`
+2. Submit each test individually:
+   ```
+   npx vent-hq run -f .vent/suite.json --test greeting-and-hours --submit
+   npx vent-hq run -f .vent/suite.json --test book-cleaning --submit
+   npx vent-hq run -f .vent/suite.json --test red-team-prompt-extraction --submit
+   ```
+3. Collect all run_ids, then poll each:
+   `npx vent-hq status <run-id> --json`
+4. If status is `"running"`, wait 30 seconds and check again.
+5. When complete, correlate any failures with the codebase and fix.
 
-### Local agents (start_command) — must block
+### Local agents (start_command) — run each test sequentially
 
-When config uses `start_command`, the CLI manages the agent process and must stay running:
+When config uses `start_command`, the CLI manages the agent process:
 
-1. Run: `vent run -f .vent/suite.json` (no --submit)
-2. Wait for it to complete (30-120s).
-3. Read results and fix failures.
+1. List tests: `npx vent-hq run -f .vent/suite.json --list`
+2. Run each test one at a time:
+   `npx vent-hq run -f .vent/suite.json --test <name>`
+3. Read results after each, fix failures.
 
 ### Quick one-off test
 
 For a single test without creating a file:
 
 ```bash
-vent run --config '{"connection":{"adapter":"websocket","start_command":"npm run start","agent_port":3001},"conversation_tests":[{"name":"quick-check","caller_prompt":"You are a customer calling to ask about business hours.","max_turns":4}]}'
+npx vent-hq run --config '{"connection":{"adapter":"websocket","start_command":"npm run start","agent_port":3001},"conversation_tests":[{"name":"quick-check","caller_prompt":"You are a customer calling to ask about business hours.","max_turns":4}]}'
 ```
 
 ## Connection
@@ -89,7 +102,7 @@ vent run --config '{"connection":{"adapter":"websocket","start_command":"npm run
 }
 ```
 
-Run `vent docs` for the full schema — includes persona controls, audio stress tests, load testing, and all adapter configs.
+Run `npx vent-hq docs` for the full schema — includes persona controls, audio stress tests, load testing, and all adapter configs.
 
 ## Exit Codes
 
@@ -97,4 +110,4 @@ Run `vent docs` for the full schema — includes persona controls, audio stress 
 
 ## API Keys
 
-Set `VENT_API_KEY` env var or run `vent login`.
+Set `VENT_API_KEY` env var or run `npx vent-hq login`.
