@@ -91,7 +91,7 @@ async function main(): Promise<number> {
 
       // --list: print test names and exit
       if (values.list) {
-        let config: { conversation_tests?: Array<{ name?: string }> };
+        let config: { conversation_tests?: Array<{ name?: string }>; red_team_tests?: Array<{ name?: string }> };
         try {
           if (values.file) {
             const fs = await import("node:fs/promises");
@@ -107,9 +107,13 @@ async function main(): Promise<number> {
           printError(`Invalid config JSON: ${(err as Error).message}`);
           return 2;
         }
-        const tests = config!.conversation_tests ?? [];
-        for (let i = 0; i < tests.length; i++) {
-          console.log(tests[i]!.name ?? `test-${i}`);
+        const convTests = config!.conversation_tests ?? [];
+        for (let i = 0; i < convTests.length; i++) {
+          console.log(convTests[i]!.name ?? `test-${i}`);
+        }
+        const redTests = config!.red_team_tests ?? [];
+        for (let i = 0; i < redTests.length; i++) {
+          console.log(redTests[i]!.name ?? `red-${i}`);
         }
         return 0;
       }

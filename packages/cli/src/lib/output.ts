@@ -70,10 +70,12 @@ function printTestResult(meta: Record<string, unknown>): void {
 function printRunComplete(meta: Record<string, unknown>): void {
   const status = meta.status as string;
 
-  const agg = meta.aggregate as { conversation_tests?: { passed?: number; failed?: number; total?: number } } | undefined;
-  const total = (meta.total_tests as number | undefined) ?? agg?.conversation_tests?.total;
-  const passed = (meta.passed_tests as number | undefined) ?? agg?.conversation_tests?.passed;
-  const failed = (meta.failed_tests as number | undefined) ?? agg?.conversation_tests?.failed;
+  const agg = meta.aggregate as { conversation_tests?: { passed?: number; failed?: number; total?: number }; red_team_tests?: { passed?: number; failed?: number; total?: number } } | undefined;
+  const redTeam = agg?.red_team_tests;
+  const counts = redTeam ?? agg?.conversation_tests;
+  const total = (meta.total_tests as number | undefined) ?? counts?.total;
+  const passed = (meta.passed_tests as number | undefined) ?? counts?.passed;
+  const failed = (meta.failed_tests as number | undefined) ?? counts?.failed;
 
   process.stdout.write("\n");
 
@@ -118,7 +120,8 @@ export function printSummary(
         };
       });
 
-    const agg = runComplete.aggregate as { conversation_tests?: { passed?: number; failed?: number; total?: number } } | undefined;
+    const agg = runComplete.aggregate as { conversation_tests?: { passed?: number; failed?: number; total?: number }; red_team_tests?: { passed?: number; failed?: number; total?: number } } | undefined;
+    const counts = agg?.red_team_tests ?? agg?.conversation_tests;
 
     process.stdout.write(
       JSON.stringify({
@@ -126,9 +129,9 @@ export function printSummary(
         data: {
           run_id: runId,
           status: runComplete.status,
-          total: runComplete.total_tests ?? agg?.conversation_tests?.total,
-          passed: runComplete.passed_tests ?? agg?.conversation_tests?.passed,
-          failed: runComplete.failed_tests ?? agg?.conversation_tests?.failed,
+          total: runComplete.total_tests ?? counts?.total,
+          passed: runComplete.passed_tests ?? counts?.passed,
+          failed: runComplete.failed_tests ?? counts?.failed,
           failed_tests: failedTests,
           check: `npx vent-hq status ${runId} --json`,
         },
