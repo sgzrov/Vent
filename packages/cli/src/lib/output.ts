@@ -113,7 +113,7 @@ export function printSummary(
           passed: runComplete.passed_tests,
           failed: runComplete.failed_tests,
           failed_tests: failedTests,
-          check: `vent status ${runId} --json`,
+          check: `npx vent-hq status ${runId} --json`,
         },
       }) + "\n",
     );

@@ -10,6 +10,7 @@ import type { SSEEvent } from "../lib/sse.js";
 interface RunArgs {
   config?: string;
   file?: string;
+  test?: string;
   apiKey?: string;
   json: boolean;
   submit: boolean;
@@ -19,7 +20,7 @@ export async function runCommand(args: RunArgs): Promise<number> {
   // 1. Resolve API key
   const apiKey = args.apiKey ?? (await loadApiKey());
   if (!apiKey) {
-    printError("No API key found. Set VENT_API_KEY, run `vent login`, or pass --api-key.");
+    printError("No API key found. Set VENT_API_KEY, run `npx vent-hq login`, or pass --api-key.");
     return 2;
   }
 
@@ -38,6 +39,29 @@ export async function runCommand(args: RunArgs): Promise<number> {
   } catch (err) {
     printError(`Invalid config JSON: ${(err as Error).message}`);
     return 2;
+  }
+
+  // 2b. Filter to single test if --test is set
+  if (args.test) {
+    const cfg = config as { conversation_tests?: Array<{ name?: string }>; load_test?: unknown };
+    if (cfg.load_test) {
+      printError("--test only works with conversation_tests, not load_test.");
+      return 2;
+    }
+    if (!cfg.conversation_tests || cfg.conversation_tests.length === 0) {
+      printError("--test requires conversation_tests in config.");
+      return 2;
+    }
+    const tests = cfg.conversation_tests;
+    const match = tests.filter(
+      (t, i) => (t.name ?? `test-${i}`) === args.test
+    );
+    if (match.length === 0) {
+      const available = tests.map((t, i) => t.name ?? `test-${i}`).join(", ");
+      printError(`Test "${args.test}" not found. Available: ${available}`);
+      return 2;
+    }
+    cfg.conversation_tests = match;
   }
 
   // 3. Submit run
@@ -83,7 +107,7 @@ export async function runCommand(args: RunArgs): Promise<number> {
       JSON.stringify({
         run_id,
         status: submitResult.status,
-        check: `vent status ${run_id} --json`,
+        check: `npx vent-hq status ${run_id} --json`,
       }) + "\n"
     );
     return 0;

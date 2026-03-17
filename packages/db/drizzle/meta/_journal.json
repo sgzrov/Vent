@@ -92,6 +92,13 @@
       "when": 1772700000000,
       "tag": "0012_add_infrastructure_status",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1772800000000,
+      "tag": "0013_device_sessions",
+      "breakpoints": true
     }
   ]
 }

@@ -5,7 +5,7 @@ const middleware = authkitMiddleware({
   redirectUri: process.env["NEXT_PUBLIC_WORKOS_REDIRECT_URI"],
   middlewareAuth: {
     enabled: true,
-    unauthenticatedPaths: ["/", "/auth/callback", "/backend/:path*"],
+    unauthenticatedPaths: ["/", "/auth/callback", "/auth/device", "/backend/:path*"],
   },
 });
 

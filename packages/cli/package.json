@@ -1,10 +1,10 @@
 {
-  "name": "@vent-hq/cli",
-  "version": "0.1.0",
+  "name": "vent-hq",
+  "version": "0.3.10",
   "type": "module",
   "description": "Vent CLI — CI/CD for voice AI agents",
   "bin": {
-    "vent": "dist/index.mjs"
+    "vent-hq": "dist/index.mjs"
   },
   "files": [
     "dist"
@@ -32,12 +32,13 @@
   },
   "homepage": "https://ventmcp.dev",
   "dependencies": {
+    "@clack/prompts": "^1.1.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {
     "@types/ws": "^8.5.0",
-    "@vent/shared": "workspace:*",
     "@vent/relay-client": "workspace:*",
+    "@vent/shared": "workspace:*",
     "esbuild": "^0.24.0"
   }
 }

@@ -128,6 +128,20 @@ export const artifacts = pgTable("artifacts", {
     .defaultNow(),
 });
 
+export const deviceSessions = pgTable("device_sessions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  session_id: text("session_id").notNull().unique(),
+  user_code: text("user_code").notNull().unique(),
+  user_id: text("user_id"),
+  api_key_id: uuid("api_key_id").references(() => apiKeys.id),
+  raw_api_key: text("raw_api_key"),
+  expires_at: timestamp("expires_at", { withTimezone: true }).notNull(),
+  created_at: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  consumed_at: timestamp("consumed_at", { withTimezone: true }),
+});
+
 export const runEvents = pgTable("run_events", {
   id: uuid("id").primaryKey().defaultRandom(),
   run_id: uuid("run_id")

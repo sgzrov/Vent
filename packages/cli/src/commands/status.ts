@@ -14,7 +14,7 @@ interface StatusArgs {
 export async function statusCommand(args: StatusArgs): Promise<number> {
   const apiKey = args.apiKey ?? (await loadApiKey());
   if (!apiKey) {
-    printError("No API key found. Set VENT_API_KEY, run `vent login`, or pass --api-key.");
+    printError("No API key found. Set VENT_API_KEY, run `npx vent-hq login`, or pass --api-key.");
     return 2;
   }
 
