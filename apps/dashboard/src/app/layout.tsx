@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Inter } from "next/font/google";
+import { headers } from "next/headers";
 import { withAuth, signOut } from "@workos-inc/authkit-nextjs";
 import { SidebarNav } from "@/components/sidebar-nav";
 import "./globals.css";
@@ -16,6 +17,11 @@ export default async function RootLayout({
 }: {
   children: React.ReactNode;
 }) {
+  const headersList = await headers();
+  const pathname = headersList.get("x-pathname") || "";
+  const isLandingPage = pathname === "/";
+  const isAuthPage = pathname.startsWith("/auth");
+
   let user: { email: string } | null = null;
   try {
     const auth = await withAuth();
@@ -24,20 +30,22 @@ export default async function RootLayout({
     // not signed in
   }
 
+  const showSidebar = Boolean(user && !isLandingPage && !isAuthPage);
+
   return (
     <html lang="en" suppressHydrationWarning>
-      <body className={`${inter.className} antialiased`}>
+      <body className={`${inter.className} antialiased bg-black`}>
         <div className="min-h-screen bg-background">
-          {user && (
+          {showSidebar && (
             <SidebarNav
-              userEmail={user.email}
+              userEmail={user?.email ?? ""}
               signOutAction={async () => {
                 "use server";
                 await signOut();
               }}
             />
           )}
-          <main className={user ? "ml-56 px-7 pb-10" : ""}>
+          <main className={showSidebar ? "ml-56 px-7 pb-10" : ""}>
             {children}
           </main>
         </div>
