@@ -1,4 +1,5 @@
 import * as fs from "node:fs/promises";
+import * as net from "node:net";
 import { apiFetch } from "../lib/api.js";
 import { streamRunEvents } from "../lib/sse.js";
 import { startRelay } from "../lib/relay.js";
@@ -64,6 +65,13 @@ export async function runCommand(args: RunArgs): Promise<number> {
     cfg.conversation_tests = match;
   }
 
+  // 2c. Auto-assign a free port for local agents so parallel runs don't collide
+  const cfg = config as { connection?: { start_command?: string; agent_port?: number } };
+  if (cfg.connection?.start_command) {
+    const freePort = await findFreePort();
+    cfg.connection.agent_port = freePort;
+  }
+
   // 3. Submit run
   printInfo("Submitting run…");
   let submitResult: {
@@ -91,6 +99,10 @@ export async function runCommand(args: RunArgs): Promise<number> {
   }
 
   const { run_id } = submitResult;
+  if (!run_id) {
+    printError("Server returned no run_id. Response: " + JSON.stringify(submitResult));
+    return 2;
+  }
   printInfo(`Run ${run_id} created.`);
 
   // 4. Handle --submit (fire-and-forget)
@@ -171,4 +183,16 @@ export async function runCommand(args: RunArgs): Promise<number> {
   }
 
   return exitCode;
+}
+
+function findFreePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.listen(0, () => {
+      const addr = server.address();
+      const port = (addr as net.AddressInfo).port;
+      server.close(() => resolve(port));
+    });
+    server.on("error", reject);
+  });
 }
