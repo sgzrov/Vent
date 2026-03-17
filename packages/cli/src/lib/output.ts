@@ -39,11 +39,15 @@ export function printEvent(event: SSEEvent, jsonMode: boolean): void {
 
 function printTestResult(data: Record<string, unknown>): void {
   const result = data.result as FormattedConversationResult | undefined;
-  if (!result) return;
+  if (!result) {
+    const testName = (data as { test_name?: string }).test_name ?? "test";
+    process.stdout.write(yellow("⚠") + `  ${bold(testName)}  ${dim("no result data")}\n`);
+    return;
+  }
 
   const status = result.status === "completed" ? green("✔") : red("✘");
   const name = result.name ?? "test";
-  const duration = (result.duration_ms / 1000).toFixed(1) + "s";
+  const duration = result.duration_ms != null ? (result.duration_ms / 1000).toFixed(1) + "s" : "—";
 
   const parts = [status, bold(name), dim(duration)];
 
