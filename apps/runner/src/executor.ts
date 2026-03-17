@@ -113,11 +113,32 @@ export async function executeTests(opts: ExecuteTestsOpts): Promise<ExecuteTests
     return Array.from({ length: repeatCount }, () => spec);
   });
 
-  // Pre-flight health check — verify agent is reachable before running N tests
+  // Pre-flight health check — verify agent is reachable before running N tests.
+  // For relay runs, we hold the probe open briefly to confirm the CLI can
+  // reach the local agent (open_ack). A connect-then-immediately-disconnect
+  // only checks the runner→API path and masks CLI→agent failures.
   if (allTests.length > 0) {
     const probeChannel = createAudioChannel(channelConfig);
     try {
       await probeChannel.connect();
+      // Hold open to verify end-to-end — if the CLI can't reach the agent,
+      // the API closes this WS within ~1s (close message or buffer limit).
+      await new Promise<void>((resolve, reject) => {
+        const ok = setTimeout(() => {
+          probeChannel.off("disconnected", onDisconnect);
+          resolve();
+        }, 2_000);
+        function onDisconnect() {
+          clearTimeout(ok);
+          reject(new Error("Relay probe disconnected — CLI cannot reach local agent"));
+        }
+        if (!probeChannel.connected) {
+          clearTimeout(ok);
+          reject(new Error("Relay probe closed immediately — CLI cannot reach local agent"));
+          return;
+        }
+        probeChannel.on("disconnected", onDisconnect);
+      });
       await probeChannel.disconnect().catch(() => {});
       console.log("Pre-flight health check passed — agent is reachable.");
     } catch (err) {

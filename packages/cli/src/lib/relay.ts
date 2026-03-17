@@ -28,6 +28,10 @@ export async function startRelay(relayConfig: {
 
   const client = new RelayClient(clientConfig);
 
+  client.on("log", (msg: unknown) => {
+    process.stderr.write(`${msg}\n`);
+  });
+
   // Activate FIRST — this queues the BullMQ job so the worker subscribes to
   // Redis pub/sub BEFORE the relay WebSocket connects. Fixes the race condition
   // where the relay-ready message fires before the worker is listening.
