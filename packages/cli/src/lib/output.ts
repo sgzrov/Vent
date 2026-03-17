@@ -1,4 +1,4 @@
-import type { FormattedConversationResult, FormattedLoadTestResult } from "@vent/shared";
+import type { FormattedConversationResult } from "@vent/shared";
 import type { SSEEvent } from "./sse.js";
 
 const isTTY = process.stdout.isTTY;
@@ -17,55 +17,63 @@ export function printEvent(event: SSEEvent, jsonMode: boolean): void {
     return;
   }
 
-  switch (event.event_type) {
-    case "test_completed":
-      printTestResult(event.data);
-      break;
-    case "run_complete":
-      printRunComplete(event.data);
-      break;
-    case "test_started":
-      if (isTTY) {
-        const name = (event.data as { test_name?: string }).test_name ?? "test";
-        process.stderr.write(dim(`  ▸ ${name}…`) + "\n");
-      }
-      break;
-    default:
-      if (isTTY) {
-        process.stderr.write(dim(`  [${event.event_type}]`) + "\n");
-      }
-  }
-}
-
-function printTestResult(data: Record<string, unknown>): void {
-  const result = data.result as FormattedConversationResult | undefined;
-  if (!result) {
-    const testName = (data as { test_name?: string }).test_name ?? "test";
-    process.stdout.write(yellow("⚠") + `  ${bold(testName)}  ${dim("no result data")}\n`);
+  // Non-TTY (coding agents): write every event as a JSON line to stdout.
+  // The agent reads all stdout at once when the process exits.
+  // Without this, stdout can be empty → agent sees "undefined".
+  if (!isTTY) {
+    process.stdout.write(JSON.stringify(event) + "\n");
     return;
   }
 
-  const status = result.status === "completed" ? green("✔") : red("✘");
-  const name = result.name ?? "test";
-  const duration = result.duration_ms != null ? (result.duration_ms / 1000).toFixed(1) + "s" : "—";
+  // TTY: formatted output
+  const meta = (event.metadata_json ?? {}) as Record<string, unknown>;
 
-  const parts = [status, bold(name), dim(duration)];
+  switch (event.event_type) {
+    case "test_completed":
+      printTestResult(meta);
+      break;
+    case "run_complete":
+      printRunComplete(meta);
+      break;
+    case "test_started": {
+      const name = (meta.test_name as string) ?? "test";
+      process.stderr.write(dim(`  ▸ ${name}…`) + "\n");
+      break;
+    }
+    default:
+      process.stderr.write(dim(`  [${event.event_type}]`) + "\n");
+  }
+}
 
-  if (result.behavior?.intent_accuracy) {
+function printTestResult(meta: Record<string, unknown>): void {
+  const result = meta.result as FormattedConversationResult | undefined;
+
+  const testName = result?.name ?? (meta.test_name as string) ?? "test";
+  const testStatus = result?.status ?? (meta.status as string);
+  const durationMs = result?.duration_ms ?? (meta.duration_ms as number | undefined);
+
+  const statusIcon = testStatus === "completed" || testStatus === "pass" ? green("✔") : red("✘");
+  const duration = durationMs != null ? (durationMs / 1000).toFixed(1) + "s" : "—";
+
+  const parts = [statusIcon, bold(testName), dim(duration)];
+
+  if (result?.behavior?.intent_accuracy) {
     parts.push(`intent: ${result.behavior.intent_accuracy.score}`);
   }
-  if (result.latency?.p50_ttfw_ms != null) {
+  if (result?.latency?.p50_ttfw_ms != null) {
     parts.push(`p50: ${result.latency.p50_ttfw_ms}ms`);
   }
 
   process.stdout.write(parts.join("  ") + "\n");
 }
 
-function printRunComplete(data: Record<string, unknown>): void {
-  const status = data.status as string;
-  const total = data.total_tests as number | undefined;
-  const passed = data.passed_tests as number | undefined;
-  const failed = data.failed_tests as number | undefined;
+function printRunComplete(meta: Record<string, unknown>): void {
+  const status = meta.status as string;
+
+  const agg = meta.aggregate as { conversation_tests?: { passed?: number; failed?: number; total?: number } } | undefined;
+  const total = (meta.total_tests as number | undefined) ?? agg?.conversation_tests?.total;
+  const passed = (meta.passed_tests as number | undefined) ?? agg?.conversation_tests?.passed;
+  const failed = (meta.failed_tests as number | undefined) ?? agg?.conversation_tests?.failed;
 
   process.stdout.write("\n");
 
@@ -93,19 +101,24 @@ export function printSummary(
   if (jsonMode) {
     const failedTests = testResults
       .filter((e) => {
-        const r = e.data.result as FormattedConversationResult | undefined;
-        return r && r.status !== "completed";
+        const meta = e.metadata_json ?? {};
+        const r = meta.result as FormattedConversationResult | undefined;
+        const status = r?.status ?? (meta.status as string);
+        return status && status !== "completed" && status !== "pass";
       })
       .map((e) => {
-        const r = e.data.result as FormattedConversationResult;
+        const meta = e.metadata_json ?? {};
+        const r = meta.result as FormattedConversationResult | undefined;
         return {
-          name: r.name,
-          status: r.status,
-          duration_ms: r.duration_ms,
-          intent_accuracy: r.behavior?.intent_accuracy?.score,
-          p50_ttfw_ms: r.latency?.p50_ttfw_ms,
+          name: r?.name ?? (meta.test_name as string) ?? "test",
+          status: r?.status ?? (meta.status as string),
+          duration_ms: r?.duration_ms ?? (meta.duration_ms as number),
+          intent_accuracy: r?.behavior?.intent_accuracy?.score,
+          p50_ttfw_ms: r?.latency?.p50_ttfw_ms,
         };
       });
+
+    const agg = runComplete.aggregate as { conversation_tests?: { passed?: number; failed?: number; total?: number } } | undefined;
 
     process.stdout.write(
       JSON.stringify({
@@ -113,9 +126,9 @@ export function printSummary(
         data: {
           run_id: runId,
           status: runComplete.status,
-          total: runComplete.total_tests,
-          passed: runComplete.passed_tests,
-          failed: runComplete.failed_tests,
+          total: runComplete.total_tests ?? agg?.conversation_tests?.total,
+          passed: runComplete.passed_tests ?? agg?.conversation_tests?.passed,
+          failed: runComplete.failed_tests ?? agg?.conversation_tests?.failed,
           failed_tests: failedTests,
           check: `npx vent-hq status ${runId} --json`,
         },
@@ -126,18 +139,22 @@ export function printSummary(
 
   // TTY: list failed tests with details
   const failures = testResults.filter((e) => {
-    const r = e.data.result as FormattedConversationResult | undefined;
-    return r && r.status !== "completed";
+    const meta = e.metadata_json ?? {};
+    const r = meta.result as FormattedConversationResult | undefined;
+    const status = r?.status ?? (meta.status as string);
+    return status && status !== "completed" && status !== "pass";
   });
 
   if (failures.length > 0) {
     process.stdout.write("\n" + bold("Failed tests:") + "\n");
     for (const event of failures) {
-      const r = event.data.result as FormattedConversationResult;
-      const name = r.name ?? "test";
-      const duration = (r.duration_ms / 1000).toFixed(1) + "s";
+      const meta = event.metadata_json ?? {};
+      const r = meta.result as FormattedConversationResult | undefined;
+      const name = r?.name ?? (meta.test_name as string) ?? "test";
+      const durationMs = r?.duration_ms ?? (meta.duration_ms as number | undefined);
+      const duration = durationMs != null ? (durationMs / 1000).toFixed(1) + "s" : "—";
       const parts = [red("✘"), bold(name), dim(duration)];
-      if (r.behavior?.intent_accuracy) {
+      if (r?.behavior?.intent_accuracy) {
         parts.push(`intent: ${r.behavior.intent_accuracy.score}`);
       }
       process.stdout.write("  " + parts.join("  ") + "\n");
@@ -148,13 +165,16 @@ export function printSummary(
 }
 
 export function printError(message: string): void {
-  process.stderr.write(red(bold("error")) + ` ${message}\n`);
+  const line = red(bold("error")) + ` ${message}\n`;
+  process.stderr.write(line);
+  // Also write to stdout so coding agents (which may only capture stdout) see errors
+  if (!isTTY) {
+    process.stdout.write(line);
+  }
 }
 
 export function printInfo(message: string): void {
-  if (isTTY) {
-    process.stderr.write(blue("▸") + ` ${message}\n`);
-  }
+  process.stderr.write(blue("▸") + ` ${message}\n`);
 }
 
 export function printSuccess(message: string): void {

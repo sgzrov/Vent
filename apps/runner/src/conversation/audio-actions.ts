@@ -9,11 +9,13 @@ import type { AudioChannel } from "@vent/adapters";
 import type { AudioAction, AudioActionResult, CallerAudioEffects } from "@vent/shared";
 import {
   synthesize,
+  type TTSSession,
   generateBabbleNoise,
   generateWhiteNoise,
   generatePinkNoise,
   mixAudio,
   applyEffects,
+  concatPcm,
 } from "@vent/voice";
 import {
   collectUntilEndOfTurn,
@@ -29,6 +31,7 @@ interface ActionContext {
   transcriber: StreamingTranscriber;
   callerAudioEffects?: CallerAudioEffects;
   ttsVoiceId?: string;
+  ttsSession?: TTSSession;
 }
 
 /**
@@ -66,7 +69,10 @@ async function executeInterrupt(
   ctx: ActionContext,
 ): Promise<{ result: AudioActionResult; agentText: string }> {
   const interruptPrompt = action.prompt ?? "Actually, I have a different question.";
-  let interruptAudio = await synthesize(interruptPrompt, ctx.ttsVoiceId ? { voiceId: ctx.ttsVoiceId } : undefined);
+  const ttsOpts = ctx.ttsVoiceId ? { voiceId: ctx.ttsVoiceId } : undefined;
+  let interruptAudio = ctx.ttsSession
+    ? await ctx.ttsSession.synthesize(interruptPrompt)
+    : await synthesize(interruptPrompt, ttsOpts);
   if (ctx.callerAudioEffects) {
     interruptAudio = applyEffects(interruptAudio, ctx.callerAudioEffects);
   }
@@ -270,9 +276,16 @@ async function executeSplitSentence(
 
   const { part_a, part_b, pause_ms } = action.split;
 
-  // Synthesize both parts
+  // Synthesize both parts (sequential with session, parallel with ephemeral)
   const ttsOpts = ctx.ttsVoiceId ? { voiceId: ctx.ttsVoiceId } : undefined;
-  let [audioA, audioB] = await Promise.all([synthesize(part_a, ttsOpts), synthesize(part_b, ttsOpts)]);
+  let audioA: Buffer;
+  let audioB: Buffer;
+  if (ctx.ttsSession) {
+    audioA = await ctx.ttsSession.synthesize(part_a);
+    audioB = await ctx.ttsSession.synthesize(part_b);
+  } else {
+    [audioA, audioB] = await Promise.all([synthesize(part_a, ttsOpts), synthesize(part_b, ttsOpts)]);
+  }
   if (ctx.callerAudioEffects) {
     audioA = applyEffects(audioA, ctx.callerAudioEffects);
     audioB = applyEffects(audioB, ctx.callerAudioEffects);
@@ -380,7 +393,7 @@ async function collectForDurationSafe(channel: AudioChannel, durationMs: number)
     channel.on("audio", onAudio);
   });
 
-  return Buffer.concat(chunks);
+  return concatPcm(chunks);
 }
 
 /**

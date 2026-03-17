@@ -6,8 +6,7 @@ export interface RelayClientConfig {
   healthEndpoint: string;
 }
 
-interface DataConnection {
-  relay: WebSocket;
+interface LocalConnection {
   local: WebSocket;
   connId: string;
 }
@@ -16,7 +15,7 @@ type RelayEventHandler = (...args: unknown[]) => void;
 
 export class RelayClient {
   private controlWs: WebSocket | null = null;
-  private dataConnections = new Map<string, DataConnection>();
+  private localConnections = new Map<string, LocalConnection>();
   private config: RelayClientConfig;
   private closed = false;
   private handlers = new Map<string, RelayEventHandler[]>();
@@ -43,13 +42,31 @@ export class RelayClient {
     }
   }
 
-  async connect(): Promise<void> {
+  async connect(timeoutMs = 30_000): Promise<void> {
     const wsBase = this.config.apiUrl.replace(/^http/, "ws");
     const controlUrl = `${wsBase}/relay/control?run_id=${this.config.runId}&token=${this.config.relayToken}`;
 
     return new Promise<void>((resolve, reject) => {
       const ws = new WebSocket(controlUrl);
+      ws.binaryType = "arraybuffer";
       let configReceived = false;
+      let settled = false;
+
+      const settle = (fn: () => void) => {
+        if (!settled) {
+          settled = true;
+          clearTimeout(hardTimeout);
+          fn();
+        }
+      };
+
+      // Hard timeout — if WS never opens AND never errors (network black hole), reject
+      const hardTimeout = setTimeout(() => {
+        settle(() => {
+          ws.close();
+          reject(new Error(`Relay connection timed out after ${timeoutMs}ms — check network connectivity to ${this.config.apiUrl}`));
+        });
+      }, timeoutMs);
 
       ws.addEventListener("open", () => {
         this.controlWs = ws;
@@ -61,28 +78,29 @@ export class RelayClient {
       // This ensures agentEnv is populated before the caller spawns the agent.
       this.on("config_received", () => {
         configReceived = true;
-        resolve();
+        settle(() => resolve());
       });
 
       // Fallback: resolve after 3s even if no config arrives (backwards compat)
       setTimeout(() => {
-        if (!configReceived && this.controlWs) resolve();
+        if (!configReceived && this.controlWs) settle(() => resolve());
       }, 3_000);
 
       ws.addEventListener("error", (ev) => {
         if (!this.controlWs) {
-          reject(new Error(`Failed to connect to relay: ${(ev as ErrorEvent).message ?? "connection error"}`));
+          settle(() => reject(new Error(`Failed to connect to relay: ${(ev as ErrorEvent).message ?? "connection error"}`)));
         }
       });
     });
   }
 
-  async activate(): Promise<void> {
+  async activate(timeoutMs = 15_000): Promise<void> {
     const activateUrl = `${this.config.apiUrl}/internal/runs/${this.config.runId}/activate`;
     const response = await fetch(activateUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ relay_token: this.config.relayToken }),
+      signal: AbortSignal.timeout(timeoutMs),
     });
 
     if (!response.ok) {
@@ -94,10 +112,9 @@ export class RelayClient {
   async disconnect(): Promise<void> {
     this.closed = true;
 
-    for (const [connId, conn] of this.dataConnections) {
-      conn.relay.close();
-      conn.local.close();
-      this.dataConnections.delete(connId);
+    for (const [connId, conn] of this.localConnections) {
+      if (conn.local.readyState !== WebSocket.CLOSED) conn.local.close();
+      this.localConnections.delete(connId);
     }
 
     if (this.controlWs) {
@@ -106,17 +123,54 @@ export class RelayClient {
     }
   }
 
+  private sendControlMessage(msg: Record<string, unknown>): void {
+    if (this.controlWs?.readyState === WebSocket.OPEN) {
+      this.controlWs.send(JSON.stringify(msg));
+    }
+  }
+
+  private sendBinaryFrame(connId: string, payload: Uint8Array): void {
+    if (!this.controlWs || this.controlWs.readyState !== WebSocket.OPEN) return;
+    const header = new Uint8Array(37);
+    header[0] = 0x01;
+    const connIdBytes = new TextEncoder().encode(connId);
+    header.set(connIdBytes, 1);
+    const frame = new Uint8Array(37 + payload.byteLength);
+    frame.set(header);
+    frame.set(payload, 37);
+    this.controlWs.send(frame);
+  }
+
   private setupControlHandlers(ws: WebSocket): void {
     ws.addEventListener("message", (event) => {
+      // Binary message: data frame from server (runner audio for a conn_id)
+      if (event.data instanceof ArrayBuffer) {
+        const data = new Uint8Array(event.data);
+        if (data.length < 37 || data[0] !== 0x01) return;
+        const connId = new TextDecoder().decode(data.subarray(1, 37));
+        const payload = data.subarray(37);
+
+        const conn = this.localConnections.get(connId);
+        if (conn?.local.readyState === WebSocket.OPEN) {
+          conn.local.send(payload);
+        }
+        return;
+      }
+
+      // Text message: JSON control
       try {
-        const data = typeof event.data === "string" ? event.data : new TextDecoder().decode(event.data as ArrayBuffer);
-        const msg = JSON.parse(data) as { type: string; conn_id?: string; env?: Record<string, string> };
+        const raw = typeof event.data === "string" ? event.data : new TextDecoder().decode(event.data as ArrayBuffer);
+        const msg = JSON.parse(raw) as { type: string; conn_id?: string; env?: Record<string, string> };
 
         if (msg.type === "config" && msg.env) {
           this._agentEnv = msg.env;
           this.emit("config_received");
         } else if (msg.type === "new_connection" && msg.conn_id) {
           this.handleNewConnection(msg.conn_id);
+        } else if (msg.type === "close" && msg.conn_id) {
+          const conn = this.localConnections.get(msg.conn_id);
+          if (conn?.local.readyState !== WebSocket.CLOSED) conn?.local.close();
+          this.localConnections.delete(msg.conn_id);
         } else if (msg.type === "run_complete") {
           this.emit("run_complete");
         }
@@ -137,53 +191,38 @@ export class RelayClient {
     });
   }
 
-  private async handleNewConnection(connId: string): Promise<void> {
+  private handleNewConnection(connId: string): void {
     const agentUrl = `ws://localhost:${this.config.agentPort}`;
-    const wsBase = this.config.apiUrl.replace(/^http/, "ws");
-    const dataUrl = `${wsBase}/relay/data?run_id=${this.config.runId}&conn_id=${connId}&token=${this.config.relayToken}`;
 
     try {
-      const [localWs, relayWs] = await Promise.all([
-        this.openWebSocket(agentUrl),
-        this.openWebSocket(dataUrl),
-      ]);
+      const localWs = new WebSocket(agentUrl);
+      localWs.binaryType = "arraybuffer";
 
-      // Bidirectional forwarding
-      localWs.addEventListener("message", (event) => {
-        if (relayWs.readyState === WebSocket.OPEN) {
-          relayWs.send(event.data);
-        }
+      localWs.addEventListener("open", () => {
+        // Tell server we're ready to receive data for this conn_id
+        this.sendControlMessage({ type: "open_ack", conn_id: connId });
+        this.localConnections.set(connId, { local: localWs, connId });
       });
 
-      relayWs.addEventListener("message", (event) => {
-        if (localWs.readyState === WebSocket.OPEN) {
-          localWs.send(event.data);
-        }
+      // Forward local agent audio to server via binary frame on control WS
+      localWs.addEventListener("message", (event) => {
+        const payload = event.data instanceof ArrayBuffer
+          ? new Uint8Array(event.data)
+          : new TextEncoder().encode(event.data as string);
+        this.sendBinaryFrame(connId, payload);
       });
 
       const cleanup = () => {
         if (localWs.readyState !== WebSocket.CLOSED) localWs.close();
-        if (relayWs.readyState !== WebSocket.CLOSED) relayWs.close();
-        this.dataConnections.delete(connId);
+        this.localConnections.delete(connId);
+        // Notify server that this connection is done
+        this.sendControlMessage({ type: "close", conn_id: connId });
       };
 
       localWs.addEventListener("close", cleanup);
-      relayWs.addEventListener("close", cleanup);
       localWs.addEventListener("error", cleanup);
-      relayWs.addEventListener("error", cleanup);
-
-      this.dataConnections.set(connId, { relay: relayWs, local: localWs, connId });
     } catch (err) {
-      console.error(`[relay] Failed to establish connection ${connId}:`, err);
+      console.error(`[relay] Failed to connect local agent for ${connId}:`, err);
     }
-  }
-
-  private openWebSocket(url: string): Promise<WebSocket> {
-    return new Promise((resolve, reject) => {
-      const ws = new WebSocket(url);
-      ws.binaryType = "arraybuffer";
-      ws.addEventListener("open", () => resolve(ws));
-      ws.addEventListener("error", (ev) => reject(new Error((ev as ErrorEvent).message ?? `WS connect failed: ${url}`)));
-    });
   }
 }

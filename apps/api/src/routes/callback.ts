@@ -88,7 +88,7 @@ export async function callbackRoutes(app: FastifyInstance) {
 
     // Broadcast to SSE subscribers (dashboard)
     const progressMessage = `${body.test_name}: ${body.status} (${body.duration_ms}ms)`;
-    const progressMetadata = {
+    const progressMetadata: Record<string, unknown> = {
       test_name: body.test_name,
       test_type: body.test_type,
       status: body.status,
@@ -96,6 +96,11 @@ export async function callbackRoutes(app: FastifyInstance) {
       completed: body.completed,
       total: body.total,
     };
+
+    // Include formatted result so CLI can show rich metrics (intent, latency)
+    if (body.result) {
+      progressMetadata.result = body.result;
+    }
 
     const [progressEvent] = await app.db
       .insert(schema.runEvents)
@@ -150,6 +155,12 @@ export async function callbackRoutes(app: FastifyInstance) {
       return reply.status(401).send({ error: "Invalid relay token" });
     }
 
+    // Mark as activated BEFORE enqueuing — prevents duplicate jobs if activate is called twice
+    await app.db
+      .update(schema.runs)
+      .set({ status: "running" })
+      .where(eq(schema.runs.id, runId));
+
     const spec = run.test_spec_json as Record<string, unknown>;
 
     await app.getRunQueue(run.user_id).add("execute-run", {
@@ -169,7 +180,7 @@ export async function callbackRoutes(app: FastifyInstance) {
       agent_url: spec.agent_url as string | undefined,
       platform: spec.platform ?? null,
       relay: true,
-    });
+    }, { jobId: runId });
 
     return reply.send({ status: "queued", run_id: runId });
   });
@@ -242,6 +253,8 @@ export async function callbackRoutes(app: FastifyInstance) {
     const completeMetadata = {
       status: body.status,
       total_tests: totalTests,
+      passed_tests: body.aggregate.conversation_tests.passed,
+      failed_tests: body.aggregate.conversation_tests.failed,
       aggregate: body.aggregate,
     };
 

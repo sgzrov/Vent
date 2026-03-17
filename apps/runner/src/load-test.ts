@@ -29,7 +29,7 @@ import type {
 } from "@vent/shared";
 import { DEFAULT_LOAD_TEST_THRESHOLDS } from "@vent/shared";
 import { createAudioChannel, type AudioChannelConfig } from "@vent/adapters";
-import { synthesize, VoiceActivityDetector, StreamingTranscriber, applyEffects, resolveAccentVoiceId, resolveLanguageVoiceId } from "@vent/voice";
+import { TTSSession, VoiceActivityDetector, StreamingTranscriber, applyEffects, resolveAccentVoiceId, resolveLanguageVoiceId } from "@vent/voice";
 import { collectUntilEndOfTurn } from "./audio-tests/helpers.js";
 import { CallerLLM } from "./conversation/caller-llm.js";
 
@@ -227,9 +227,13 @@ async function runSingleCall(
       : undefined;
   const ttsOpts = ttsVoiceId ? { voiceId: ttsVoiceId } : undefined;
 
+  // Persistent TTS session per caller (avoids REST rate limit)
+  const ttsSession = new TTSSession(ttsOpts);
+  await ttsSession.connect();
+
   // Pre-synthesize first turn audio
   let callerText: string | null = firstUtterance;
-  let callerAudio = await synthesize(firstUtterance, ttsOpts);
+  let callerAudio = await ttsSession.synthesize(firstUtterance);
   if (callerAudioEffects) callerAudio = applyEffects(callerAudio, callerAudioEffects);
 
   // Connect channel
@@ -261,7 +265,7 @@ async function runSingleCall(
       if (turn > 0) {
         callerText = await caller.nextUtterance(agentText, transcript);
         if (callerText === null) break; // CallerLLM ended conversation
-        callerAudio = await synthesize(callerText, ttsOpts);
+        callerAudio = await ttsSession.synthesize(callerText);
         if (callerAudioEffects) callerAudio = applyEffects(callerAudio, callerAudioEffects);
       }
 
@@ -338,6 +342,7 @@ async function runSingleCall(
       error: err instanceof Error ? err.message : String(err),
     };
   } finally {
+    await ttsSession.close().catch(() => {});
     await channel.disconnect().catch(() => {});
   }
 }
