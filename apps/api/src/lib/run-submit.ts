@@ -25,13 +25,25 @@ export const RunSubmitConfigSchema = z.object({
     platform: PlatformConfigSchema.optional(),
   }),
   conversation_tests: z.array(ConversationTestSpecSchema).optional(),
+  red_team_tests: z.array(ConversationTestSpecSchema).optional(),
   load_test: LoadTestSpecSchema.optional(),
 }).refine(
-  (d) => (d.conversation_tests?.length ?? 0) > 0 || d.load_test != null,
-  { message: "Exactly one of conversation_tests or load_test is required." }
+  (d) => {
+    const hasConv = (d.conversation_tests?.length ?? 0) > 0;
+    const hasRedTeam = (d.red_team_tests?.length ?? 0) > 0;
+    const hasLoad = d.load_test != null;
+    return hasConv || hasRedTeam || hasLoad;
+  },
+  { message: "Exactly one of conversation_tests, red_team_tests, or load_test is required." }
 ).refine(
-  (d) => !((d.conversation_tests?.length ?? 0) > 0 && d.load_test != null),
-  { message: "conversation_tests and load_test cannot be used together." }
+  (d) => {
+    const hasConv = (d.conversation_tests?.length ?? 0) > 0;
+    const hasRedTeam = (d.red_team_tests?.length ?? 0) > 0;
+    const hasLoad = d.load_test != null;
+    const count = [hasConv, hasRedTeam, hasLoad].filter(Boolean).length;
+    return count === 1;
+  },
+  { message: "Only one of conversation_tests, red_team_tests, or load_test can be used per run." }
 );
 
 export const RunSubmitSchema = z.object({
@@ -53,11 +65,20 @@ export function buildTestSpec(cfg: Record<string, unknown>) {
   const targetPhoneNumber = cfg.target_phone_number as string | undefined;
   const voiceConfig = { adapter, target_phone_number: targetPhoneNumber };
 
-  // Merge root-level caller_audio as default onto conversation tests
+  // Merge root-level caller_audio as default onto conversation/red_team tests
   const callerAudio = cfg.caller_audio as Record<string, unknown> | undefined;
   let conversationTests = cfg.conversation_tests as Record<string, unknown>[] | null | undefined;
+  let redTeamTests = cfg.red_team_tests as Record<string, unknown>[] | null | undefined;
   if (callerAudio && Array.isArray(conversationTests)) {
     conversationTests = conversationTests.map((test) => {
+      if (test.caller_audio === undefined) {
+        return { ...test, caller_audio: callerAudio };
+      }
+      return test;
+    });
+  }
+  if (callerAudio && Array.isArray(redTeamTests)) {
+    redTeamTests = redTeamTests.map((test) => {
       if (test.caller_audio === undefined) {
         return { ...test, caller_audio: callerAudio };
       }
@@ -68,6 +89,7 @@ export function buildTestSpec(cfg: Record<string, unknown>) {
   return {
     testSpecJson: {
       conversation_tests: conversationTests ?? null,
+      red_team_tests: redTeamTests ?? null,
       load_test: cfg.load_test ?? null,
       adapter,
       voice_config: voiceConfig,
@@ -82,6 +104,7 @@ export function buildTestSpec(cfg: Record<string, unknown>) {
     voiceConfig,
     targetPhoneNumber,
     conversationTests: conversationTests ?? null,
+    redTeamTests: redTeamTests ?? null,
     isRemote: ["vapi", "retell", "elevenlabs", "bland"].includes(adapter)
       || adapter === "sip" || adapter === "webrtc" || !!agentUrl,
   };
@@ -142,7 +165,7 @@ export async function submitRun(
   const { connection, ...rest } = config;
   const cfg = { ...connection, ...rest } as Record<string, unknown>;
 
-  const { testSpecJson, adapter, agentUrl, voiceConfig, targetPhoneNumber, conversationTests, isRemote } = buildTestSpec(cfg);
+  const { testSpecJson, adapter, agentUrl, voiceConfig, targetPhoneNumber, conversationTests, redTeamTests, isRemote } = buildTestSpec(cfg);
 
   const apiUrl = process.env["API_URL"] ?? "https://vent-api.fly.dev";
 
@@ -171,6 +194,7 @@ export async function submitRun(
       adapter,
       test_spec: {
         conversation_tests: conversationTests ?? null,
+        red_team_tests: redTeamTests ?? null,
         load_test: cfg.load_test ?? null,
       },
       target_phone_number: targetPhoneNumber,

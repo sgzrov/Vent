@@ -57,7 +57,7 @@ export async function callbackRoutes(app: FastifyInstance) {
       run_id: string;
       completed: number;
       total: number;
-      test_type: "conversation" | "load_test";
+      test_type: "conversation" | "red_team" | "load_test";
       test_name: string;
       status: "pass" | "fail" | "completed" | "error";
       duration_ms: number;
@@ -67,7 +67,7 @@ export async function callbackRoutes(app: FastifyInstance) {
     // Insert partial result into DB for incremental visibility via vent_get_run_status
     if (body.result) {
       try {
-        const isConversation = body.test_type === "conversation";
+        const isConversation = body.test_type === "conversation" || body.test_type === "red_team";
         await app.db.insert(schema.scenarioResults).values({
           run_id: body.run_id,
           name: body.test_name,
@@ -171,6 +171,7 @@ export async function callbackRoutes(app: FastifyInstance) {
       adapter: spec.adapter as string,
       test_spec: {
         conversation_tests: spec.conversation_tests ?? null,
+        red_team_tests: spec.red_team_tests ?? null,
         load_test: spec.load_test ?? null,
       },
       target_phone_number: spec.target_phone_number as string | undefined,
@@ -234,6 +235,18 @@ export async function callbackRoutes(app: FastifyInstance) {
         });
       }
 
+      // Store red team test results
+      for (const result of body.red_team_results ?? []) {
+        await tx.insert(schema.scenarioResults).values({
+          run_id: body.run_id,
+          name: result.name ?? `red_team:${result.caller_prompt.slice(0, 50)}`,
+          status: result.status,
+          test_type: "red_team",
+          metrics_json: result,
+          trace_json: result.transcript,
+        });
+      }
+
       // Update run status LAST — this is what triggers long-poll/SSE listeners to wake up
       await tx
         .update(schema.runs)
@@ -248,8 +261,12 @@ export async function callbackRoutes(app: FastifyInstance) {
     });
 
     // Broadcast run_complete to SSE subscribers (dashboard)
-    const totalTests = body.conversation_results.length;
-    const completeMessage = `${body.status}: ${body.aggregate.conversation_tests.passed}/${body.aggregate.conversation_tests.total} conversation`;
+    const redTeamResults = body.red_team_results ?? [];
+    const totalTests = body.conversation_results.length + redTeamResults.length;
+    const redTeamAgg = body.aggregate.red_team_tests;
+    const completeMessage = redTeamAgg
+      ? `${body.status}: ${redTeamAgg.passed}/${redTeamAgg.total} red team`
+      : `${body.status}: ${body.aggregate.conversation_tests.passed}/${body.aggregate.conversation_tests.total} conversation`;
     const completeMetadata = {
       status: body.status,
       total_tests: totalTests,
