@@ -212,7 +212,10 @@ export class RelayClient {
         this.sendBinaryFrame(connId, payload);
       });
 
+      let cleaned = false;
       const cleanup = () => {
+        if (cleaned) return;
+        cleaned = true;
         if (localWs.readyState !== WebSocket.CLOSED) localWs.close();
         this.localConnections.delete(connId);
         // Notify server that this connection is done
