@@ -25,6 +25,10 @@ function describeRunDetail(run: RunDetail): string {
       parts.push(
         `${spec.conversation_tests.length} conversation${spec.conversation_tests.length > 1 ? "s" : ""}`
       );
+    if (spec.red_team_tests?.length)
+      parts.push(
+        `${spec.red_team_tests.length} red team${spec.red_team_tests.length > 1 ? " tests" : " test"}`
+      );
     if (spec.load_test)
       parts.push(`load test (${spec.load_test.target_concurrency} concurrent)`);
     if (parts.length > 0) return parts.join(", ");
@@ -35,6 +39,10 @@ function describeRunDetail(run: RunDetail): string {
     if (agg.conversation_tests.total > 0)
       parts.push(
         `${agg.conversation_tests.total} conversation${agg.conversation_tests.total > 1 ? "s" : ""}`
+      );
+    if (agg.red_team_tests && agg.red_team_tests.total > 0)
+      parts.push(
+        `${agg.red_team_tests.total} red team${agg.red_team_tests.total > 1 ? " tests" : " test"}`
       );
     if (agg.load_tests && agg.load_tests.total > 0)
       parts.push(`${agg.load_tests.total} load test${agg.load_tests.total > 1 ? "s" : ""}`);
@@ -47,7 +55,7 @@ function describeRunDetail(run: RunDetail): string {
 // Tab types
 // ---------------------------------------------------------------------------
 
-type TabId = "overview" | "conversations" | "audio" | "load_test" | "artifacts";
+type TabId = "overview" | "conversations" | "red_team" | "audio" | "load_test" | "artifacts";
 
 interface TabDef {
   id: TabId;
@@ -104,6 +112,9 @@ export function RunDetailView({
   const conversationScenarios = run.scenarios.filter(
     (s) => s.test_type === "conversation"
   );
+  const redTeamScenarios = run.scenarios.filter(
+    (s) => s.test_type === "red_team"
+  );
   const loadTestScenarios = run.scenarios.filter(
     (s) => s.test_type === "load_test"
   );
@@ -122,6 +133,21 @@ export function RunDetailView({
       id: "conversations",
       label: "Conversations",
       count: conversationScenarios.length,
+      status: allCompleted ? "pass" : allErrored ? "fail" : "mixed",
+    });
+  }
+
+  if (redTeamScenarios.length > 0) {
+    const allCompleted = redTeamScenarios.every(
+      (s) => s.status === "pass" || s.status === "completed"
+    );
+    const allErrored = redTeamScenarios.every(
+      (s) => s.status === "fail" || s.status === "error"
+    );
+    tabs.push({
+      id: "red_team",
+      label: "Red Team",
+      count: redTeamScenarios.length,
       status: allCompleted ? "pass" : allErrored ? "fail" : "mixed",
     });
   }
@@ -311,6 +337,10 @@ export function RunDetailView({
 
         {activeTab === "conversations" && (
           <ConversationTestResults scenarios={conversationScenarios} />
+        )}
+
+        {activeTab === "red_team" && (
+          <ConversationTestResults scenarios={redTeamScenarios} />
         )}
 
         {activeTab === "audio" && (

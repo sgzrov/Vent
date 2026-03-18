@@ -10,12 +10,15 @@ interface MetricCardsProps {
 
 export function MetricCards({ aggregate, testSpec }: MetricCardsProps) {
   const hasConfig =
-    (testSpec?.conversation_tests?.length ?? 0) > 0;
+    (testSpec?.conversation_tests?.length ?? 0) > 0 ||
+    (testSpec?.red_team_tests?.length ?? 0) > 0;
 
+  const isRedTeam = (aggregate.red_team_tests?.total ?? 0) > 0;
+  const counts = isRedTeam ? aggregate.red_team_tests! : aggregate.conversation_tests;
   const primary = {
-    label: "Conversation tests",
-    value: `${aggregate.conversation_tests.passed}/${aggregate.conversation_tests.total}`,
-    errored: aggregate.conversation_tests.failed,
+    label: isRedTeam ? "Red team tests" : "Conversation tests",
+    value: `${counts.passed}/${counts.total}`,
+    errored: counts.failed,
   };
 
   return (
@@ -92,6 +95,24 @@ export function MetricCards({ aggregate, testSpec }: MetricCardsProps) {
                         className="inline-flex items-center rounded-md bg-muted px-2 py-0.5 text-xs font-mono"
                       >
                         {test.name ?? `Conversation ${i + 1}`}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {(testSpec?.red_team_tests?.length ?? 0) > 0 && (
+                <div>
+                  <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-2">
+                    Red Team
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {testSpec!.red_team_tests!.map((test, i) => (
+                      <span
+                        key={`${test.name ?? "red-team"}-${i}`}
+                        className="inline-flex items-center rounded-md bg-muted px-2 py-0.5 text-xs font-mono"
+                      >
+                        {test.name ?? `Red Team ${i + 1}`}
                       </span>
                     ))}
                   </div>

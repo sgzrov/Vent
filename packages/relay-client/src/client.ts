@@ -193,12 +193,14 @@ export class RelayClient {
 
   private handleNewConnection(connId: string): void {
     const agentUrl = `ws://localhost:${this.config.agentPort}`;
+    this.emit("log", `[relay] new_connection ${connId} → connecting to ${agentUrl}`);
 
     try {
       const localWs = new WebSocket(agentUrl);
       localWs.binaryType = "arraybuffer";
 
       localWs.addEventListener("open", () => {
+        this.emit("log", `[relay] local WS open for ${connId}`);
         // Tell server we're ready to receive data for this conn_id
         this.sendControlMessage({ type: "open_ack", conn_id: connId });
         this.localConnections.set(connId, { local: localWs, connId });
@@ -212,17 +214,25 @@ export class RelayClient {
         this.sendBinaryFrame(connId, payload);
       });
 
-      const cleanup = () => {
+      let cleaned = false;
+      const cleanup = (reason?: string) => {
+        if (cleaned) return;
+        cleaned = true;
+        this.emit("log", `[relay] local WS cleanup for ${connId}: ${reason ?? "unknown"}`);
         if (localWs.readyState !== WebSocket.CLOSED) localWs.close();
         this.localConnections.delete(connId);
         // Notify server that this connection is done
         this.sendControlMessage({ type: "close", conn_id: connId });
       };
 
-      localWs.addEventListener("close", cleanup);
-      localWs.addEventListener("error", cleanup);
+      localWs.addEventListener("close", () => cleanup("close"));
+      localWs.addEventListener("error", (ev) => {
+        const msg = (ev as ErrorEvent).message ?? "unknown error";
+        this.emit("log", `[relay] local WS error for ${connId}: ${msg}`);
+        cleanup(`error: ${msg}`);
+      });
     } catch (err) {
-      console.error(`[relay] Failed to connect local agent for ${connId}:`, err);
+      this.emit("log", `[relay] Failed to connect local agent for ${connId}: ${err}`);
     }
   }
 }

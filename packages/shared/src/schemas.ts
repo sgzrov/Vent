@@ -91,15 +91,28 @@ export const ConversationTestSpecSchema = z.object({
 export const TestSpecSchema = z
   .object({
     conversation_tests: z.array(ConversationTestSpecSchema).optional(),
+    red_team_tests: z.array(ConversationTestSpecSchema).optional(),
     load_test: z.lazy(() => LoadTestSpecSchema).optional(),
   })
   .refine(
-    (d) => (d.conversation_tests?.length ?? 0) > 0 || d.load_test != null,
-    { message: "Exactly one of conversation_tests or load_test is required" }
+    (d) => {
+      const hasConv = (d.conversation_tests?.length ?? 0) > 0;
+      const hasRedTeam = (d.red_team_tests?.length ?? 0) > 0;
+      const hasLoad = d.load_test != null;
+      return hasConv || hasRedTeam || hasLoad;
+    },
+    { message: "Exactly one of conversation_tests, red_team_tests, or load_test is required" }
   )
   .refine(
-    (d) => !((d.conversation_tests?.length ?? 0) > 0 && d.load_test != null),
-    { message: "conversation_tests and load_test cannot be used together" }
+    (d) => {
+      const hasConv = (d.conversation_tests?.length ?? 0) > 0;
+      const hasRedTeam = (d.red_team_tests?.length ?? 0) > 0;
+      const hasLoad = d.load_test != null;
+      // Only one type per run
+      const count = [hasConv, hasRedTeam, hasLoad].filter(Boolean).length;
+      return count === 1;
+    },
+    { message: "Only one of conversation_tests, red_team_tests, or load_test can be used per run" }
   );
 
 export const AdapterTypeSchema = z.enum(["websocket", "sip", "webrtc", "vapi", "retell", "elevenlabs", "bland"]);
@@ -339,6 +352,11 @@ export const RunAggregateV2Schema = z.object({
     passed: z.number(),
     failed: z.number(),
   }).default({ total: 0, passed: 0, failed: 0 }),
+  red_team_tests: z.object({
+    total: z.number(),
+    passed: z.number(),
+    failed: z.number(),
+  }).optional(),
   load_tests: z.object({
     total: z.number(),
     passed: z.number(),
@@ -351,6 +369,7 @@ export const RunnerCallbackV2Schema = z.object({
   run_id: z.string().uuid(),
   status: z.enum(["pass", "fail"]),
   conversation_results: z.array(ConversationTestResultSchema).default([]),
+  red_team_results: z.array(ConversationTestResultSchema).default([]),
   aggregate: RunAggregateV2Schema,
   error_text: z.string().optional(),
 });

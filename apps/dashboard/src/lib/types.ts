@@ -3,7 +3,7 @@
 
 export type RunStatus = "queued" | "running" | "pass" | "fail";
 export type SourceType = "bundle" | "remote" | "relay";
-export type TestType = "conversation" | "load_test";
+export type TestType = "conversation" | "red_team" | "load_test";
 export type AudioTestName =
   | "audio_quality"
   | "latency"
@@ -57,6 +57,7 @@ export interface ConversationTestSpec {
 
 export interface TestSpec {
   conversation_tests?: ConversationTestSpec[];
+  red_team_tests?: ConversationTestSpec[];
   load_test?: {
     target_concurrency: number;
     caller_prompt: string;
@@ -68,6 +69,7 @@ export interface TestSpec {
 
 export interface RunAggregateV2 {
   conversation_tests: { total: number; passed: number; failed: number };
+  red_team_tests?: { total: number; passed: number; failed: number };
   load_tests?: { total: number; passed: number; failed: number };
   total_duration_ms: number;
 }

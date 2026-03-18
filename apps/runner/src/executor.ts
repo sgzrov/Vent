@@ -1,7 +1,7 @@
 /**
- * Test execution logic — conversation tests run in parallel with a concurrency limiter.
+ * Test execution logic — conversation and red team tests run in parallel with a concurrency limiter.
  * Audio quality analysis, latency drift, and echo detection are integrated
- * into each conversation test (no standalone infrastructure probes).
+ * into each test (no standalone infrastructure probes).
  */
 
 import type {
@@ -12,9 +12,11 @@ import type {
 import { createAudioChannel, type AudioChannelConfig } from "@vent/adapters";
 import { runConversationTest } from "./conversation/index.js";
 
+export type TestType = "conversation" | "red_team";
+
 export interface TestStartInfo {
   test_name: string;
-  test_type: "conversation";
+  test_type: TestType;
 }
 
 export interface ExecuteTestsOpts {
@@ -22,12 +24,13 @@ export interface ExecuteTestsOpts {
   channelConfig: AudioChannelConfig;
   concurrencyLimit?: number;
   onTestStart?: (info: TestStartInfo) => void;
-  onTestComplete?: (result: ConversationTestResult) => void;
+  onTestComplete?: (result: ConversationTestResult, testType: TestType) => void;
 }
 
 export interface ExecuteTestsResult {
   status: "pass" | "fail";
   conversationResults: ConversationTestResult[];
+  redTeamResults: ConversationTestResult[];
   aggregate: RunAggregateV2;
 }
 
@@ -99,22 +102,43 @@ export async function executeTests(opts: ExecuteTestsOpts): Promise<ExecuteTests
     onTestComplete,
   } = opts;
 
-  // =====================================================
-  // Conversation tests (concurrent)
-  // Audio quality, latency drift, and echo detection are
-  // integrated into each conversation test automatically.
-  // =====================================================
-  // Expand conversation tests by repeat count for statistical confidence
-  const allConversationTests = (testSpec.conversation_tests ?? []).flatMap((spec) => {
+  // Determine which test type is active (XOR — only one will be populated)
+  const isRedTeam = (testSpec.red_team_tests?.length ?? 0) > 0;
+  const testType: TestType = isRedTeam ? "red_team" : "conversation";
+  const testSpecs = isRedTeam ? testSpec.red_team_tests! : (testSpec.conversation_tests ?? []);
+
+  // Expand tests by repeat count for statistical confidence
+  const allTests = testSpecs.flatMap((spec) => {
     const repeatCount = spec.repeat ?? 1;
     return Array.from({ length: repeatCount }, () => spec);
   });
 
-  // Pre-flight health check — verify agent is reachable before running N tests
-  if (allConversationTests.length > 0) {
+  // Pre-flight health check — verify agent is reachable before running N tests.
+  // For relay runs, we hold the probe open briefly to confirm the CLI can
+  // reach the local agent (open_ack). A connect-then-immediately-disconnect
+  // only checks the runner→API path and masks CLI→agent failures.
+  if (allTests.length > 0) {
     const probeChannel = createAudioChannel(channelConfig);
     try {
       await probeChannel.connect();
+      // Hold open to verify end-to-end — if the CLI can't reach the agent,
+      // the API closes this WS within ~1s (close message or buffer limit).
+      await new Promise<void>((resolve, reject) => {
+        const ok = setTimeout(() => {
+          probeChannel.off("disconnected", onDisconnect);
+          resolve();
+        }, 2_000);
+        function onDisconnect() {
+          clearTimeout(ok);
+          reject(new Error("Relay probe disconnected — CLI cannot reach local agent"));
+        }
+        if (!probeChannel.connected) {
+          clearTimeout(ok);
+          reject(new Error("Relay probe closed immediately — CLI cannot reach local agent"));
+          return;
+        }
+        probeChannel.on("disconnected", onDisconnect);
+      });
       await probeChannel.disconnect().catch(() => {});
       console.log("Pre-flight health check passed — agent is reachable.");
     } catch (err) {
@@ -130,12 +154,18 @@ export async function executeTests(opts: ExecuteTestsOpts): Promise<ExecuteTests
         metrics: { mean_ttfb_ms: 0 },
         error: `Agent unreachable: ${errorMsg}`,
       };
-      onTestComplete?.(failResult);
+      onTestComplete?.(failResult, testType);
+      const aggregateKey = isRedTeam ? "red_team_tests" : "conversation_tests";
       return {
         status: "fail" as const,
-        conversationResults: [failResult],
+        conversationResults: isRedTeam ? [] : [failResult],
+        redTeamResults: isRedTeam ? [failResult] : [],
         aggregate: {
-          conversation_tests: { total: 1, passed: 0, failed: 1 },
+          conversation_tests: { total: 0, passed: 0, failed: 0 },
+          ...(isRedTeam
+            ? { red_team_tests: { total: 1, passed: 0, failed: 1 } }
+            : { conversation_tests: { total: 1, passed: 0, failed: 1 } }
+          ),
           total_duration_ms: 0,
         },
       };
@@ -149,10 +179,12 @@ export async function executeTests(opts: ExecuteTestsOpts): Promise<ExecuteTests
     consecutiveConnectionFailures: 0,
   };
 
-  const conversationTasks = allConversationTests.map((spec) => async () => {
-    const testName = spec.name ?? `conversation:${spec.caller_prompt.slice(0, 50)}`;
-    onTestStart?.({ test_name: testName, test_type: "conversation" });
-    console.log(`  Conversation: ${spec.caller_prompt.slice(0, 60)}...`);
+  const testLabel = isRedTeam ? "Red team" : "Conversation";
+
+  const tasks = allTests.map((spec) => async () => {
+    const testName = spec.name ?? `${testType}:${spec.caller_prompt.slice(0, 50)}`;
+    onTestStart?.({ test_name: testName, test_type: testType });
+    console.log(`  ${testLabel}: ${spec.caller_prompt.slice(0, 60)}...`);
     const channel = createAudioChannel(channelConfig);
     const start = Date.now();
     try {
@@ -162,11 +194,11 @@ export async function executeTests(opts: ExecuteTestsOpts): Promise<ExecuteTests
       circuitState.consecutiveConnectionFailures = 0;
       console.log(`    Status: ${result.status} (${result.duration_ms}ms)`);
       console.log(JSON.stringify({
-        event: "test_complete", test_name: testName, test_type: "conversation",
+        event: "test_complete", test_name: testName, test_type: testType,
         status: result.status, duration_ms: result.duration_ms,
         channel: { bytes_sent: channel.stats.bytesSent, bytes_received: channel.stats.bytesReceived, errors: channel.stats.errorEvents },
       }));
-      onTestComplete?.(result);
+      onTestComplete?.(result, testType);
       return result;
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
@@ -195,18 +227,18 @@ export async function executeTests(opts: ExecuteTestsOpts): Promise<ExecuteTests
         error: errorMsg,
       };
       console.log(JSON.stringify({
-        event: "test_complete", test_name: testName, test_type: "conversation",
+        event: "test_complete", test_name: testName, test_type: testType,
         status: "error", duration_ms: result.duration_ms, error: errorMsg,
       }));
-      onTestComplete?.(result);
+      onTestComplete?.(result, testType);
       return result;
     } finally {
       await channel.disconnect().catch(() => {});
     }
   });
 
-  if (conversationTasks.length > 0) {
-    console.log(`Running ${conversationTasks.length} conversation tests (concurrency: ${concurrencyLimit})...`);
+  if (tasks.length > 0) {
+    console.log(`Running ${tasks.length} ${testLabel.toLowerCase()} tests (concurrency: ${concurrencyLimit})...`);
   }
 
   // Build an abort result factory for the circuit breaker
@@ -220,28 +252,34 @@ export async function executeTests(opts: ExecuteTestsOpts): Promise<ExecuteTests
     error: circuitState.abortReason ?? "Run aborted",
   });
 
-  const conversationResults = conversationTasks.length > 0
-    ? await runWithConcurrency(conversationTasks, concurrencyLimit, circuitState, makeAbortResult)
+  const results = tasks.length > 0
+    ? await runWithConcurrency(tasks, concurrencyLimit, circuitState, makeAbortResult)
     : [];
 
   // =====================================================
   // Aggregate results
   // =====================================================
-  const convCompleted = conversationResults.filter((r) => r.status === "completed").length;
-  const convErrored = conversationResults.filter((r) => r.status === "error").length;
+  const completed = results.filter((r) => r.status === "completed").length;
+  const errored = results.filter((r) => r.status === "error").length;
+  const totalDurationMs = results.reduce((sum, r) => sum + r.duration_ms, 0);
 
-  const totalDurationMs = conversationResults.reduce((sum, r) => sum + r.duration_ms, 0);
-
+  const testCounts = { total: results.length, passed: completed, failed: errored };
   const aggregate: RunAggregateV2 = {
-    conversation_tests: { total: conversationResults.length, passed: convCompleted, failed: convErrored },
+    conversation_tests: isRedTeam ? { total: 0, passed: 0, failed: 0 } : testCounts,
+    ...(isRedTeam ? { red_team_tests: testCounts } : {}),
     total_duration_ms: totalDurationMs,
   };
 
-  const status = convErrored === 0 ? "pass" : "fail";
+  const status = errored === 0 ? "pass" : "fail";
 
   console.log(
-    `Run complete: ${status} (conversation: ${convCompleted}/${conversationResults.length})`,
+    `Run complete: ${status} (${testLabel.toLowerCase()}: ${completed}/${results.length})`,
   );
 
-  return { status, conversationResults, aggregate };
+  return {
+    status,
+    conversationResults: isRedTeam ? [] : results,
+    redTeamResults: isRedTeam ? results : [],
+    aggregate,
+  };
 }
