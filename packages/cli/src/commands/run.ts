@@ -1,4 +1,5 @@
 import * as fs from "node:fs/promises";
+import { writeFileSync } from "node:fs";
 import * as net from "node:net";
 import { apiFetch } from "../lib/api.js";
 import { streamRunEvents } from "../lib/sse.js";
@@ -7,6 +8,8 @@ import { printEvent, printError, printInfo, printSummary } from "../lib/output.j
 import { loadApiKey } from "../lib/config.js";
 import type { RelayHandle } from "../lib/relay.js";
 import type { SSEEvent } from "../lib/sse.js";
+
+const isTTY = process.stdout.isTTY;
 
 interface RunArgs {
   config?: string;
@@ -227,12 +230,29 @@ export async function runCommand(args: RunArgs): Promise<number> {
 
   // 7. Print summary
   log(`summary: testResults=${testResults.length} runComplete=${!!runCompleteData} exitCode=${exitCode}`);
-  if (runCompleteData && testResults.length > 0) {
+  if (runCompleteData) {
     printSummary(testResults, runCompleteData, run_id, args.json);
+  } else if (!isTTY) {
+    // Fallback: if SSE stream ended without run_complete, still write something to stdout
+    // so coding agents don't see empty output / "undefined"
+    try {
+      writeFileSync(1, JSON.stringify({
+        run_id,
+        status: exitCode === 0 ? "pass" : "error",
+        error: "Stream ended without run_complete event",
+        check: `npx vent-hq status ${run_id} --json`,
+      }) + "\n");
+    } catch {
+      process.stdout.write(JSON.stringify({ run_id, status: "error" }) + "\n");
+    }
   }
 
   log(`exiting with code ${exitCode}`);
-  return exitCode;
+
+  // Force exit — the fetch TCP socket from the SSE stream keeps the event loop
+  // alive indefinitely. Without this, the process hangs after tests complete,
+  // Claude Code eventually kills it, and stdout capture is lost.
+  process.exit(exitCode);
 }
 
 function findFreePort(): Promise<number> {
