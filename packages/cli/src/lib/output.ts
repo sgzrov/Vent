@@ -173,7 +173,6 @@ export function printSummary(
     passed: runComplete.passed_tests ?? counts?.passed,
     failed: runComplete.failed_tests ?? counts?.failed,
     tests: allTests,
-    check: `npx vent-hq status ${runId} --json`,
   };
 
   // Non-TTY (coding agents) or --json: write single summary JSON to stdout.
