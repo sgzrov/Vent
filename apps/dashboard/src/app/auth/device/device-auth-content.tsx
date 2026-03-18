@@ -109,8 +109,8 @@ export function DeviceAuthContent({ code, isAuthenticated, signInUrl }: Props) {
   // Success
   if (status === "success") {
     return (
-      <div className="fixed inset-0 z-50 flex flex-col items-center justify-center">
-        <FallingPattern className="fixed inset-0 w-screen h-screen" />
+      <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-background">
+        <FallingPattern className="absolute inset-0 w-full h-full" />
         <Confetti
           ref={confettiRef}
           className="absolute left-0 top-0 z-10 size-full pointer-events-none"
