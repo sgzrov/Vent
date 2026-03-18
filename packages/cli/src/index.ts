@@ -174,10 +174,6 @@ async function main(): Promise<number> {
   }
 }
 
-// IMPORTANT: Do NOT use process.exit() — it kills the process before stdout flushes.
-// When coding agents run CLI commands, stdout is a pipe (non-TTY) and writes are
-// async/buffered. process.exit() drops all buffered output → agent sees "undefined".
-// Instead, set process.exitCode and let Node.js exit naturally after I/O drains.
 main().then((code) => {
   process.exitCode = code;
 }).catch((err) => {
