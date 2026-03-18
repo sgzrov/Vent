@@ -1,7 +1,28 @@
+import { writeFileSync } from "node:fs";
 import type { FormattedConversationResult } from "@vent/shared";
 import type { SSEEvent } from "./sse.js";
 
 const isTTY = process.stdout.isTTY;
+
+/**
+ * Synchronous write to stdout. On POSIX, process.stdout.write() to a pipe is
+ * ASYNC — if the process exits before the buffer drains, the data is lost and
+ * the coding agent sees "undefined". writeFileSync to /dev/stdout bypasses
+ * Node's stream buffering and writes synchronously (like shell `echo`).
+ */
+function stdoutSync(data: string): void {
+  if (isTTY) {
+    process.stdout.write(data);
+  } else {
+    try {
+      // Write directly to fd 1 — no path resolution, no new fd.
+      // This is the most reliable synchronous stdout write on POSIX.
+      writeFileSync(1, data);
+    } catch {
+      process.stdout.write(data);
+    }
+  }
+}
 
 // ANSI helpers
 const bold = (s: string) => (isTTY ? `\x1b[1m${s}\x1b[0m` : s);
@@ -13,15 +34,23 @@ const blue = (s: string) => (isTTY ? `\x1b[34m${s}\x1b[0m` : s);
 
 export function printEvent(event: SSEEvent, jsonMode: boolean): void {
   if (jsonMode) {
-    process.stdout.write(JSON.stringify(event) + "\n");
+    stdoutSync(JSON.stringify(event) + "\n");
     return;
   }
 
-  // Non-TTY (coding agents): write every event as a JSON line to stdout.
-  // The agent reads all stdout at once when the process exits.
-  // Without this, stdout can be empty → agent sees "undefined".
+  // Non-TTY (coding agents): don't write individual events to stdout.
+  // Coding agents read all stdout at once when the process exits.
+  // Instead, printSummary writes one clean summary JSON at the end.
   if (!isTTY) {
-    process.stdout.write(JSON.stringify(event) + "\n");
+    // Progress updates on stderr so they're visible in logs but don't pollute stdout
+    const meta = (event.metadata_json ?? {}) as Record<string, unknown>;
+    if (event.event_type === "test_completed") {
+      const name = (meta.test_name as string) ?? "test";
+      const status = (meta.status as string) ?? "unknown";
+      const durationMs = meta.duration_ms as number | undefined;
+      const duration = durationMs != null ? (durationMs / 1000).toFixed(1) + "s" : "";
+      process.stderr.write(`  ${status === "completed" || status === "pass" ? "✔" : "✘"} ${name} ${duration}\n`);
+    }
     return;
   }
 
@@ -64,23 +93,25 @@ function printTestResult(meta: Record<string, unknown>): void {
     parts.push(`p50: ${result.latency.p50_ttfw_ms}ms`);
   }
 
-  process.stdout.write(parts.join("  ") + "\n");
+  stdoutSync(parts.join("  ") + "\n");
 }
 
 function printRunComplete(meta: Record<string, unknown>): void {
   const status = meta.status as string;
 
-  const agg = meta.aggregate as { conversation_tests?: { passed?: number; failed?: number; total?: number } } | undefined;
-  const total = (meta.total_tests as number | undefined) ?? agg?.conversation_tests?.total;
-  const passed = (meta.passed_tests as number | undefined) ?? agg?.conversation_tests?.passed;
-  const failed = (meta.failed_tests as number | undefined) ?? agg?.conversation_tests?.failed;
+  const agg = meta.aggregate as { conversation_tests?: { passed?: number; failed?: number; total?: number }; red_team_tests?: { passed?: number; failed?: number; total?: number } } | undefined;
+  const redTeam = agg?.red_team_tests;
+  const counts = redTeam ?? agg?.conversation_tests;
+  const total = (meta.total_tests as number | undefined) ?? counts?.total;
+  const passed = (meta.passed_tests as number | undefined) ?? counts?.passed;
+  const failed = (meta.failed_tests as number | undefined) ?? counts?.failed;
 
-  process.stdout.write("\n");
+  stdoutSync("\n");
 
   if (status === "pass") {
-    process.stdout.write(green(bold("Run passed")) + "\n");
+    stdoutSync(green(bold("Run passed")) + "\n");
   } else {
-    process.stdout.write(red(bold("Run failed")) + "\n");
+    stdoutSync(red(bold("Run failed")) + "\n");
   }
 
   if (total != null) {
@@ -88,7 +119,7 @@ function printRunComplete(meta: Record<string, unknown>): void {
     if (passed) parts.push(green(`${passed} passed`));
     if (failed) parts.push(red(`${failed} failed`));
     parts.push(`${total} total`);
-    process.stdout.write(parts.join(dim(" · ")) + "\n");
+    stdoutSync(parts.join(dim(" · ")) + "\n");
   }
 }
 
@@ -98,66 +129,52 @@ export function printSummary(
   runId: string,
   jsonMode: boolean,
 ): void {
-  if (jsonMode) {
-    const failedTests = testResults
-      .filter((e) => {
-        const meta = e.metadata_json ?? {};
-        const r = meta.result as FormattedConversationResult | undefined;
-        const status = r?.status ?? (meta.status as string);
-        return status && status !== "completed" && status !== "pass";
-      })
-      .map((e) => {
-        const meta = e.metadata_json ?? {};
-        const r = meta.result as FormattedConversationResult | undefined;
-        return {
-          name: r?.name ?? (meta.test_name as string) ?? "test",
-          status: r?.status ?? (meta.status as string),
-          duration_ms: r?.duration_ms ?? (meta.duration_ms as number),
-          intent_accuracy: r?.behavior?.intent_accuracy?.score,
-          p50_ttfw_ms: r?.latency?.p50_ttfw_ms,
-        };
-      });
+  // Build test results summary
+  const allTests = testResults.map((e) => {
+    const meta = e.metadata_json ?? {};
+    const r = meta.result as FormattedConversationResult | undefined;
+    return {
+      name: r?.name ?? (meta.test_name as string) ?? "test",
+      status: r?.status ?? (meta.status as string),
+      duration_ms: r?.duration_ms ?? (meta.duration_ms as number),
+      intent_accuracy: r?.behavior?.intent_accuracy?.score,
+      p50_ttfw_ms: r?.latency?.p50_ttfw_ms,
+      error: r?.error ?? undefined,
+    };
+  });
 
-    const agg = runComplete.aggregate as { conversation_tests?: { passed?: number; failed?: number; total?: number } } | undefined;
+  const agg = runComplete.aggregate as { conversation_tests?: { passed?: number; failed?: number; total?: number }; red_team_tests?: { passed?: number; failed?: number; total?: number } } | undefined;
+  const counts = agg?.red_team_tests ?? agg?.conversation_tests;
 
-    process.stdout.write(
-      JSON.stringify({
-        event_type: "summary",
-        data: {
-          run_id: runId,
-          status: runComplete.status,
-          total: runComplete.total_tests ?? agg?.conversation_tests?.total,
-          passed: runComplete.passed_tests ?? agg?.conversation_tests?.passed,
-          failed: runComplete.failed_tests ?? agg?.conversation_tests?.failed,
-          failed_tests: failedTests,
-          check: `npx vent-hq status ${runId} --json`,
-        },
-      }) + "\n",
-    );
+  const summaryData = {
+    run_id: runId,
+    status: runComplete.status,
+    total: runComplete.total_tests ?? counts?.total,
+    passed: runComplete.passed_tests ?? counts?.passed,
+    failed: runComplete.failed_tests ?? counts?.failed,
+    tests: allTests,
+    check: `npx vent-hq status ${runId} --json`,
+  };
+
+  // Non-TTY (coding agents) or --json: write single summary JSON to stdout.
+  // Uses stdoutSync to bypass Node.js async pipe buffering.
+  if (jsonMode || !isTTY) {
+    stdoutSync(JSON.stringify(summaryData) + "\n");
     return;
   }
 
   // TTY: list failed tests with details
-  const failures = testResults.filter((e) => {
-    const meta = e.metadata_json ?? {};
-    const r = meta.result as FormattedConversationResult | undefined;
-    const status = r?.status ?? (meta.status as string);
-    return status && status !== "completed" && status !== "pass";
-  });
+  const failures = allTests.filter((t) => t.status && t.status !== "completed" && t.status !== "pass");
 
   if (failures.length > 0) {
-    process.stdout.write("\n" + bold("Failed tests:") + "\n");
-    for (const event of failures) {
-      const meta = event.metadata_json ?? {};
-      const r = meta.result as FormattedConversationResult | undefined;
-      const name = r?.name ?? (meta.test_name as string) ?? "test";
-      const durationMs = r?.duration_ms ?? (meta.duration_ms as number | undefined);
-      const duration = durationMs != null ? (durationMs / 1000).toFixed(1) + "s" : "—";
-      const parts = [red("✘"), bold(name), dim(duration)];
-      if (r?.behavior?.intent_accuracy) {
-        parts.push(`intent: ${r.behavior.intent_accuracy.score}`);
+    stdoutSync("\n" + bold("Failed tests:") + "\n");
+    for (const t of failures) {
+      const duration = t.duration_ms != null ? (t.duration_ms / 1000).toFixed(1) + "s" : "—";
+      const parts = [red("✘"), bold(t.name), dim(duration)];
+      if (t.intent_accuracy != null) {
+        parts.push(`intent: ${t.intent_accuracy}`);
       }
-      process.stdout.write("  " + parts.join("  ") + "\n");
+      stdoutSync("  " + parts.join("  ") + "\n");
     }
   }
 
@@ -169,7 +186,7 @@ export function printError(message: string): void {
   process.stderr.write(line);
   // Also write to stdout so coding agents (which may only capture stdout) see errors
   if (!isTTY) {
-    process.stdout.write(line);
+    stdoutSync(line);
   }
 }
 

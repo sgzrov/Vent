@@ -1,4 +1,5 @@
 import * as fs from "node:fs/promises";
+import { writeFileSync } from "node:fs";
 import * as net from "node:net";
 import { apiFetch } from "../lib/api.js";
 import { streamRunEvents } from "../lib/sse.js";
@@ -7,6 +8,8 @@ import { printEvent, printError, printInfo, printSummary } from "../lib/output.j
 import { loadApiKey } from "../lib/config.js";
 import type { RelayHandle } from "../lib/relay.js";
 import type { SSEEvent } from "../lib/sse.js";
+
+const isTTY = process.stdout.isTTY;
 
 interface RunArgs {
   config?: string;
@@ -55,25 +58,35 @@ export async function runCommand(args: RunArgs): Promise<number> {
 
   // 2b. Filter to single test if --test is set
   if (args.test) {
-    const cfg = config as { conversation_tests?: Array<{ name?: string }>; load_test?: unknown };
+    const cfg = config as { conversation_tests?: Array<{ name?: string }>; red_team_tests?: Array<{ name?: string }>; load_test?: unknown };
     if (cfg.load_test) {
-      printError("--test only works with conversation_tests, not load_test.");
+      printError("--test only works with conversation_tests or red_team_tests, not load_test.");
       return 2;
     }
-    if (!cfg.conversation_tests || cfg.conversation_tests.length === 0) {
-      printError("--test requires conversation_tests in config.");
+    const convTests = cfg.conversation_tests ?? [];
+    const redTests = cfg.red_team_tests ?? [];
+    if (convTests.length === 0 && redTests.length === 0) {
+      printError("--test requires conversation_tests or red_team_tests in config.");
       return 2;
     }
-    const tests = cfg.conversation_tests;
-    const match = tests.filter(
-      (t, i) => (t.name ?? `test-${i}`) === args.test
-    );
-    if (match.length === 0) {
-      const available = tests.map((t, i) => t.name ?? `test-${i}`).join(", ");
+    // Search both arrays for the named test
+    const convMatch = convTests.filter((t, i) => (t.name ?? `test-${i}`) === args.test);
+    const redMatch = redTests.filter((t, i) => (t.name ?? `red-${i}`) === args.test);
+    if (convMatch.length === 0 && redMatch.length === 0) {
+      const available = [
+        ...convTests.map((t, i) => t.name ?? `test-${i}`),
+        ...redTests.map((t, i) => t.name ?? `red-${i}`),
+      ].join(", ");
       printError(`Test "${args.test}" not found. Available: ${available}`);
       return 2;
     }
-    cfg.conversation_tests = match;
+    if (convMatch.length > 0) {
+      cfg.conversation_tests = convMatch;
+      cfg.red_team_tests = undefined;
+    } else {
+      cfg.red_team_tests = redMatch;
+      cfg.conversation_tests = undefined;
+    }
     log(`filtered to test: ${args.test}`);
   }
 
@@ -217,12 +230,29 @@ export async function runCommand(args: RunArgs): Promise<number> {
 
   // 7. Print summary
   log(`summary: testResults=${testResults.length} runComplete=${!!runCompleteData} exitCode=${exitCode}`);
-  if (runCompleteData && testResults.length > 0) {
+  if (runCompleteData) {
     printSummary(testResults, runCompleteData, run_id, args.json);
+  } else if (!isTTY) {
+    // Fallback: if SSE stream ended without run_complete, still write something to stdout
+    // so coding agents don't see empty output / "undefined"
+    try {
+      writeFileSync(1, JSON.stringify({
+        run_id,
+        status: exitCode === 0 ? "pass" : "error",
+        error: "Stream ended without run_complete event",
+        check: `npx vent-hq status ${run_id} --json`,
+      }) + "\n");
+    } catch {
+      process.stdout.write(JSON.stringify({ run_id, status: "error" }) + "\n");
+    }
   }
 
   log(`exiting with code ${exitCode}`);
-  return exitCode;
+
+  // Force exit — the fetch TCP socket from the SSE stream keeps the event loop
+  // alive indefinitely. Without this, the process hangs after tests complete,
+  // Claude Code eventually kills it, and stdout capture is lost.
+  process.exit(exitCode);
 }
 
 function findFreePort(): Promise<number> {

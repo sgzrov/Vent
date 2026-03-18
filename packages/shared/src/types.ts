@@ -226,6 +226,7 @@ export interface LoadTestSpec {
 
 export interface TestSpec {
   conversation_tests?: ConversationTestSpec[];
+  red_team_tests?: ConversationTestSpec[];
   load_test?: LoadTestSpec;
 }
 
@@ -417,6 +418,7 @@ export interface ConversationTestResult {
 
 export interface RunAggregateV2 {
   conversation_tests: { total: number; passed: number; failed: number };
+  red_team_tests?: { total: number; passed: number; failed: number };
   load_tests?: { total: number; passed: number; failed: number };
   total_duration_ms: number;
 }
@@ -425,6 +427,7 @@ export interface RunnerCallbackPayloadV2 {
   run_id: string;
   status: "pass" | "fail";
   conversation_results: ConversationTestResult[];
+  red_team_results?: ConversationTestResult[];
   aggregate: RunAggregateV2;
   error_text?: string;
 }

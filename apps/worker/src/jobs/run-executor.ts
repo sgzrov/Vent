@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import IORedis from "ioredis";
 import { createDb, schema, type Database } from "@vent/db";
-import { RUNNER_CALLBACK_HEADER } from "@vent/shared";
+import { RUNNER_CALLBACK_HEADER, formatConversationResult } from "@vent/shared";
 import type {
   TestSpec,
   LoadTestResult,
@@ -142,7 +142,8 @@ async function executeRemoteRun(db: Database, job: RunJob): Promise<void> {
   };
 
   const testSpec = job.test_spec as TestSpec;
-  const totalTests = (testSpec.conversation_tests ?? []).reduce(
+  const allSpecs = testSpec.conversation_tests ?? testSpec.red_team_tests ?? [];
+  const totalTests = allSpecs.reduce(
     (sum, t) => sum + ((t as { repeat?: number }).repeat ?? 1), 0
   );
   let completedTests = 0;
@@ -174,13 +175,13 @@ async function executeRemoteRun(db: Database, job: RunJob): Promise<void> {
 
       console.log(`Remote load test ${job.run_id} completed: ${status}`);
     } else {
-      // Conversation test run
-      const { status, conversationResults, aggregate } = await executeTests({
+      // Conversation or red team test run
+      const { status, conversationResults, redTeamResults, aggregate } = await executeTests({
         testSpec,
         channelConfig,
-        onTestComplete: async (result) => {
+        onTestComplete: async (result, testType) => {
           completedTests++;
-          const testName = result.name ?? "conversation";
+          const testName = result.name ?? testType;
 
           void fetch(`${apiUrl}/internal/test-progress`, {
             method: "POST",
@@ -192,10 +193,11 @@ async function executeRemoteRun(db: Database, job: RunJob): Promise<void> {
               run_id: job.run_id,
               completed: completedTests,
               total: totalTests,
-              test_type: "conversation",
+              test_type: testType,
               test_name: testName,
               status: result.status,
               duration_ms: result.duration_ms,
+              result: formatConversationResult(result),
             }),
           }).catch(() => {});
         },
@@ -211,6 +213,7 @@ async function executeRemoteRun(db: Database, job: RunJob): Promise<void> {
           run_id: job.run_id,
           status,
           conversation_results: conversationResults,
+          red_team_results: redTeamResults,
           aggregate,
         }),
       });
@@ -265,7 +268,8 @@ async function executeRelayRun(db: Database, job: RunJob, relayMachineId?: strin
   };
 
   const testSpec = job.test_spec as TestSpec;
-  const totalTests = (testSpec.conversation_tests ?? []).reduce(
+  const allSpecs = testSpec.conversation_tests ?? testSpec.red_team_tests ?? [];
+  const totalTests = allSpecs.reduce(
     (sum, t) => sum + ((t as { repeat?: number }).repeat ?? 1), 0
   );
   let completedTests = 0;
@@ -305,13 +309,13 @@ async function executeRelayRun(db: Database, job: RunJob, relayMachineId?: strin
 
       console.log(`Relay load test ${job.run_id} completed: ${status}`);
     } else {
-      // Conversation test run
-      const { status, conversationResults, aggregate } = await executeTests({
+      // Conversation or red team test run
+      const { status, conversationResults, redTeamResults, aggregate } = await executeTests({
         testSpec,
         channelConfig,
-        onTestComplete: async (result) => {
+        onTestComplete: async (result, testType) => {
           completedTests++;
-          const testName = result.name ?? "conversation";
+          const testName = result.name ?? testType;
 
           void fetch(`${apiUrl}/internal/test-progress`, {
             method: "POST",
@@ -320,10 +324,11 @@ async function executeRelayRun(db: Database, job: RunJob, relayMachineId?: strin
               run_id: job.run_id,
               completed: completedTests,
               total: totalTests,
-              test_type: "conversation",
+              test_type: testType,
               test_name: testName,
               status: result.status,
               duration_ms: result.duration_ms,
+              result: formatConversationResult(result),
             }),
           }).catch(() => {});
         },
@@ -338,6 +343,7 @@ async function executeRelayRun(db: Database, job: RunJob, relayMachineId?: strin
           run_id: job.run_id,
           status,
           conversation_results: conversationResults,
+          red_team_results: redTeamResults,
           aggregate,
         }),
       });
