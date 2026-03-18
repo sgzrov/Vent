@@ -120,6 +120,11 @@ export async function runRoutes(app: FastifyInstance) {
       return reply.status(404).send({ error: "Run not found" });
     }
 
+    // Take full control of the response — without hijack(), Fastify
+    // serializes the handler's return value ("undefined") to the stream
+    // and calls reply.raw.end(), killing the long-lived SSE connection.
+    reply.hijack();
+
     // Set SSE headers
     reply.raw.writeHead(200, {
       "Content-Type": "text/event-stream",
