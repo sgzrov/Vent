@@ -19,7 +19,7 @@ export default async function DeviceAuthPage({
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-zinc-950">
+    <div className="min-h-screen flex items-center justify-center">
       <DeviceAuthContent
         code={code ?? null}
         isAuthenticated={!!user}
