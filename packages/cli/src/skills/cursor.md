@@ -22,7 +22,7 @@ Test voice agents from the terminal. Tests run in the cloud (30-120s).
 | `npx vent-hq run -f .vent/suite.json --test <name>` | Run a single test by name |
 | `npx vent-hq run -f .vent/suite.json --test <name> --submit` | Submit a single test, return immediately with run_id |
 | `npx vent-hq run --config '{...}'` | Run from inline JSON (one-off, no file needed) |
-| `npx vent-hq status <run-id> --json` | Check results (full JSON when complete) |
+| `npx vent-hq status <run-id> --json` | Poll results for a submitted run (--submit only) |
 
 
 ## Critical Rules
@@ -32,7 +32,7 @@ Test voice agents from the terminal. Tests run in the cloud (30-120s).
 3. **Handle backgrounded commands** — If a test command gets moved to background by the system, wait for it to complete before proceeding. Never end your response without delivering test results.
 4. **Output format** — In non-TTY mode (when run by an agent), every SSE event is written to stdout as a JSON line. Results are always in stdout.
 5. **This skill is self-contained** — The full config schema is below. Do NOT re-read this file.
-6. **Always analyze results** — After tests complete, read every output, identify failures, correlate with the codebase, and fix.
+6. **Always analyze results** — The run command outputs complete JSON with full transcript, latency, behavior scores, and tool calls. Analyze this output directly — do NOT run `vent status` afterwards, the data is already there.
 
 ## Workflow
 

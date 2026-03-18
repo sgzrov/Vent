@@ -4,7 +4,7 @@ import * as net from "node:net";
 import { apiFetch } from "../lib/api.js";
 import { streamRunEvents } from "../lib/sse.js";
 import { startRelay } from "../lib/relay.js";
-import { printEvent, printError, printInfo, printSummary } from "../lib/output.js";
+import { printEvent, printError, printInfo, printSummary, debug, setVerbose } from "../lib/output.js";
 import { loadApiKey } from "../lib/config.js";
 import type { RelayHandle } from "../lib/relay.js";
 import type { SSEEvent } from "../lib/sse.js";
@@ -18,15 +18,12 @@ interface RunArgs {
   apiKey?: string;
   json: boolean;
   submit: boolean;
-}
-
-function log(msg: string): void {
-  const ts = new Date().toISOString().slice(11, 23); // HH:mm:ss.SSS
-  process.stderr.write(`[vent ${ts}] ${msg}\n`);
+  verbose?: boolean;
 }
 
 export async function runCommand(args: RunArgs): Promise<number> {
-  log(`start args=${JSON.stringify({ file: args.file, test: args.test, json: args.json, submit: args.submit })}`);
+  if (args.verbose) setVerbose(true);
+  debug(`start args=${JSON.stringify({ file: args.file, test: args.test, json: args.json, submit: args.submit })}`);
 
   // 1. Resolve API key
   const apiKey = args.apiKey ?? (await loadApiKey());
@@ -34,19 +31,19 @@ export async function runCommand(args: RunArgs): Promise<number> {
     printError("No API key found. Set VENT_API_KEY, run `npx vent-hq login`, or pass --api-key.");
     return 2;
   }
-  log(`api-key resolved (${apiKey.slice(0, 8)}…)`);
+  debug(`api-key resolved (${apiKey.slice(0, 8)}…)`);
 
   // 2. Parse config
   let config: unknown;
   try {
     if (args.file) {
-      log(`reading config file: ${args.file}`);
+      debug(`reading config file: ${args.file}`);
       const raw = await fs.readFile(args.file, "utf-8");
       config = JSON.parse(raw);
-      log(`config parsed — keys: ${Object.keys(config as Record<string, unknown>).join(", ")}`);
+      debug(`config parsed — keys: ${Object.keys(config as Record<string, unknown>).join(", ")}`);
     } else if (args.config) {
       config = JSON.parse(args.config);
-      log("config parsed from --config flag");
+      debug("config parsed from --config flag");
     } else {
       printError("Provide --config '{...}' or -f <file>.");
       return 2;
@@ -87,7 +84,7 @@ export async function runCommand(args: RunArgs): Promise<number> {
       cfg.red_team_tests = redMatch;
       cfg.conversation_tests = undefined;
     }
-    log(`filtered to test: ${args.test}`);
+    debug(`filtered to test: ${args.test}`);
   }
 
   // 2c. Auto-assign a free port for local agents so parallel runs don't collide
@@ -95,11 +92,11 @@ export async function runCommand(args: RunArgs): Promise<number> {
   if (cfg.connection?.start_command) {
     const freePort = await findFreePort();
     cfg.connection.agent_port = freePort;
-    log(`auto-port assigned: ${freePort}`);
+    debug(`auto-port assigned: ${freePort}`);
   }
 
   // 3. Submit run
-  log("submitting run to API…");
+  debug("submitting run to API…");
   printInfo("Submitting run…");
   let submitResult: {
     run_id: string;
@@ -119,21 +116,21 @@ export async function runCommand(args: RunArgs): Promise<number> {
       method: "POST",
       body: JSON.stringify({ config }),
     });
-    log(`API response status: ${res.status}`);
+    debug(`API response status: ${res.status}`);
     submitResult = (await res.json()) as typeof submitResult;
   } catch (err) {
-    log(`submit error: ${(err as Error).message}`);
+    debug(`submit error: ${(err as Error).message}`);
     printError(`Submit failed: ${(err as Error).message}`);
     return 2;
   }
 
   const { run_id } = submitResult;
   if (!run_id) {
-    log(`no run_id in response: ${JSON.stringify(submitResult)}`);
+    debug(`no run_id in response: ${JSON.stringify(submitResult)}`);
     printError("Server returned no run_id. Response: " + JSON.stringify(submitResult));
     return 2;
   }
-  log(`run created: ${run_id} status=${submitResult.status} has_relay=${!!submitResult.relay_config}`);
+  debug(`run created: ${run_id} status=${submitResult.status} has_relay=${!!submitResult.relay_config}`);
   printInfo(`Run ${run_id} created.`);
 
   // 4. Handle --submit (fire-and-forget)
@@ -159,23 +156,23 @@ export async function runCommand(args: RunArgs): Promise<number> {
   // 5. Start relay if needed (local agent)
   let relay: RelayHandle | null = null;
   if (submitResult.relay_config) {
-    log(`starting relay — agent_port=${submitResult.relay_config.agent_port} start_command="${submitResult.relay_config.start_command}" health=${submitResult.relay_config.health_endpoint}`);
+    debug(`starting relay — agent_port=${submitResult.relay_config.agent_port} start_command="${submitResult.relay_config.start_command}" health=${submitResult.relay_config.health_endpoint}`);
     printInfo("Starting relay for local agent…");
     printInfo("Connecting to Vent cloud relay (timeout: 30s)…");
     try {
       relay = await startRelay(submitResult.relay_config);
-      log("relay connected, agent healthy, run activated");
+      debug("relay connected, agent healthy, run activated");
       printInfo("Relay connected, agent started.");
     } catch (err) {
       const msg = (err as Error).message;
-      log(`relay error: ${msg}`);
+      debug(`relay error: ${msg}`);
       printError(`Relay failed: ${msg}`);
       return 2;
     }
   }
 
   // 6. Stream results
-  log(`connecting to SSE stream for run ${run_id}…`);
+  debug(`connecting to SSE stream for run ${run_id}…`);
   printInfo(`Streaming results for run ${run_id}…`);
   const abortController = new AbortController();
   let exitCode = 0;
@@ -183,7 +180,7 @@ export async function runCommand(args: RunArgs): Promise<number> {
   let runCompleteData: Record<string, unknown> | null = null;
 
   const onSignal = () => {
-    log("received SIGINT/SIGTERM — aborting stream");
+    debug("received SIGINT/SIGTERM — aborting stream");
     abortController.abort();
   };
   process.on("SIGINT", onSignal);
@@ -194,42 +191,42 @@ export async function runCommand(args: RunArgs): Promise<number> {
     for await (const event of streamRunEvents(run_id, apiKey, abortController.signal)) {
       eventCount++;
       const meta = (event.metadata_json ?? {}) as Record<string, unknown>;
-      log(`event #${eventCount}: type=${event.event_type} meta_keys=[${Object.keys(meta).join(",")}] message="${event.message ?? ""}"`);
+      debug(`event #${eventCount}: type=${event.event_type} meta_keys=[${Object.keys(meta).join(",")}] message="${event.message ?? ""}"`);
       printEvent(event, args.json);
 
       if (event.event_type === "test_completed") {
         testResults.push(event);
-        log(`test_completed: name=${meta.test_name} status=${meta.status} duration=${meta.duration_ms}ms completed=${meta.completed}/${meta.total}`);
+        debug(`test_completed: name=${meta.test_name} status=${meta.status} duration=${meta.duration_ms}ms completed=${meta.completed}/${meta.total}`);
       }
 
       if (event.event_type === "run_complete") {
         runCompleteData = meta;
         const status = meta.status as string | undefined;
         exitCode = status === "pass" ? 0 : 1;
-        log(`run_complete: status=${status} exitCode=${exitCode}`);
+        debug(`run_complete: status=${status} exitCode=${exitCode}`);
       }
     }
-    log(`SSE stream ended — received ${eventCount} events total`);
+    debug(`SSE stream ended — received ${eventCount} events total`);
   } catch (err) {
     if ((err as Error).name !== "AbortError") {
-      log(`stream error: ${(err as Error).message}`);
+      debug(`stream error: ${(err as Error).message}`);
       printError(`Stream error: ${(err as Error).message}`);
       exitCode = 2;
     } else {
-      log("stream aborted (user signal)");
+      debug("stream aborted (user signal)");
     }
   } finally {
     process.off("SIGINT", onSignal);
     process.off("SIGTERM", onSignal);
     if (relay) {
-      log("cleaning up relay…");
+      debug("cleaning up relay…");
       await relay.cleanup();
-      log("relay cleaned up");
+      debug("relay cleaned up");
     }
   }
 
   // 7. Print summary
-  log(`summary: testResults=${testResults.length} runComplete=${!!runCompleteData} exitCode=${exitCode}`);
+  debug(`summary: testResults=${testResults.length} runComplete=${!!runCompleteData} exitCode=${exitCode}`);
   if (runCompleteData) {
     printSummary(testResults, runCompleteData, run_id, args.json);
   } else if (!isTTY) {
@@ -247,7 +244,7 @@ export async function runCommand(args: RunArgs): Promise<number> {
     }
   }
 
-  log(`exiting with code ${exitCode}`);
+  debug(`exiting with code ${exitCode}`);
 
   // Force exit — the fetch TCP socket from the SSE stream keeps the event loop
   // alive indefinitely. Without this, the process hangs after tests complete,

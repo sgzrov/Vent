@@ -199,7 +199,11 @@ async function executeRemoteRun(db: Database, job: RunJob): Promise<void> {
               duration_ms: result.duration_ms,
               result: formatConversationResult(result),
             }),
-          }).catch(() => {});
+          }).then((res) => {
+            if (!res.ok) console.warn(`test-progress POST failed (${res.status}) for ${testName}`);
+          }).catch((err) => {
+            console.warn(`test-progress POST error for ${testName}:`, err.message);
+          });
         },
       });
 
@@ -330,7 +334,11 @@ async function executeRelayRun(db: Database, job: RunJob, relayMachineId?: strin
               duration_ms: result.duration_ms,
               result: formatConversationResult(result),
             }),
-          }).catch(() => {});
+          }).then((res) => {
+            if (!res.ok) console.warn(`test-progress POST failed (${res.status}) for ${testName}`);
+          }).catch((err) => {
+            console.warn(`test-progress POST error for ${testName}:`, err.message);
+          });
         },
       });
 

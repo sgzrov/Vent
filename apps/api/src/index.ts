@@ -31,6 +31,7 @@ async function main() {
     logger: {
       level: "info",
     },
+    bodyLimit: 10 * 1024 * 1024, // 10MB — test results with full transcripts can be large
   });
 
   const dashboardUrl = process.env["DASHBOARD_URL"];
