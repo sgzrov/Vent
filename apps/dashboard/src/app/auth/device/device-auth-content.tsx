@@ -1,6 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { Confetti, type ConfettiRef } from "@/components/ui/confetti";
+import { FallingPattern } from "@/components/ui/falling-pattern";
 
 interface Props {
   code: string | null;
@@ -9,6 +11,7 @@ interface Props {
 }
 
 export function DeviceAuthContent({ code, isAuthenticated, signInUrl }: Props) {
+  const confettiRef = useRef<ConfettiRef>(null);
   const [status, setStatus] = useState<
     "idle" | "approving" | "success" | "error"
   >("idle");
@@ -106,31 +109,81 @@ export function DeviceAuthContent({ code, isAuthenticated, signInUrl }: Props) {
   // Success
   if (status === "success") {
     return (
-      <div className="text-center max-w-md px-6">
-        <p className="text-zinc-500 text-xs font-mono tracking-wider uppercase mb-6">
-          Vent CLI
-        </p>
-        <div className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-green-500/10 mb-4">
-          <svg
-            className="w-6 h-6 text-green-500"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-            strokeWidth={2}
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              d="M5 13l4 4L19 7"
-            />
-          </svg>
+      <div className="fixed inset-0 z-50 flex flex-col items-center justify-center">
+        <FallingPattern className="fixed inset-0 w-screen h-screen" />
+        <Confetti
+          ref={confettiRef}
+          className="absolute left-0 top-0 z-10 size-full pointer-events-none"
+          options={{
+            particleCount: 100,
+            spread: 120,
+            origin: { y: 0.45 },
+            colors: ["#a786ff", "#fd8bbc", "#eca184", "#f8deb1"],
+          }}
+        />
+        <div className="relative z-20 text-center max-w-md px-6">
+          <p className="text-muted-foreground/60 text-xs font-mono tracking-wider uppercase mb-8">
+            Vent CLI
+          </p>
+          <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-green-500/10 border border-green-500/20 mb-6">
+            <svg
+              className="w-8 h-8 text-green-500"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={2.5}
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M5 13l4 4L19 7"
+              />
+            </svg>
+          </div>
+          <h1 className="text-2xl font-bold tracking-tight text-foreground">
+            You&apos;re all set
+          </h1>
+          <p className="text-muted-foreground mt-3 text-sm leading-relaxed">
+            Your CLI is authenticated. Head back to your terminal&mdash;your agent is finishing setup.
+          </p>
+
+          {/* Agent flow steps */}
+          <div className="mt-8 text-left mx-auto max-w-xs space-y-3">
+            <div className="flex items-start gap-3">
+              <div className="mt-0.5 flex-shrink-0 w-5 h-5 rounded-full bg-green-500/10 border border-green-500/20 flex items-center justify-center">
+                <svg className="w-3 h-3 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                </svg>
+              </div>
+              <div>
+                <p className="text-sm font-medium text-foreground">Authenticated</p>
+                <p className="text-xs text-muted-foreground/60">API key saved to ~/.vent/credentials</p>
+              </div>
+            </div>
+            <div className="flex items-start gap-3">
+              <div className="mt-0.5 flex-shrink-0 w-5 h-5 rounded-full bg-foreground/5 border border-foreground/10 flex items-center justify-center">
+                <div className="w-1.5 h-1.5 rounded-full bg-foreground/30 animate-pulse" />
+              </div>
+              <div>
+                <p className="text-sm font-medium text-foreground">Installing skill files</p>
+                <p className="text-xs text-muted-foreground/60">So your coding agent knows how to run tests</p>
+              </div>
+            </div>
+            <div className="flex items-start gap-3">
+              <div className="mt-0.5 flex-shrink-0 w-5 h-5 rounded-full bg-foreground/5 border border-foreground/10 flex items-center justify-center">
+                <div className="w-1.5 h-1.5 rounded-full bg-foreground/20" />
+              </div>
+              <div>
+                <p className="text-sm font-medium text-muted-foreground/60">Scaffolding test suite</p>
+                <p className="text-xs text-muted-foreground/40">.vent/suite.json with a starter scenario</p>
+              </div>
+            </div>
+          </div>
+
+          <p className="text-muted-foreground/40 mt-8 text-xs">
+            You can close this tab.
+          </p>
         </div>
-        <h1 className="text-xl font-semibold tracking-tight text-white">
-          CLI authorized
-        </h1>
-        <p className="text-zinc-400 mt-2 text-sm">
-          You can close this tab.
-        </p>
       </div>
     );
   }
