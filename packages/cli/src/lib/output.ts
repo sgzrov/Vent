@@ -4,6 +4,22 @@ import type { SSEEvent } from "./sse.js";
 
 const isTTY = process.stdout.isTTY;
 
+let _verbose = false;
+
+export function setVerbose(v: boolean): void {
+  _verbose = v;
+}
+
+export function debug(msg: string): void {
+  if (!_verbose) return;
+  const ts = new Date().toISOString().slice(11, 23);
+  process.stderr.write(`[vent ${ts}] ${msg}\n`);
+}
+
+export function isVerbose(): boolean {
+  return _verbose;
+}
+
 /**
  * Synchronous write to stdout. On POSIX, process.stdout.write() to a pipe is
  * ASYNC — if the process exits before the buffer drains, the data is lost and
@@ -41,15 +57,18 @@ export function printEvent(event: SSEEvent, jsonMode: boolean): void {
   // Non-TTY (coding agents): don't write individual events to stdout.
   // Coding agents read all stdout at once when the process exits.
   // Instead, printSummary writes one clean summary JSON at the end.
+  // Suppress stderr progress too — coding agents (Claude Code, Cursor) merge
+  // stdout+stderr, so any stderr noise pollutes the agent's context window.
   if (!isTTY) {
-    // Progress updates on stderr so they're visible in logs but don't pollute stdout
-    const meta = (event.metadata_json ?? {}) as Record<string, unknown>;
-    if (event.event_type === "test_completed") {
-      const name = (meta.test_name as string) ?? "test";
-      const status = (meta.status as string) ?? "unknown";
-      const durationMs = meta.duration_ms as number | undefined;
-      const duration = durationMs != null ? (durationMs / 1000).toFixed(1) + "s" : "";
-      process.stderr.write(`  ${status === "completed" || status === "pass" ? "✔" : "✘"} ${name} ${duration}\n`);
+    if (_verbose) {
+      const meta = (event.metadata_json ?? {}) as Record<string, unknown>;
+      if (event.event_type === "test_completed") {
+        const name = (meta.test_name as string) ?? "test";
+        const status = (meta.status as string) ?? "unknown";
+        const durationMs = meta.duration_ms as number | undefined;
+        const duration = durationMs != null ? (durationMs / 1000).toFixed(1) + "s" : "";
+        process.stderr.write(`  ${status === "completed" || status === "pass" ? "✔" : "✘"} ${name} ${duration}\n`);
+      }
     }
     return;
   }
@@ -129,17 +148,18 @@ export function printSummary(
   runId: string,
   jsonMode: boolean,
 ): void {
-  // Build test results summary
+  // Build test results summary — pass through the full FormattedConversationResult
+  // so coding agents have complete context on latency, behavior, transcript, etc.
   const allTests = testResults.map((e) => {
     const meta = e.metadata_json ?? {};
     const r = meta.result as FormattedConversationResult | undefined;
+    if (r) return r;
+    // Fallback for events without a full result object
     return {
-      name: r?.name ?? (meta.test_name as string) ?? "test",
-      status: r?.status ?? (meta.status as string),
-      duration_ms: r?.duration_ms ?? (meta.duration_ms as number),
-      intent_accuracy: r?.behavior?.intent_accuracy?.score,
-      p50_ttfw_ms: r?.latency?.p50_ttfw_ms,
-      error: r?.error ?? undefined,
+      name: (meta.test_name as string) ?? "test",
+      status: (meta.status as string) ?? "unknown",
+      duration_ms: meta.duration_ms as number,
+      error: null,
     };
   });
 
@@ -153,13 +173,12 @@ export function printSummary(
     passed: runComplete.passed_tests ?? counts?.passed,
     failed: runComplete.failed_tests ?? counts?.failed,
     tests: allTests,
-    check: `npx vent-hq status ${runId} --json`,
   };
 
   // Non-TTY (coding agents) or --json: write single summary JSON to stdout.
   // Uses stdoutSync to bypass Node.js async pipe buffering.
   if (jsonMode || !isTTY) {
-    stdoutSync(JSON.stringify(summaryData) + "\n");
+    stdoutSync(JSON.stringify(summaryData, null, 2) + "\n");
     return;
   }
 
@@ -191,13 +210,16 @@ export function printError(message: string): void {
 }
 
 export function printInfo(message: string): void {
+  if (!isTTY && !_verbose) return;
   process.stderr.write(blue("▸") + ` ${message}\n`);
 }
 
 export function printSuccess(message: string): void {
+  if (!isTTY && !_verbose) return;
   process.stderr.write(green("✔") + ` ${message}\n`);
 }
 
 export function printWarn(message: string): void {
+  if (!isTTY && !_verbose) return;
   process.stderr.write(yellow("⚠") + ` ${message}\n`);
 }

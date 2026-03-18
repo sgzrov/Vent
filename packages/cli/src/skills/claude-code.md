@@ -23,7 +23,7 @@ Test voice agents from the terminal. Tests run in the cloud — results stream b
 | `npx vent-hq run -f .vent/suite.json --test <name>` | Run a single test by name |
 | `npx vent-hq run --config '{...}'` | Run from inline JSON (one-off, no file needed) |
 | `npx vent-hq run -f .vent/suite.json --test <name> --submit` | Submit test, return immediately with run_id (deployed agents) |
-| `npx vent-hq status <run-id> --json` | Get full results for a completed run |
+| `npx vent-hq status <run-id> --json` | Poll results for a submitted run (--submit only) |
 
 
 ## Critical Rules
@@ -32,7 +32,7 @@ Test voice agents from the terminal. Tests run in the cloud — results stream b
 2. **5-minute timeout** — Set `timeout: 300000` on the Bash call. The full suite takes 1-3 minutes (tests run concurrently), but can reach 5 minutes.
 3. **If the call gets backgrounded** — The system may move long-running calls to background automatically. If this happens, immediately call `TaskOutput` with `block: true` and `timeout: 300000` to wait for the result.
 4. **This skill is self-contained** — The full config schema is below. Do NOT re-read this file.
-5. **Always analyze results** — After the run completes, identify failures, correlate with the codebase, and fix.
+5. **Always analyze results** — The run command outputs complete JSON with full transcript, latency, behavior scores, and tool calls. Analyze this output directly — do NOT run `vent status` afterwards, the data is already there.
 
 ## Workflow
 
@@ -447,6 +447,7 @@ spike and soak only appear when configured. breaking_point only appears when a t
 ## Output
 
 - **Exit codes**: 0=pass, 1=fail, 2=error
+- The `run` command outputs **complete results as pretty-printed JSON** — including full transcript, latency metrics, behavior scores, tool calls, and audio analysis for every test. Do NOT run a separate `vent status` command — all data is already in the output.
 
 ## API Keys
 
