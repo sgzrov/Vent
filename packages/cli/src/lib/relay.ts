@@ -32,14 +32,10 @@ export async function startRelay(relayConfig: {
     process.stderr.write(`${msg}\n`);
   });
 
-  // Activate FIRST — this queues the BullMQ job so the worker subscribes to
-  // Redis pub/sub BEFORE the relay WebSocket connects. Fixes the race condition
-  // where the relay-ready message fires before the worker is listening.
-  await client.activate();
-
-  // Now connect the relay WebSocket — worker is already waiting for the signal
+  // 1. Connect relay WebSocket — establishes the tunnel to Vent cloud
   await client.connect();
 
+  // 2. Spawn agent process (with PORT env so it listens on the right port)
   let agentProcess: ChildProcess | null = null;
 
   if (relayConfig.start_command) {
@@ -55,10 +51,13 @@ export async function startRelay(relayConfig: {
     });
   }
 
-  // Wait for agent health
+  // 3. Wait for agent to be healthy before activating the run
   if (relayConfig.start_command) {
     await waitForHealth(relayConfig.agent_port, relayConfig.health_endpoint);
   }
+
+  // 4. Activate LAST — agent is up, relay is connected, worker can start tests
+  await client.activate();
 
   const cleanup = async () => {
     if (agentProcess && !agentProcess.killed) {
