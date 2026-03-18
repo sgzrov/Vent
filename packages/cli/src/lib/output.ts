@@ -176,7 +176,7 @@ export function printSummary(
   // Non-TTY (coding agents) or --json: write single summary JSON to stdout.
   // Uses stdoutSync to bypass Node.js async pipe buffering.
   if (jsonMode || !isTTY) {
-    stdoutSync(JSON.stringify(summaryData) + "\n");
+    stdoutSync(JSON.stringify(summaryData, null, 2) + "\n");
     return;
   }
 
