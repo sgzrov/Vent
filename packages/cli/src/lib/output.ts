@@ -57,15 +57,18 @@ export function printEvent(event: SSEEvent, jsonMode: boolean): void {
   // Non-TTY (coding agents): don't write individual events to stdout.
   // Coding agents read all stdout at once when the process exits.
   // Instead, printSummary writes one clean summary JSON at the end.
+  // Suppress stderr progress too — coding agents (Claude Code, Cursor) merge
+  // stdout+stderr, so any stderr noise pollutes the agent's context window.
   if (!isTTY) {
-    // Progress updates on stderr so they're visible in logs but don't pollute stdout
-    const meta = (event.metadata_json ?? {}) as Record<string, unknown>;
-    if (event.event_type === "test_completed") {
-      const name = (meta.test_name as string) ?? "test";
-      const status = (meta.status as string) ?? "unknown";
-      const durationMs = meta.duration_ms as number | undefined;
-      const duration = durationMs != null ? (durationMs / 1000).toFixed(1) + "s" : "";
-      process.stderr.write(`  ${status === "completed" || status === "pass" ? "✔" : "✘"} ${name} ${duration}\n`);
+    if (_verbose) {
+      const meta = (event.metadata_json ?? {}) as Record<string, unknown>;
+      if (event.event_type === "test_completed") {
+        const name = (meta.test_name as string) ?? "test";
+        const status = (meta.status as string) ?? "unknown";
+        const durationMs = meta.duration_ms as number | undefined;
+        const duration = durationMs != null ? (durationMs / 1000).toFixed(1) + "s" : "";
+        process.stderr.write(`  ${status === "completed" || status === "pass" ? "✔" : "✘"} ${name} ${duration}\n`);
+      }
     }
     return;
   }
@@ -208,13 +211,16 @@ export function printError(message: string): void {
 }
 
 export function printInfo(message: string): void {
+  if (!isTTY && !_verbose) return;
   process.stderr.write(blue("▸") + ` ${message}\n`);
 }
 
 export function printSuccess(message: string): void {
+  if (!isTTY && !_verbose) return;
   process.stderr.write(green("✔") + ` ${message}\n`);
 }
 
 export function printWarn(message: string): void {
+  if (!isTTY && !_verbose) return;
   process.stderr.write(yellow("⚠") + ` ${message}\n`);
 }
