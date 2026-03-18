@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { RelayClient, type RelayClientConfig } from "@vent/relay-client";
+import { isVerbose } from "./output.js";
 
 export interface RelayHandle {
   client: RelayClient;
@@ -29,7 +30,7 @@ export async function startRelay(relayConfig: {
   const client = new RelayClient(clientConfig);
 
   client.on("log", (msg: unknown) => {
-    process.stderr.write(`${msg}\n`);
+    if (isVerbose()) process.stderr.write(`${msg}\n`);
   });
 
   // 1. Connect relay WebSocket — establishes the tunnel to Vent cloud

@@ -4,6 +4,22 @@ import type { SSEEvent } from "./sse.js";
 
 const isTTY = process.stdout.isTTY;
 
+let _verbose = false;
+
+export function setVerbose(v: boolean): void {
+  _verbose = v;
+}
+
+export function debug(msg: string): void {
+  if (!_verbose) return;
+  const ts = new Date().toISOString().slice(11, 23);
+  process.stderr.write(`[vent ${ts}] ${msg}\n`);
+}
+
+export function isVerbose(): boolean {
+  return _verbose;
+}
+
 /**
  * Synchronous write to stdout. On POSIX, process.stdout.write() to a pipe is
  * ASYNC — if the process exits before the buffer drains, the data is lost and
@@ -129,17 +145,18 @@ export function printSummary(
   runId: string,
   jsonMode: boolean,
 ): void {
-  // Build test results summary
+  // Build test results summary — pass through the full FormattedConversationResult
+  // so coding agents have complete context on latency, behavior, transcript, etc.
   const allTests = testResults.map((e) => {
     const meta = e.metadata_json ?? {};
     const r = meta.result as FormattedConversationResult | undefined;
+    if (r) return r;
+    // Fallback for events without a full result object
     return {
-      name: r?.name ?? (meta.test_name as string) ?? "test",
-      status: r?.status ?? (meta.status as string),
-      duration_ms: r?.duration_ms ?? (meta.duration_ms as number),
-      intent_accuracy: r?.behavior?.intent_accuracy?.score,
-      p50_ttfw_ms: r?.latency?.p50_ttfw_ms,
-      error: r?.error ?? undefined,
+      name: (meta.test_name as string) ?? "test",
+      status: (meta.status as string) ?? "unknown",
+      duration_ms: meta.duration_ms as number,
+      error: null,
     };
   });
 

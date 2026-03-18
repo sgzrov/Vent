@@ -30,7 +30,8 @@ Options:
   --list         List test names from suite file
   --api-key      API key (overrides env/credentials)
   --json         Output NDJSON instead of colored text
-  --submit       Submit and return immediately (print run_id, don't wait for results)`;
+  --submit       Submit and return immediately (print run_id, don't wait for results)
+  --verbose      Show debug logs (SSE, relay, internal events)`;
 
 const STATUS_USAGE = `Usage: vent-hq status <run-id> [options]
 
@@ -85,6 +86,7 @@ async function main(): Promise<number> {
           json: { type: "boolean", default: false },
           submit: { type: "boolean", default: false },
           "no-stream": { type: "boolean", default: false },
+          verbose: { type: "boolean", default: false },
         },
         strict: true,
       });
@@ -125,6 +127,7 @@ async function main(): Promise<number> {
         apiKey: values["api-key"],
         json: values.json!,
         submit: values.submit! || values["no-stream"]!,
+        verbose: values.verbose!,
       });
     }
 

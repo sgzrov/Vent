@@ -1,4 +1,5 @@
 import { API_BASE } from "./config.js";
+import { isVerbose } from "./output.js";
 
 export interface SSEEvent {
   id?: string;
@@ -10,6 +11,7 @@ export interface SSEEvent {
 }
 
 function log(msg: string): void {
+  if (!isVerbose()) return;
   const ts = new Date().toISOString().slice(11, 23);
   const line = `[vent:sse ${ts}] ${msg}\n`;
   process.stderr.write(line);
