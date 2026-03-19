@@ -201,9 +201,15 @@ importers:
 
   packages/adapters:
     dependencies:
+      '@elevenlabs/elevenlabs-js':
+        specifier: ^2.39.0
+        version: 2.39.0
       '@livekit/rtc-node':
         specifier: ^0.13.0
         version: 0.13.24
+      '@vapi-ai/server-sdk':
+        specifier: ^0.11.0
+        version: 0.11.0
       '@vent/shared':
         specifier: workspace:*
         version: link:../shared
@@ -213,6 +219,9 @@ importers:
       livekit-server-sdk:
         specifier: ^2.0.0
         version: 2.15.0
+      retell-sdk:
+        specifier: ^5.9.0
+        version: 5.9.0
       twilio:
         specifier: ^5.12.2
         version: 5.12.2
@@ -593,6 +602,10 @@ packages:
 
   '@drizzle-team/brocli@0.10.2':
     resolution: {integrity: sha512-z33Il7l5dKjUgGULTqBsQBQwckHh5AbIuxhdsIxDDiZAzBOrZO6q9ogcWC65kU382AfynTfgNumVcNIjuIua6w==}
+
+  '@elevenlabs/elevenlabs-js@2.39.0':
+    resolution: {integrity: sha512-Yfh2wa5Y7wwoEHi2Na1YWrkc3z21oeHMo8qhGc5kcbQoWfgQfIxWuGfXHZSmUXOJz0mNL5bAfp3hHaJEX68DIA==}
+    engines: {node: '>=18.0.0'}
 
   '@emnapi/runtime@1.8.1':
     resolution: {integrity: sha512-mehfKSMWjjNol8659Z8KxEMrdSJDDot5SXMq00dM8BN4o+CLNXQ0xH2V7EchNHV4RmbZLmmPdEaXZc5H2FXmDg==}
@@ -2016,6 +2029,10 @@ packages:
   '@types/ws@8.18.1':
     resolution: {integrity: sha512-ThVF6DCVhA8kUGy+aazFQ4kXQ7E1Ty7A3ypFOe0IcJV8O/M511G99AW24irKrW56Wt44yG9+ij8FaqoBGkuBXg==}
 
+  '@vapi-ai/server-sdk@0.11.0':
+    resolution: {integrity: sha512-anfCbCY3k3vh5RKX8noN4p2QOK3k1ezRT31nHReVCjr3oMlex+Bjk4G9Ze4ZrezKrP8KssbuITuB7OeZ0egIQQ==}
+    engines: {node: '>=18.0.0'}
+
   '@webgpu/types@0.1.69':
     resolution: {integrity: sha512-RPmm6kgRbI8e98zSD3RVACvnuktIja5+yLgDAkTmxLr90BEwdTXRQWNLF3ETTTyH/8mKhznZuN5AveXYFEsMGQ==}
 
@@ -2187,6 +2204,9 @@ packages:
   combined-stream@1.0.8:
     resolution: {integrity: sha512-FQN4MRfuJeHf7cBbBMJFXhKSDq+2kAArBlmRBvcvFE5BB1HZKXtSFASDhdlz9zOYwxh8lDdnvmMOe/+5cdoEdg==}
     engines: {node: '>= 0.8'}
+
+  command-exists@1.2.9:
+    resolution: {integrity: sha512-LTQ/SGc+s0Xc0Fu5WaKnR0YiygZkm9eKFvyS+fRsU7/ZWFF8ykFM6Pc9aCVf1+xasOOZpO3BAVgVrKvsqKHV7w==}
 
   commander@4.1.1:
     resolution: {integrity: sha512-NOKm8xhkzAjzFx8B2v5OAHT+u5pRQc2UCa2Vq9jYL/31o2wi9mxBA7LIFs3sV5VSC49z6pEhfbMULvShKj26WA==}
@@ -3176,6 +3196,9 @@ packages:
   ret@0.5.0:
     resolution: {integrity: sha512-I1XxrZSQ+oErkRR4jYbAyEEu2I0avBvvMM5JN+6EBprOGRCs63ENqZ3vjavq8fBw2+62G5LF5XelKwuJpcvcxw==}
     engines: {node: '>=10'}
+
+  retell-sdk@5.9.0:
+    resolution: {integrity: sha512-tdk9vUa2Mqajdp8eK3aWroNEu/pvGuPi8sXVh8DjQGAu6hK7ug2CZ4pMgKvEIuRxAj/OC0HvSZ3vKXOKNjjGqg==}
 
   reusify@1.1.0:
     resolution: {integrity: sha512-g6QUff04oZpHs0eG5p83rFLhHeV00ug/Yf9nZM6fLeUrPguBTkTQOdpAWWspMh55TZfVQDPaN3NQJfbVRAxdIw==}
@@ -4227,6 +4250,16 @@ snapshots:
   '@dimforge/rapier3d-compat@0.12.0': {}
 
   '@drizzle-team/brocli@0.10.2': {}
+
+  '@elevenlabs/elevenlabs-js@2.39.0':
+    dependencies:
+      command-exists: 1.2.9
+      node-fetch: 2.7.0
+      ws: 8.19.0
+    transitivePeerDependencies:
+      - bufferutil
+      - encoding
+      - utf-8-validate
 
   '@emnapi/runtime@1.8.1':
     dependencies:
@@ -5409,6 +5442,8 @@ snapshots:
     dependencies:
       '@types/node': 20.19.33
 
+  '@vapi-ai/server-sdk@0.11.0': {}
+
   '@webgpu/types@0.1.69': {}
 
   '@workos-inc/authkit-nextjs@2.15.0(next@15.5.12(react-dom@19.2.4(react@19.2.4))(react@19.2.4))(react-dom@19.2.4(react@19.2.4))(react@19.2.4)':
@@ -5588,6 +5623,8 @@ snapshots:
   combined-stream@1.0.8:
     dependencies:
       delayed-stream: 1.0.0
+
+  command-exists@1.2.9: {}
 
   commander@4.1.1: {}
 
@@ -6555,6 +6592,8 @@ snapshots:
       supports-preserve-symlinks-flag: 1.0.0
 
   ret@0.5.0: {}
+
+  retell-sdk@5.9.0: {}
 
   reusify@1.1.0: {}
 

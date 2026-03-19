@@ -13,7 +13,7 @@
  *   4. getCallData() — fetches tool calls from GET /v1/calls/{call_id}
  */
 
-import type { ObservedToolCall } from "@vent/shared";
+import type { ObservedToolCall, CallMetadata } from "@vent/shared";
 import { BaseAudioChannel } from "./audio-channel.js";
 import { SipAudioChannel, type SipAudioChannelConfig } from "./sip-audio-channel.js";
 
@@ -33,14 +33,23 @@ interface BlandTranscriptEntry {
 interface BlandCallResponse {
   call_id: string;
   status: string;
+  completed?: boolean;
   transcripts?: BlandTranscriptEntry[];
+  concatenated_transcript?: string;
   variables?: Record<string, unknown>;
   pathway_logs?: Array<{
     node_id?: string;
     text?: string;
     data?: Record<string, unknown>;
   }>;
-  call_length?: number;
+  call_length?: number; // minutes (decimal)
+  corrected_duration?: string; // seconds as string
+  price?: number; // USD
+  recording_url?: string;
+  summary?: string;
+  answered_by?: string;
+  call_ended_by?: string;
+  error_message?: string;
 }
 
 interface BlandInboundConfig {
@@ -59,6 +68,7 @@ export class BlandAudioChannel extends BaseAudioChannel {
   private config: BlandAudioChannelConfig;
   private sipChannel: SipAudioChannel | null = null;
   private callId: string | null = null;
+  private cachedCallResponse: BlandCallResponse | null = null;
 
   constructor(config: BlandAudioChannelConfig) {
     super();
@@ -136,19 +146,74 @@ export class BlandAudioChannel extends BaseAudioChannel {
   }
 
   async getCallData(): Promise<ObservedToolCall[]> {
-    if (!this.callId) return [];
-
-    // Wait for Bland to process the call data
-    await sleep(3000);
-
-    const res = await fetch(`https://api.bland.ai/v1/calls/${this.callId}`, {
-      headers: { authorization: this.config.apiKey },
-    });
-
-    if (!res.ok) return [];
-
-    const data = (await res.json()) as BlandCallResponse;
+    const data = await this.fetchCallResponse();
+    if (!data) return [];
     return this.parseToolCalls(data);
+  }
+
+  async getCallMetadata(): Promise<CallMetadata | null> {
+    const data = await this.fetchCallResponse();
+    if (!data) return null;
+
+    const durationS = data.corrected_duration != null
+      ? parseFloat(data.corrected_duration)
+      : data.call_length != null ? data.call_length * 60 : undefined;
+
+    // Determine ended_reason from available fields
+    let endedReason = data.status;
+    if (data.call_ended_by) endedReason = `ended_by_${data.call_ended_by.toLowerCase()}`;
+    if (data.error_message) endedReason = `error: ${data.error_message}`;
+
+    return {
+      platform: "bland",
+      ended_reason: endedReason,
+      duration_s: durationS,
+      cost_usd: data.price,
+      recording_url: data.recording_url,
+      summary: data.summary,
+    };
+  }
+
+  getTranscripts(): Array<{ turnIndex: number; text: string }> {
+    const data = this.cachedCallResponse;
+    if (!data?.transcripts) return [];
+
+    const transcripts: Array<{ turnIndex: number; text: string }> = [];
+    let callerTurnIndex = 0;
+    for (const entry of data.transcripts) {
+      if (entry.user === "user") {
+        transcripts.push({ turnIndex: callerTurnIndex, text: entry.text });
+        callerTurnIndex++;
+      } else if (entry.user === "assistant" || entry.user === "robot") {
+        callerTurnIndex++;
+      }
+    }
+    return transcripts;
+  }
+
+  // ── Private helpers ─────────────────────────────────────────
+
+  private async fetchCallResponse(): Promise<BlandCallResponse | null> {
+    if (this.cachedCallResponse) return this.cachedCallResponse;
+    if (!this.callId) return null;
+
+    // Poll with backoff — Bland needs time to process call data after disconnect
+    const delays = [500, 1000, 2000, 3000];
+    for (const delay of delays) {
+      await sleep(delay);
+      const res = await fetch(`https://api.bland.ai/v1/calls/${this.callId}`, {
+        headers: { authorization: this.config.apiKey },
+      });
+      if (!res.ok) continue;
+
+      const data = (await res.json()) as BlandCallResponse;
+      if (data.completed || data.status === "completed" || data.status === "failed") {
+        this.cachedCallResponse = data;
+        return data;
+      }
+    }
+
+    return null;
   }
 
   private async fetchInboundConfig(): Promise<BlandInboundConfig> {

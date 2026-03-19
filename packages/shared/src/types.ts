@@ -278,6 +278,10 @@ export interface ConversationTurn {
   tts_ms?: number;
   /** Harness STT transcription time for this turn's agent audio (ms) */
   stt_ms?: number;
+  /** Platform component latency breakdown for this turn (STT/LLM/TTS) */
+  component_latency?: ComponentLatency;
+  /** Platform's own STT transcript for cross-referencing with Vent's STT */
+  platform_transcript?: string;
 }
 
 // ============================================================
@@ -386,6 +390,67 @@ export interface AudioAnalysisMetrics {
   mean_agent_speech_segment_ms: number;
 }
 
+// ============================================================
+// Platform component latency (from VAPI WebSocket text frames)
+// ============================================================
+
+/** Per-turn component latency breakdown from platform events */
+export interface ComponentLatency {
+  stt_ms?: number;
+  llm_ms?: number;
+  tts_ms?: number;
+  speech_duration_ms?: number;
+}
+
+/** Aggregated component latency across all turns */
+export interface ComponentLatencyMetrics {
+  per_turn: ComponentLatency[];
+  mean_stt_ms?: number;
+  mean_llm_ms?: number;
+  mean_tts_ms?: number;
+  p95_stt_ms?: number;
+  p95_llm_ms?: number;
+  p95_tts_ms?: number;
+  /** Which component contributes most to latency */
+  bottleneck?: "stt" | "llm" | "tts";
+}
+
+// ============================================================
+// Platform call metadata (from GET /call/{id})
+// ============================================================
+
+/** Per-component cost breakdown from platform API */
+export interface CostBreakdown {
+  stt_usd?: number;
+  llm_usd?: number;
+  tts_usd?: number;
+  transport_usd?: number;
+  /** Platform fee (e.g. VAPI's per-minute charge) */
+  platform_usd?: number;
+  total_usd?: number;
+  llm_prompt_tokens?: number;
+  llm_completion_tokens?: number;
+}
+
+/** Post-call metadata from the voice platform API */
+export interface CallMetadata {
+  platform: string;
+  ended_reason?: string;
+  duration_s?: number;
+  cost_usd?: number;
+  /** Per-component cost breakdown (STT/LLM/TTS/transport) */
+  cost_breakdown?: CostBreakdown;
+  recording_url?: string;
+  /** Platform's own AI-generated call summary */
+  summary?: string;
+  /** Platform's own success evaluation (pass/fail or rubric) */
+  success_evaluation?: string;
+  /** User sentiment from platform analysis */
+  user_sentiment?: string;
+  /** Whether the platform judged the call as successful */
+  call_successful?: boolean;
+}
+
 export interface ConversationMetrics {
   mean_ttfb_ms: number;
   /** Mean time to first word (VAD speech onset) across agent turns */
@@ -401,6 +466,8 @@ export interface ConversationMetrics {
   prosody?: ProsodyMetrics;
   prosody_warnings?: ProsodyWarning[];
   harness_overhead?: HarnessOverhead;
+  /** Per-component latency breakdown (STT/LLM/TTS) from platform events */
+  component_latency?: ComponentLatencyMetrics;
 }
 
 export interface ConversationTestResult {
@@ -414,6 +481,8 @@ export interface ConversationTestResult {
   duration_ms: number;
   metrics: ConversationMetrics;
   error?: string;
+  /** Platform call metadata (cost, ended reason, recording, analysis) */
+  call_metadata?: CallMetadata;
 }
 
 export interface RunAggregateV2 {
@@ -421,6 +490,7 @@ export interface RunAggregateV2 {
   red_team_tests?: { total: number; passed: number; failed: number };
   load_tests?: { total: number; passed: number; failed: number };
   total_duration_ms: number;
+  total_cost_usd?: number;
 }
 
 export interface RunnerCallbackPayloadV2 {

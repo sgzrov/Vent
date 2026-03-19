@@ -97,7 +97,7 @@ export async function executeTests(opts: ExecuteTestsOpts): Promise<ExecuteTests
   const {
     testSpec,
     channelConfig,
-    concurrencyLimit = ["sip", "retell", "bland"].includes(channelConfig.adapter) ? 5 : 10,
+    concurrencyLimit = ["sip", "retell", "bland", "vapi"].includes(channelConfig.adapter) ? 5 : 10,
     onTestStart,
     onTestComplete,
   } = opts;
@@ -113,11 +113,12 @@ export async function executeTests(opts: ExecuteTestsOpts): Promise<ExecuteTests
     return Array.from({ length: repeatCount }, () => spec);
   });
 
-  // Pre-flight health check — verify agent is reachable before running N tests.
-  // For relay runs, we hold the probe open briefly to confirm the CLI can
-  // reach the local agent (open_ack). A connect-then-immediately-disconnect
-  // only checks the runner→API path and masks CLI→agent failures.
-  if (allTests.length > 0) {
+  // Pre-flight health check — only for relay/local agent runs.
+  // Platform adapters (vapi, retell, elevenlabs, bland) don't need this —
+  // it would waste a real API call + credits just to verify connectivity.
+  // The first real test will fail with a clear error if config is wrong.
+  const isPlatformAdapter = ["vapi", "retell", "elevenlabs", "bland"].includes(channelConfig.adapter);
+  if (allTests.length > 0 && !isPlatformAdapter) {
     const probeChannel = createAudioChannel(channelConfig);
     try {
       await probeChannel.connect();
@@ -263,11 +264,18 @@ export async function executeTests(opts: ExecuteTestsOpts): Promise<ExecuteTests
   const errored = results.filter((r) => r.status === "error").length;
   const totalDurationMs = results.reduce((sum, r) => sum + r.duration_ms, 0);
 
+  // Sum platform costs across all tests
+  const totalCostUsd = results.reduce((sum, r) => {
+    const cost = r.call_metadata?.cost_usd;
+    return cost != null ? sum + cost : sum;
+  }, 0);
+
   const testCounts = { total: results.length, passed: completed, failed: errored };
   const aggregate: RunAggregateV2 = {
     conversation_tests: isRedTeam ? { total: 0, passed: 0, failed: 0 } : testCounts,
     ...(isRedTeam ? { red_team_tests: testCounts } : {}),
     total_duration_ms: totalDurationMs,
+    ...(totalCostUsd > 0 ? { total_cost_usd: totalCostUsd } : {}),
   };
 
   const status = errored === 0 ? "pass" : "fail";

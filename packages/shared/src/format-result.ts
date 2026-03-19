@@ -17,12 +17,14 @@ import type {
   AudioAnalysisMetrics,
   ProsodyMetrics,
   ToolCallMetrics,
-  TurnEmotionProfile,
   LoadTestResult,
   LoadTestTierResult,
   LoadTestSeverity,
   LoadTestBreakingPoint,
   LoadTestGrading,
+  CallMetadata,
+  CostBreakdown,
+  ComponentLatencyMetrics,
 } from "./types.js";
 
 // ---- Formatted types ----
@@ -35,6 +37,8 @@ interface FormattedTranscriptTurn {
   stt_confidence?: number;
   audio_duration_ms?: number;
   silence_pad_ms?: number;
+  component_latency?: { stt_ms?: number; llm_ms?: number; tts_ms?: number; speech_duration_ms?: number };
+  platform_transcript?: string;
 }
 
 interface FormattedLatency {
@@ -76,23 +80,39 @@ interface FormattedToolCalls {
 }
 
 interface FormattedEmotion {
-  mean_calmness: number;
-  mean_confidence: number;
-  peak_frustration: number;
-  emotion_consistency: number;
-  naturalness: number;
   emotion_trajectory: "stable" | "improving" | "degrading" | "volatile";
-  per_turn: TurnEmotionProfile[];
+  peak_frustration: number;
 }
 
 interface FormattedBehavior {
   intent_accuracy?: { score: number; reasoning: string };
   context_retention?: { score: number; reasoning: string };
-  topic_drift?: { score: number; reasoning: string };
-  empathy_score?: { score: number; reasoning: string };
   hallucination_detected?: { detected: boolean; reasoning: string };
   safety_compliance?: { compliant: boolean; score?: number; reasoning: string };
   escalation_handling?: { triggered: boolean; handled_appropriately: boolean; score: number; reasoning: string };
+}
+
+interface FormattedComponentLatency {
+  mean_stt_ms?: number;
+  mean_llm_ms?: number;
+  mean_tts_ms?: number;
+  p95_stt_ms?: number;
+  p95_llm_ms?: number;
+  p95_tts_ms?: number;
+  mean_speech_duration_ms?: number;
+  bottleneck?: "stt" | "llm" | "tts";
+}
+
+interface FormattedCallMetadata {
+  platform: string;
+  ended_reason?: string;
+  cost_usd?: number;
+  cost_breakdown?: CostBreakdown;
+  recording_url?: string;
+  summary?: string;
+  success_evaluation?: string;
+  user_sentiment?: string;
+  call_successful?: boolean;
 }
 
 export interface FormattedConversationResult {
@@ -104,9 +124,11 @@ export interface FormattedConversationResult {
   transcript: FormattedTranscriptTurn[];
   latency: FormattedLatency | null;
   behavior: FormattedBehavior | null;
-  transcript_quality: TranscriptMetrics | null;
+  transcript_quality: Partial<TranscriptMetrics> | null;
   audio_analysis: FormattedAudioAnalysis | null;
   tool_calls: FormattedToolCalls;
+  component_latency: FormattedComponentLatency | null;
+  call_metadata: FormattedCallMetadata | null;
   warnings: string[];
   audio_actions: AudioActionResult[];
   emotion: FormattedEmotion | null;
@@ -128,9 +150,11 @@ export function formatConversationResult(raw: unknown): FormattedConversationRes
     transcript: formatTranscript(r.transcript),
     latency: r.metrics?.latency ? formatLatency(r.metrics.latency, r.metrics) : null,
     behavior: r.metrics?.behavioral ? formatBehavior(r.metrics.behavioral) : null,
-    transcript_quality: r.metrics?.transcript && hasContent(r.metrics.transcript) ? r.metrics.transcript : null,
+    transcript_quality: r.metrics?.transcript && hasContent(r.metrics.transcript) ? filterTranscriptMetrics(r.metrics.transcript) : null,
     audio_analysis: r.metrics?.audio_analysis ? formatAudioAnalysis(r.metrics.audio_analysis) : null,
     tool_calls: formatToolCalls(r.metrics?.tool_calls, r.observed_tool_calls),
+    component_latency: formatComponentLatency(r.metrics?.component_latency),
+    call_metadata: formatCallMetadata(r.call_metadata),
     warnings: [
       ...(r.metrics?.audio_analysis_warnings ?? []).map(w => w.message),
       ...(r.metrics?.prosody_warnings ?? []).map(w => w.message),
@@ -156,6 +180,8 @@ function formatTranscript(turns: ConversationTurn[] | undefined): FormattedTrans
     if (t.stt_confidence != null) turn.stt_confidence = t.stt_confidence;
     if (t.audio_duration_ms != null) turn.audio_duration_ms = t.audio_duration_ms;
     if (t.silence_pad_ms != null) turn.silence_pad_ms = t.silence_pad_ms;
+    if (t.component_latency) turn.component_latency = t.component_latency;
+    if (t.platform_transcript) turn.platform_transcript = t.platform_transcript;
     return turn;
   });
 }
@@ -218,8 +244,6 @@ function formatBehavior(b: BehavioralMetrics): FormattedBehavior | null {
 
   if (b.intent_accuracy) result.intent_accuracy = b.intent_accuracy;
   if (b.context_retention) result.context_retention = b.context_retention;
-  if (b.topic_drift) result.topic_drift = b.topic_drift;
-  if (b.empathy_score) result.empathy_score = b.empathy_score;
   if (b.hallucination_detected) result.hallucination_detected = b.hallucination_detected;
 
   // Merge compliance_adherence score into safety_compliance
@@ -236,15 +260,50 @@ function formatBehavior(b: BehavioralMetrics): FormattedBehavior | null {
   return hasContent(result) ? result : null;
 }
 
+function filterTranscriptMetrics(t: TranscriptMetrics): Partial<TranscriptMetrics> {
+  const { vocabulary_diversity, filler_word_rate, words_per_minute, ...kept } = t;
+  return kept;
+}
+
 function formatEmotion(prosody: ProsodyMetrics): FormattedEmotion {
   return {
-    mean_calmness: prosody.mean_calmness,
-    mean_confidence: prosody.mean_confidence,
-    peak_frustration: prosody.peak_frustration,
-    emotion_consistency: prosody.emotion_consistency,
-    naturalness: prosody.naturalness,
     emotion_trajectory: prosody.emotion_trajectory,
-    per_turn: prosody.per_turn,
+    peak_frustration: prosody.peak_frustration,
+  };
+}
+
+function formatComponentLatency(cl: ComponentLatencyMetrics | undefined): FormattedComponentLatency | null {
+  if (!cl) return null;
+  const speechDurations = cl.per_turn
+    .map((t) => t.speech_duration_ms)
+    .filter((v): v is number => v != null);
+  const meanSpeech = speechDurations.length > 0
+    ? Math.round(speechDurations.reduce((a, b) => a + b, 0) / speechDurations.length)
+    : undefined;
+  return {
+    mean_stt_ms: cl.mean_stt_ms,
+    mean_llm_ms: cl.mean_llm_ms,
+    mean_tts_ms: cl.mean_tts_ms,
+    p95_stt_ms: cl.p95_stt_ms,
+    p95_llm_ms: cl.p95_llm_ms,
+    p95_tts_ms: cl.p95_tts_ms,
+    mean_speech_duration_ms: meanSpeech,
+    bottleneck: cl.bottleneck,
+  };
+}
+
+function formatCallMetadata(meta: CallMetadata | undefined): FormattedCallMetadata | null {
+  if (!meta) return null;
+  return {
+    platform: meta.platform,
+    ended_reason: meta.ended_reason,
+    cost_usd: meta.cost_usd,
+    cost_breakdown: meta.cost_breakdown,
+    recording_url: meta.recording_url,
+    summary: meta.summary,
+    success_evaluation: meta.success_evaluation,
+    user_sentiment: meta.user_sentiment,
+    call_successful: meta.call_successful,
   };
 }
 

@@ -27,7 +27,8 @@ Test voice agents from the terminal. Tests run in the cloud (30-120s).
 4. List tests: `npx vent-hq run -f .vent/suite.json --list`
 5. Run each test individually as a separate parallel command:
    `npx vent-hq run -f .vent/suite.json --test <name>`
-6. After code changes, re-run the same way.
+6. After results return, **compare with previous run** — Vent saves full result JSON to `.vent/runs/` after every run. Read the second-most-recent JSON in `.vent/runs/` and compare against the current run: status flips (pass→fail), TTFW p50/p95 changes >20%, tool call count drops, cost increases >30%, transcript divergence. Correlate with `git diff` between the two runs' git SHAs. Skip if no previous run exists.
+7. After code changes, re-run the same way.
 
 ## Critical Rules
 
@@ -246,15 +247,12 @@ WebSocket/WebRTC/SIP: user's agent must emit tool calls:
   "behavior": {
     "intent_accuracy": { "score": 0.95, "reasoning": "..." },
     "context_retention": { "score": 0.9, "reasoning": "..." },
-    "topic_drift": { "score": 0.05, "reasoning": "..." },
-    "empathy_score": { "score": 0.7, "reasoning": "..." },
     "hallucination_detected": { "detected": false, "reasoning": "..." },
     "safety_compliance": { "compliant": true, "score": 0.95, "reasoning": "..." },
     "escalation_handling": { "triggered": false, "handled_appropriately": true, "score": 1.0, "reasoning": "..." }
   },
   "transcript_quality": {
-    "wer": 0.04, "repetition_score": 0.05, "reprompt_count": 0,
-    "filler_word_rate": 0.01, "words_per_minute": 152, "vocabulary_diversity": 0.78
+    "wer": 0.04, "repetition_score": 0.05, "reprompt_count": 0
   },
   "audio_analysis": {
     "agent_speech_ratio": 0.72, "talk_ratio_vad": 0.42,
@@ -271,9 +269,7 @@ WebSocket/WebRTC/SIP: user's agent must emit tool calls:
     { "at_turn": 5, "action": "silence", "metrics": { "agent_prompted": false, "unprompted_utterance_count": 0, "silence_duration_ms": 8000 } }
   ],
   "emotion": {
-    "mean_calmness": 0.72, "mean_confidence": 0.68, "peak_frustration": 0.08,
-    "emotion_consistency": 0.82, "naturalness": 0.76, "emotion_trajectory": "stable",
-    "per_turn": [{ "turn_index": 1, "emotions": { "Calmness": 0.78, "Confidence": 0.71 }, "calmness": 0.72, "confidence": 0.63, "frustration": 0.02, "warmth": 0.29, "uncertainty": 0.04 }]
+    "emotion_trajectory": "stable", "peak_frustration": 0.08
   }
 }
 

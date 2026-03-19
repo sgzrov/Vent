@@ -15,6 +15,7 @@ export { WsAudioChannel } from "./ws-audio-channel.js";
 export { WebRtcAudioChannel } from "./webrtc-audio-channel.js";
 export { SipAudioChannel } from "./sip-audio-channel.js";
 export { VapiAudioChannel } from "./vapi-audio-channel.js";
+export type { VapiAssistantConfig } from "./vapi-audio-channel.js";
 export { RetellAudioChannel } from "./retell-audio-channel.js";
 export { ElevenLabsAudioChannel } from "./elevenlabs-audio-channel.js";
 export { BlandAudioChannel } from "./bland-audio-channel.js";

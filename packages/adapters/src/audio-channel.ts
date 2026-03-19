@@ -10,7 +10,7 @@
  */
 
 import { EventEmitter } from "node:events";
-import type { ObservedToolCall, ChannelStats } from "@vent/shared";
+import type { ObservedToolCall, ChannelStats, CallMetadata, ComponentLatency } from "@vent/shared";
 
 export interface AudioChannelEvents {
   audio: (chunk: Buffer) => void;
@@ -28,6 +28,12 @@ export interface AudioChannel {
 
   /** Get tool call data after call ends. Platform adapters pull from API, websocket returns collected events. */
   getCallData?(): Promise<ObservedToolCall[]>;
+  /** Get platform call metadata (cost, ended reason, recording, analysis) after call ends. */
+  getCallMetadata?(): Promise<CallMetadata | null>;
+  /** Get per-turn component latency breakdown (STT/LLM/TTS) from platform events. */
+  getComponentTimings?(): ComponentLatency[];
+  /** Get platform's own STT transcripts for cross-referencing with Vent's STT. */
+  getTranscripts?(): Array<{ turnIndex: number; text: string }>;
 
   on<E extends keyof AudioChannelEvents>(event: E, listener: AudioChannelEvents[E]): this;
   off<E extends keyof AudioChannelEvents>(event: E, listener: AudioChannelEvents[E]): this;
