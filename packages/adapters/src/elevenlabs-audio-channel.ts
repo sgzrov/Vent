@@ -2,14 +2,18 @@
  * ElevenLabs Conversational AI Audio Channel
  *
  * Connects to ElevenLabs' Conversational AI via WebSocket, exchanges
- * base64-encoded audio, and pulls tool call data after via their REST API.
+ * base64-encoded audio, and pulls tool call data after via their SDK.
  *
  * ElevenLabs uses 16kHz PCM audio encoded as base64 in JSON messages.
  * We convert between 24kHz (our standard) and 16kHz (ElevenLabs' format).
+ *
+ * Post-call data (tool calls, metadata, latency) fetched via SDK
+ * client.conversationalAi.conversations.get().
  */
 
 import WebSocket from "ws";
-import type { ObservedToolCall } from "@vent/shared";
+import { ElevenLabsClient } from "@elevenlabs/elevenlabs-js";
+import type { ObservedToolCall, CallMetadata, ComponentLatency, CostBreakdown } from "@vent/shared";
 import { resample } from "@vent/voice";
 import { BaseAudioChannel } from "./audio-channel.js";
 
@@ -29,36 +33,17 @@ interface ElevenLabsServerMessage {
   user_input_audio_format?: string;
 }
 
-interface ElevenLabsConversationMessage {
-  role: string;
-  message?: string;
-  tool_calls?: Array<{
-    name: string;
-    params?: Record<string, unknown>;
-    tool_call_id?: string;
-  }>;
-  tool_results?: Array<{
-    tool_call_id?: string;
-    result?: unknown;
-    error?: string;
-  }>;
-  time_in_call_secs?: number;
-}
-
-interface ElevenLabsConversationResponse {
-  conversation_id: string;
-  status: string;
-  transcript?: ElevenLabsConversationMessage[];
-}
-
 export class ElevenLabsAudioChannel extends BaseAudioChannel {
   private config: ElevenLabsAudioChannelConfig;
+  private client: ElevenLabsClient;
   private ws: WebSocket | null = null;
   private conversationId: string | null = null;
+  private cachedConversation: Record<string, unknown> | null = null;
 
   constructor(config: ElevenLabsAudioChannelConfig) {
     super();
     this.config = config;
+    this.client = new ElevenLabsClient({ apiKey: config.apiKey });
   }
 
   get connected(): boolean {
@@ -150,22 +135,107 @@ export class ElevenLabsAudioChannel extends BaseAudioChannel {
   }
 
   async getCallData(): Promise<ObservedToolCall[]> {
-    if (!this.conversationId) return [];
-
-    // Wait for ElevenLabs to process the conversation data
-    await sleep(2000);
-
-    const res = await fetch(
-      `https://api.elevenlabs.io/v1/convai/conversations/${this.conversationId}`,
-      {
-        headers: { "xi-api-key": this.config.apiKey },
-      },
-    );
-
-    if (!res.ok) return [];
-
-    const data = (await res.json()) as ElevenLabsConversationResponse;
+    const data = await this.fetchConversation();
+    if (!data) return [];
     return this.parseToolCalls(data);
+  }
+
+  async getCallMetadata(): Promise<CallMetadata | null> {
+    const data = await this.fetchConversation();
+    if (!data) return null;
+
+    const meta = data.metadata as Record<string, unknown> | undefined;
+    const charging = meta?.charging as Record<string, unknown> | undefined;
+    const analysis = data.analysis as Record<string, unknown> | undefined;
+
+    // ElevenLabs cost unit is undocumented — llm_price appears to be USD,
+    // call_charge unit is unclear. Pass through what we can.
+    const costBreakdown: CostBreakdown | undefined = charging ? {
+      llm_usd: charging.llmPrice as number | undefined,
+    } : undefined;
+
+    const callSuccessful = analysis?.callSuccessful as string | undefined;
+
+    return {
+      platform: "elevenlabs",
+      ended_reason: meta?.terminationReason as string | undefined,
+      duration_s: meta?.callDurationSecs as number | undefined,
+      cost_breakdown: costBreakdown,
+      summary: analysis?.transcriptSummary as string | undefined,
+      call_successful: callSuccessful === "success" ? true
+        : callSuccessful === "failure" ? false : undefined,
+    };
+  }
+
+  getComponentTimings(): ComponentLatency[] {
+    const data = this.cachedConversation;
+    const transcript = data?.transcript as Array<Record<string, unknown>> | undefined;
+    if (!transcript) return [];
+
+    const timings: ComponentLatency[] = [];
+    for (const msg of transcript) {
+      if (msg.role !== "agent") continue;
+      const turnMetrics = msg.conversationTurnMetrics as Record<string, unknown> | undefined;
+      const metrics = turnMetrics?.metrics as Record<string, { elapsedTime?: number }> | undefined;
+      if (!metrics) continue;
+
+      // ElevenLabs metric keys are free-form (e.g. "convai_llm_service_ttfb").
+      // Match by substring to handle varying key names.
+      let llmMs: number | undefined;
+      for (const [key, val] of Object.entries(metrics)) {
+        if (key.includes("llm") && key.includes("ttfb") && val.elapsedTime != null) {
+          llmMs = val.elapsedTime * 1000;
+        }
+      }
+
+      if (llmMs != null) {
+        timings.push({ llm_ms: llmMs });
+      }
+    }
+    return timings;
+  }
+
+  getTranscripts(): Array<{ turnIndex: number; text: string }> {
+    const data = this.cachedConversation;
+    const transcript = data?.transcript as Array<Record<string, unknown>> | undefined;
+    if (!transcript) return [];
+
+    const transcripts: Array<{ turnIndex: number; text: string }> = [];
+    let callerTurnIndex = 0;
+    for (const msg of transcript) {
+      if (msg.role === "user" && typeof msg.message === "string") {
+        transcripts.push({ turnIndex: callerTurnIndex, text: msg.message });
+        callerTurnIndex++;
+      } else if (msg.role === "agent") {
+        callerTurnIndex++;
+      }
+    }
+    return transcripts;
+  }
+
+  // ── Private helpers ─────────────────────────────────────────
+
+  private async fetchConversation(): Promise<Record<string, unknown> | null> {
+    if (this.cachedConversation) return this.cachedConversation;
+    if (!this.conversationId) return null;
+
+    // Poll with backoff — ElevenLabs transitions through "processing" before "done"
+    const delays = [500, 1000, 2000];
+    for (const delay of delays) {
+      await sleep(delay);
+      try {
+        const data = await this.client.conversationalAi.conversations.get(this.conversationId) as unknown as Record<string, unknown>;
+        const status = data.status as string | undefined;
+        const transcript = data.transcript as unknown[] | undefined;
+        if (status === "done" || status === "failed" || (transcript && transcript.length > 0)) {
+          this.cachedConversation = data;
+          return data;
+        }
+      } catch {
+        continue;
+      }
+    }
+    return null;
   }
 
   private handleServerMessage(msg: ElevenLabsServerMessage): void {
@@ -178,20 +248,24 @@ export class ElevenLabsAudioChannel extends BaseAudioChannel {
     }
   }
 
-  private parseToolCalls(data: ElevenLabsConversationResponse): ObservedToolCall[] {
-    const messages = data.transcript ?? [];
+  private parseToolCalls(data: Record<string, unknown>): ObservedToolCall[] {
+    const messages = data.transcript as Array<Record<string, unknown>> | undefined;
+    if (!messages) return [];
+
     const toolCalls: ObservedToolCall[] = [];
 
     // Build result map keyed by tool_call_id
     const resultMap = new Map<string, { result?: unknown; error?: string; time?: number }>();
     for (const msg of messages) {
-      if (msg.tool_results) {
-        for (const tr of msg.tool_results) {
-          if (tr.tool_call_id) {
-            resultMap.set(tr.tool_call_id, {
+      const toolResults = msg.toolResults as Array<Record<string, unknown>> | undefined;
+      if (toolResults) {
+        for (const tr of toolResults) {
+          const id = tr.toolCallId as string | undefined;
+          if (id) {
+            resultMap.set(id, {
               result: tr.result,
-              error: tr.error,
-              time: msg.time_in_call_secs,
+              error: tr.error as string | undefined,
+              time: msg.timeInCallSecs as number | undefined,
             });
           }
         }
@@ -199,24 +273,28 @@ export class ElevenLabsAudioChannel extends BaseAudioChannel {
     }
 
     for (const msg of messages) {
-      if (msg.tool_calls) {
-        for (const tc of msg.tool_calls) {
-          const resultEntry = tc.tool_call_id ? resultMap.get(tc.tool_call_id) : undefined;
-          const timestampMs = msg.time_in_call_secs != null ? msg.time_in_call_secs * 1000 : undefined;
-          const resultTimeMs = resultEntry?.time != null ? resultEntry.time * 1000 : undefined;
+      const tcs = msg.toolCalls as Array<Record<string, unknown>> | undefined;
+      if (!tcs) continue;
 
-          toolCalls.push({
-            name: tc.name,
-            arguments: tc.params ?? {},
-            result: resultEntry?.result,
-            successful: resultEntry ? !resultEntry.error : undefined,
-            timestamp_ms: timestampMs,
-            latency_ms:
-              timestampMs != null && resultTimeMs != null
-                ? resultTimeMs - timestampMs
-                : undefined,
-          });
-        }
+      for (const tc of tcs) {
+        const name = tc.name as string;
+        const params = tc.params as Record<string, unknown> | undefined;
+        const toolCallId = tc.toolCallId as string | undefined;
+        const resultEntry = toolCallId ? resultMap.get(toolCallId) : undefined;
+        const timestampMs = msg.timeInCallSecs != null ? (msg.timeInCallSecs as number) * 1000 : undefined;
+        const resultTimeMs = resultEntry?.time != null ? resultEntry.time * 1000 : undefined;
+
+        toolCalls.push({
+          name,
+          arguments: params ?? {},
+          result: resultEntry?.result,
+          successful: resultEntry ? !resultEntry.error : undefined,
+          timestamp_ms: timestampMs,
+          latency_ms:
+            timestampMs != null && resultTimeMs != null
+              ? resultTimeMs - timestampMs
+              : undefined,
+        });
       }
     }
 
