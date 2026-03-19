@@ -19,6 +19,8 @@ import type {
   ObservedToolCall,
   ToolCallMetrics,
   AudioActionResult,
+  ComponentLatency,
+  ComponentLatencyMetrics,
 } from "@vent/shared";
 import { synthesize, TTSSession, BatchVAD, VoiceActivityDetector, StreamingTranscriber, applyEffects, resolveAccentVoiceId, resolveLanguageVoiceId, analyzeAudioQuality, type AudioQualityMetrics } from "@vent/voice";
 import { CallerLLM } from "./caller-llm.js";
@@ -371,6 +373,76 @@ export async function runConversationTest(
       };
     }
 
+    // Step 8: Collect platform component latency (STT/LLM/TTS per turn)
+    const rawComponentTimings = channel.getComponentTimings?.() ?? [];
+    let componentLatencyMetrics: ComponentLatencyMetrics | undefined;
+    if (rawComponentTimings.length > 0) {
+      // Merge per-turn component latency into transcript turns
+      for (let i = 0; i < rawComponentTimings.length && i < transcript.length; i++) {
+        const timing = rawComponentTimings[i];
+        if (timing && (timing.stt_ms != null || timing.llm_ms != null || timing.tts_ms != null)) {
+          // Find the corresponding agent turn (component latency maps to agent responses)
+          const agentTurnIdx = transcript.findIndex((t, idx) => idx > 0 && t.role === "agent" && Math.floor(idx / 2) === i);
+          if (agentTurnIdx >= 0) {
+            transcript[agentTurnIdx]!.component_latency = timing;
+          }
+        }
+      }
+
+      // Compute aggregate component latency metrics
+      const sttValues = rawComponentTimings.map((t: ComponentLatency) => t.stt_ms).filter((v: number | undefined): v is number => v != null);
+      const llmValues = rawComponentTimings.map((t: ComponentLatency) => t.llm_ms).filter((v: number | undefined): v is number => v != null);
+      const ttsValues = rawComponentTimings.map((t: ComponentLatency) => t.tts_ms).filter((v: number | undefined): v is number => v != null);
+
+      const mean = (arr: number[]) => arr.length > 0 ? Math.round(arr.reduce((a, b) => a + b, 0) / arr.length) : undefined;
+      const p95 = (arr: number[]) => {
+        if (arr.length === 0) return undefined;
+        const sorted = [...arr].sort((a, b) => a - b);
+        return Math.round(sorted[Math.min(Math.floor(sorted.length * 0.95), sorted.length - 1)]!);
+      };
+
+      const meanStt = mean(sttValues);
+      const meanLlm = mean(llmValues);
+      const meanTts = mean(ttsValues);
+
+      // Determine bottleneck from mean values
+      let bottleneck: "stt" | "llm" | "tts" | undefined;
+      if (meanStt != null && meanLlm != null && meanTts != null) {
+        const max = Math.max(meanStt, meanLlm, meanTts);
+        if (max === meanLlm) bottleneck = "llm";
+        else if (max === meanStt) bottleneck = "stt";
+        else bottleneck = "tts";
+      }
+
+      componentLatencyMetrics = {
+        per_turn: rawComponentTimings,
+        mean_stt_ms: meanStt,
+        mean_llm_ms: meanLlm,
+        mean_tts_ms: meanTts,
+        p95_stt_ms: p95(sttValues),
+        p95_llm_ms: p95(llmValues),
+        p95_tts_ms: p95(ttsValues),
+        bottleneck,
+      };
+      console.log(`    Component latency: STT=${meanStt ?? "?"}ms LLM=${meanLlm ?? "?"}ms TTS=${meanTts ?? "?"}ms [bottleneck: ${bottleneck ?? "unknown"}]`);
+    }
+
+    // Step 8b: Merge platform STT transcripts for cross-referencing
+    const platformTranscripts = channel.getTranscripts?.() ?? [];
+    for (const pt of platformTranscripts) {
+      // Platform transcripts map to caller turns (user speech → platform STT)
+      const callerTurns = transcript.filter((t) => t.role === "caller");
+      if (pt.turnIndex < callerTurns.length) {
+        callerTurns[pt.turnIndex]!.platform_transcript = pt.text;
+      }
+    }
+
+    // Step 9: Collect platform call metadata (cost, ended reason, recording, analysis)
+    const callMetadata = await channel.getCallMetadata?.() ?? null;
+    if (callMetadata) {
+      console.log(`    Call metadata: ended_reason=${callMetadata.ended_reason ?? "unknown"}, cost=$${callMetadata.cost_usd?.toFixed(4) ?? "n/a"}`);
+    }
+
     // Grade audio analysis metrics (informational warnings)
     const audioAnalysisWarnings = audio_analysis
       ? gradeAudioAnalysisMetrics(audio_analysis)
@@ -414,6 +486,7 @@ export async function runConversationTest(
       prosody: prosodyResult?.metrics,
       prosody_warnings: prosodyResult?.warnings?.length ? prosodyResult.warnings : undefined,
       harness_overhead,
+      component_latency: componentLatencyMetrics,
     };
 
     return {
@@ -426,6 +499,7 @@ export async function runConversationTest(
       audio_action_results: audioActionResults.length > 0 ? audioActionResults : undefined,
       duration_ms: totalDurationMs,
       metrics,
+      call_metadata: callMetadata ?? undefined,
     };
   } finally {
     await ttsSession.close();
