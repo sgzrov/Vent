@@ -124,9 +124,9 @@
 .stagger-children > *:nth-child(9) { animation-delay: 400ms; }
 .stagger-children > *:nth-child(10) { animation-delay: 450ms; }
 
-/* Serif font for "Light" */
+/* Serif font for branding */
 .font-cursive {
-  font-family: 'Times New Roman', Times, serif;
+  font-family: 'Times New Roman', Times, serif !important;
   font-style: italic;
 }
 
@@ -153,5 +153,6 @@
   stroke-dashoffset: 200;
   animation: draw-underline 1.2s ease-out 0.5s forwards;
 }
+
 
 

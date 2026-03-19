@@ -15,14 +15,15 @@ export function CopyCommandButton({ command }: { command: string }) {
   return (
     <button
       onClick={handleCopy}
-      className="group flex items-center gap-3 bg-zinc-900 text-zinc-100 rounded-lg px-4 py-3 font-mono text-sm hover:bg-zinc-800 transition-colors w-fit cursor-pointer"
+      className="group flex items-center gap-3 border border-border bg-transparent rounded-none px-4 py-3 text-sm hover:border-border transition-colors w-fit cursor-pointer"
+      style={{ fontFamily: "var(--font-heading)" }}
     >
-      <span className="text-zinc-500 select-none">$</span>
-      <span>{command}</span>
+      <span className="text-muted-foreground/50 select-none">&gt;</span>
+      <span className="text-foreground/80">{command}</span>
       {copied ? (
         <Check className="h-4 w-4 text-green-400 ml-2" />
       ) : (
-        <Copy className="h-4 w-4 text-zinc-500 group-hover:text-zinc-300 transition-colors ml-2" />
+        <Copy className="h-4 w-4 text-muted-foreground/40 group-hover:text-muted-foreground transition-colors ml-2" />
       )}
     </button>
   );
