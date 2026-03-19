@@ -189,6 +189,12 @@ export const ConversationTurnSchema = z.object({
   stt_confidence: z.number().optional(),
   tts_ms: z.number().optional(),
   stt_ms: z.number().optional(),
+  component_latency: z.object({
+    stt_ms: z.number().optional(),
+    llm_ms: z.number().optional(),
+    tts_ms: z.number().optional(),
+  }).optional(),
+  platform_transcript: z.string().optional(),
 });
 
 // ============================================================
@@ -308,6 +314,48 @@ export const SignalQualityMetricsSchema = z.object({
   f0_hz: z.number(),
 });
 
+export const ComponentLatencySchema = z.object({
+  stt_ms: z.number().optional(),
+  llm_ms: z.number().optional(),
+  tts_ms: z.number().optional(),
+  speech_duration_ms: z.number().optional(),
+});
+
+export const ComponentLatencyMetricsSchema = z.object({
+  per_turn: z.array(ComponentLatencySchema),
+  mean_stt_ms: z.number().optional(),
+  mean_llm_ms: z.number().optional(),
+  mean_tts_ms: z.number().optional(),
+  p95_stt_ms: z.number().optional(),
+  p95_llm_ms: z.number().optional(),
+  p95_tts_ms: z.number().optional(),
+  bottleneck: z.enum(["stt", "llm", "tts"]).optional(),
+});
+
+export const CostBreakdownSchema = z.object({
+  stt_usd: z.number().optional(),
+  llm_usd: z.number().optional(),
+  tts_usd: z.number().optional(),
+  transport_usd: z.number().optional(),
+  platform_usd: z.number().optional(),
+  total_usd: z.number().optional(),
+  llm_prompt_tokens: z.number().int().optional(),
+  llm_completion_tokens: z.number().int().optional(),
+});
+
+export const CallMetadataSchema = z.object({
+  platform: z.string(),
+  ended_reason: z.string().optional(),
+  duration_s: z.number().optional(),
+  cost_usd: z.number().optional(),
+  cost_breakdown: CostBreakdownSchema.optional(),
+  recording_url: z.string().optional(),
+  summary: z.string().optional(),
+  success_evaluation: z.string().optional(),
+  user_sentiment: z.string().optional(),
+  call_successful: z.boolean().optional(),
+});
+
 export const ConversationMetricsSchema = z.object({
   mean_ttfb_ms: z.number(),
   mean_ttfw_ms: z.number().optional(),
@@ -321,6 +369,7 @@ export const ConversationMetricsSchema = z.object({
   prosody: ProsodyMetricsSchema.optional(),
   prosody_warnings: z.array(ProsodyWarningSchema).optional(),
   harness_overhead: HarnessOverheadSchema.optional(),
+  component_latency: ComponentLatencyMetricsSchema.optional(),
 });
 
 export const AudioTestResultSchema = z.object({
@@ -344,6 +393,7 @@ export const ConversationTestResultSchema = z.object({
   duration_ms: z.number(),
   metrics: ConversationMetricsSchema,
   error: z.string().optional(),
+  call_metadata: CallMetadataSchema.optional(),
 });
 
 export const RunAggregateV2Schema = z.object({
@@ -363,6 +413,7 @@ export const RunAggregateV2Schema = z.object({
     failed: z.number(),
   }).optional(),
   total_duration_ms: z.number(),
+  total_cost_usd: z.number().optional(),
 });
 
 export const RunnerCallbackV2Schema = z.object({
