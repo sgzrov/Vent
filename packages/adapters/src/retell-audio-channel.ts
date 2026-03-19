@@ -2,17 +2,22 @@
  * Retell Audio Channel
  *
  * Composes a SipAudioChannel (inbound mode) for bidirectional audio
- * with Retell's REST API for call creation and tool call extraction.
+ * with Retell's SDK for call creation and post-call data extraction.
  *
  * Flow:
  *   1. connect()  — sets up Twilio inbound, then asks Retell to call us
- *      via POST /v2/create-phone-call → call_id known immediately
+ *      via SDK createPhoneCall → call_id known immediately
  *   2. sendAudio() / on("audio") — bidirectional PCM 24kHz over SIP
  *   3. disconnect() — hangs up the SIP call
- *   4. getCallData() — fetches tool calls from GET /v2/get-call/{call_id}
+ *   4. getCallData() — fetches tool calls from SDK call.retrieve()
+ *   5. getCallMetadata() — cost, latency, recording, analysis
+ *   6. getComponentTimings() — STT/LLM/TTS latency with full percentiles
+ *   7. getTranscripts() — platform STT transcripts for cross-referencing
  */
 
-import type { ObservedToolCall } from "@vent/shared";
+import Retell from "retell-sdk";
+import type { CallResponse } from "retell-sdk/resources/call.js";
+import type { ObservedToolCall, CallMetadata, ComponentLatency, CostBreakdown } from "@vent/shared";
 import { BaseAudioChannel } from "./audio-channel.js";
 import { SipAudioChannel, type SipAudioChannelConfig } from "./sip-audio-channel.js";
 
@@ -22,52 +27,17 @@ export interface RetellAudioChannelConfig {
   sip: SipAudioChannelConfig;
 }
 
-interface RetellToolCallInvocation {
-  role: "tool_call_invocation";
-  tool_call_id: string;
-  name: string;
-  arguments: string;
-}
-
-interface RetellToolCallResult {
-  role: "tool_call_result";
-  tool_call_id: string;
-  content: string;
-  successful: boolean;
-}
-
-interface RetellUtterance {
-  role: "agent" | "user";
-  content: string;
-  words?: Array<{ word: string; start: number; end: number }>;
-}
-
-type RetellTranscriptEntry =
-  | RetellUtterance
-  | RetellToolCallInvocation
-  | RetellToolCallResult;
-
-interface RetellCallResponse {
-  call_id: string;
-  call_status: string;
-  transcript_with_tool_calls?: RetellTranscriptEntry[];
-  start_timestamp?: number;
-  end_timestamp?: number;
-}
-
-interface RetellCreateCallResponse {
-  call_id: string;
-  call_status: string;
-}
-
 export class RetellAudioChannel extends BaseAudioChannel {
   private config: RetellAudioChannelConfig;
+  private client: Retell;
   private sipChannel: SipAudioChannel | null = null;
   private callId: string | null = null;
+  private cachedCallResponse: CallResponse | null = null;
 
   constructor(config: RetellAudioChannelConfig) {
     super();
     this.config = config;
+    this.client = new Retell({ apiKey: config.apiKey });
   }
 
   get connected(): boolean {
@@ -93,25 +63,12 @@ export class RetellAudioChannel extends BaseAudioChannel {
     await this.sipChannel.connect();
 
     // Ask Retell to call our Twilio number — call_id returned immediately
-    const res = await fetch("https://api.retellai.com/v2/create-phone-call", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${this.config.apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        from_number: this.config.sip.phoneNumber,
-        to_number: this.config.sip.fromNumber,
-      }),
+    const call = await this.client.call.createPhoneCall({
+      from_number: this.config.sip.phoneNumber,
+      to_number: this.config.sip.fromNumber,
     });
 
-    if (!res.ok) {
-      const errorText = await res.text();
-      throw new Error(`Retell create-phone-call failed (${res.status}): ${errorText}`);
-    }
-
-    const data = (await res.json()) as RetellCreateCallResponse;
-    this.callId = data.call_id;
+    this.callId = call.call_id;
     this._stats.connectLatencyMs = Date.now() - connectStart;
   }
 
@@ -131,30 +88,115 @@ export class RetellAudioChannel extends BaseAudioChannel {
   }
 
   async getCallData(): Promise<ObservedToolCall[]> {
-    if (!this.callId) return [];
-
-    // Wait for Retell to process the call data
-    await sleep(2000);
-
-    const res = await fetch(`https://api.retellai.com/v2/get-call/${this.callId}`, {
-      headers: { Authorization: `Bearer ${this.config.apiKey}` },
-    });
-
-    if (!res.ok) return [];
-
-    const data = (await res.json()) as RetellCallResponse;
+    const data = await this.fetchCallResponse();
+    if (!data) return [];
     return this.parseToolCalls(data);
   }
 
-  private parseToolCalls(data: RetellCallResponse): ObservedToolCall[] {
+  async getCallMetadata(): Promise<CallMetadata | null> {
+    const data = await this.fetchCallResponse();
+    if (!data) return null;
+
+    const cost = data.call_cost as { combined_cost?: number; product_costs?: Array<{ product: string; cost: number }> } | undefined;
+
+    return {
+      platform: "retell",
+      ended_reason: data.disconnection_reason ?? undefined,
+      duration_s: data.duration_ms != null ? data.duration_ms / 1000 : undefined,
+      cost_usd: cost?.combined_cost != null ? cost.combined_cost / 100 : undefined,
+      cost_breakdown: cost?.product_costs ? buildRetellCostBreakdown(cost.product_costs) : undefined,
+      recording_url: data.recording_url ?? undefined,
+      summary: data.call_analysis?.call_summary ?? undefined,
+      user_sentiment: data.call_analysis?.user_sentiment ?? undefined,
+      call_successful: data.call_analysis?.call_successful ?? undefined,
+    };
+  }
+
+  getComponentTimings(): ComponentLatency[] {
+    const data = this.cachedCallResponse;
+    if (!data?.latency) return [];
+
+    // Retell provides aggregate latency stats (not per-turn).
+    // Return a single entry with p50 values for the executor's component latency report.
+    const lat = data.latency as Record<string, { p50?: number; p90?: number; p95?: number; p99?: number } | undefined>;
+    return [{
+      stt_ms: lat.asr?.p50,
+      llm_ms: lat.llm?.p50,
+      tts_ms: lat.tts?.p50,
+    }];
+  }
+
+  /** Full latency percentiles from Retell — richer than ComponentLatency */
+  getRetellLatency(): Record<string, { p50?: number; p90?: number; p95?: number; p99?: number }> | null {
+    const data = this.cachedCallResponse;
+    if (!data?.latency) return null;
+
+    const result: Record<string, { p50?: number; p90?: number; p95?: number; p99?: number }> = {};
+    const lat = data.latency as Record<string, { p50?: number; p90?: number; p95?: number; p99?: number } | undefined>;
+    for (const key of ["e2e", "asr", "llm", "tts", "knowledge_base", "s2s"]) {
+      if (lat[key]) {
+        result[key] = {
+          p50: lat[key]!.p50,
+          p90: lat[key]!.p90,
+          p95: lat[key]!.p95,
+          p99: lat[key]!.p99,
+        };
+      }
+    }
+    return Object.keys(result).length > 0 ? result : null;
+  }
+
+  getTranscripts(): Array<{ turnIndex: number; text: string }> {
+    const data = this.cachedCallResponse;
+    const entries = data?.transcript_with_tool_calls;
+    if (!entries) return [];
+
+    const transcripts: Array<{ turnIndex: number; text: string }> = [];
+    let callerTurnIndex = 0;
+    for (const entry of entries) {
+      if (entry.role === "user" && "content" in entry) {
+        transcripts.push({ turnIndex: callerTurnIndex, text: entry.content });
+        callerTurnIndex++;
+      } else if (entry.role === "agent") {
+        callerTurnIndex++;
+      }
+    }
+    return transcripts;
+  }
+
+  // ── Private helpers ─────────────────────────────────────────
+
+  private async fetchCallResponse(): Promise<CallResponse | null> {
+    if (this.cachedCallResponse) return this.cachedCallResponse;
+    if (!this.callId) return null;
+
+    // Poll with backoff — Retell needs time to process call data after disconnect
+    const delays = [500, 1000, 2000];
+    for (const delay of delays) {
+      await sleep(delay);
+      try {
+        const data = await this.client.call.retrieve(this.callId);
+        if (data.call_status === "ended" || data.call_status === "error" || data.transcript_with_tool_calls) {
+          this.cachedCallResponse = data;
+          return data;
+        }
+      } catch {
+        continue;
+      }
+    }
+
+    return null;
+  }
+
+  private parseToolCalls(data: CallResponse): ObservedToolCall[] {
     const entries = data.transcript_with_tool_calls ?? [];
     const toolCalls: ObservedToolCall[] = [];
 
     // Build a map of results keyed by tool_call_id
-    const resultMap = new Map<string, RetellToolCallResult>();
+    const resultMap = new Map<string, { content: string; successful?: boolean }>();
     for (const entry of entries) {
       if (entry.role === "tool_call_result") {
-        resultMap.set(entry.tool_call_id, entry);
+        resultMap.set(entry.tool_call_id, { content: entry.content, successful: entry.successful });
       }
     }
 
@@ -188,6 +230,29 @@ export class RetellAudioChannel extends BaseAudioChannel {
 
     return toolCalls;
   }
+}
+
+function buildRetellCostBreakdown(products: Array<{ product: string; cost: number }>): CostBreakdown {
+  const breakdown: CostBreakdown = {};
+  let total = 0;
+  for (const p of products) {
+    const usd = p.cost / 100;
+    total += usd;
+    const name = p.product.toLowerCase();
+    if (name.includes("stt") || name.includes("asr") || name.includes("deepgram") || name.includes("whisper")) {
+      breakdown.stt_usd = (breakdown.stt_usd ?? 0) + usd;
+    } else if (name.includes("tts") || name.includes("elevenlabs") || name.includes("playht") || name.includes("cartesia")) {
+      breakdown.tts_usd = (breakdown.tts_usd ?? 0) + usd;
+    } else if (name.includes("llm") || name.includes("gpt") || name.includes("claude") || name.includes("openai")) {
+      breakdown.llm_usd = (breakdown.llm_usd ?? 0) + usd;
+    } else if (name.includes("transport") || name.includes("telephony") || name.includes("twilio")) {
+      breakdown.transport_usd = (breakdown.transport_usd ?? 0) + usd;
+    } else if (name.includes("retell") || name.includes("platform")) {
+      breakdown.platform_usd = (breakdown.platform_usd ?? 0) + usd;
+    }
+  }
+  breakdown.total_usd = total;
+  return breakdown;
 }
 
 function sleep(ms: number): Promise<void> {
