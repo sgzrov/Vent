@@ -48,8 +48,7 @@ export function AgentCarousel() {
   }, []);
 
   return (
-    <div className="flex items-center gap-2 text-sm text-muted-foreground/70">
-      <span className="inline-block w-1.5 h-1.5 rounded-full bg-green-500 shrink-0" />
+    <div className="flex items-center gap-2 text-sm text-muted-foreground/70" style={{ fontFamily: "var(--font-heading)", fontWeight: 300 }}>
       <span>Available with</span>
       <span className="inline-flex items-center gap-1.5 min-w-[120px]">
         <span className="relative w-4 h-4">
