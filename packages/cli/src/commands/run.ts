@@ -6,6 +6,7 @@ import { streamRunEvents } from "../lib/sse.js";
 import { startRelay } from "../lib/relay.js";
 import { printEvent, printError, printInfo, printSummary, debug, setVerbose } from "../lib/output.js";
 import { loadApiKey } from "../lib/config.js";
+import { saveRunHistory } from "../lib/run-history.js";
 import type { RelayHandle } from "../lib/relay.js";
 import type { SSEEvent } from "../lib/sse.js";
 
@@ -241,6 +242,15 @@ export async function runCommand(args: RunArgs): Promise<number> {
       }) + "\n");
     } catch {
       process.stdout.write(JSON.stringify({ run_id, status: "error" }) + "\n");
+    }
+  }
+
+  // 8. Save run history locally
+  if (runCompleteData) {
+    const savedPath = await saveRunHistory(run_id, testResults, runCompleteData);
+    if (savedPath) {
+      debug(`run saved to ${savedPath}`);
+      printInfo(`Run saved to ${savedPath}`);
     }
   }
 

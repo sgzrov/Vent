@@ -1,0 +1,81 @@
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
+import { execSync } from "node:child_process";
+import type { SSEEvent } from "./sse.js";
+
+interface RunHistoryEntry {
+  run_id: string;
+  timestamp: string;
+  git_sha: string | null;
+  git_branch: string | null;
+  git_dirty: boolean;
+  summary: {
+    status: string;
+    tests_total: number;
+    tests_passed: number;
+    tests_failed: number;
+    total_duration_ms?: number;
+    total_cost_usd?: number;
+  };
+  test_results: Array<Record<string, unknown>>;
+}
+
+function gitInfo(): { sha: string | null; branch: string | null; dirty: boolean } {
+  try {
+    const sha = execSync("git rev-parse HEAD", { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
+    const branch = execSync("git branch --show-current", { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim() || null;
+    const status = execSync("git status --porcelain", { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
+    return { sha, branch, dirty: status.length > 0 };
+  } catch {
+    return { sha: null, branch: null, dirty: false };
+  }
+}
+
+export async function saveRunHistory(
+  runId: string,
+  testResults: SSEEvent[],
+  runCompleteData: Record<string, unknown>,
+): Promise<string | null> {
+  try {
+    const dir = path.join(process.cwd(), ".vent", "runs");
+    await fs.mkdir(dir, { recursive: true });
+
+    const git = gitInfo();
+    const now = new Date();
+    const timestamp = now.toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    const shortId = runId.slice(0, 8);
+
+    const aggregate = runCompleteData.aggregate as Record<string, unknown> | undefined;
+    const convTests = aggregate?.conversation_tests as { total?: number; passed?: number; failed?: number } | undefined;
+    const redTests = aggregate?.red_team_tests as { total?: number; passed?: number; failed?: number } | undefined;
+
+    const total = (convTests?.total ?? 0) + (redTests?.total ?? 0);
+    const passed = (convTests?.passed ?? 0) + (redTests?.passed ?? 0);
+    const failed = (convTests?.failed ?? 0) + (redTests?.failed ?? 0);
+
+    const entry: RunHistoryEntry = {
+      run_id: runId,
+      timestamp: now.toISOString(),
+      git_sha: git.sha,
+      git_branch: git.branch,
+      git_dirty: git.dirty,
+      summary: {
+        status: runCompleteData.status as string ?? "unknown",
+        tests_total: total,
+        tests_passed: passed,
+        tests_failed: failed,
+        total_duration_ms: aggregate?.total_duration_ms as number | undefined,
+        total_cost_usd: aggregate?.total_cost_usd as number | undefined,
+      },
+      test_results: testResults.map((e) => e.metadata_json ?? {}),
+    };
+
+    const filename = `${timestamp}_${shortId}.json`;
+    const filepath = path.join(dir, filename);
+    await fs.writeFile(filepath, JSON.stringify(entry, null, 2) + "\n");
+
+    return filepath;
+  } catch {
+    return null;
+  }
+}
