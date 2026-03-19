@@ -3,14 +3,14 @@
 export function HandDrawnUnderline() {
   return (
     <svg
-      viewBox="0 0 180 12"
+      viewBox="0 0 200 10"
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
-      className="absolute -bottom-2 left-0 w-full h-[12px]"
+      className="absolute -bottom-1 -left-[2%] w-[104%] h-[10px]"
       preserveAspectRatio="none"
     >
       <path
-        d="M 2 8 C 20 3, 35 10, 55 6 C 75 2, 90 9, 110 5 C 130 1, 150 8, 178 4"
+        d="M 2 6 C 30 4, 50 7, 80 5.5 C 110 4, 140 7, 198 5"
         stroke="url(#underlineGrad)"
         strokeWidth="3"
         strokeLinecap="round"

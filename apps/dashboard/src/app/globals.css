@@ -151,7 +151,7 @@
 .draw-underline {
   stroke-dasharray: 200;
   stroke-dashoffset: 200;
-  animation: draw-underline 1.2s ease-out 0.5s forwards;
+  animation: draw-underline 0.3s ease-out 0.45s forwards;
 }
 
 
