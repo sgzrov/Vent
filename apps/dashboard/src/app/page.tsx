@@ -79,9 +79,7 @@ export default async function LandingPage() {
             }
             description={
               <p className="text-base text-muted-foreground max-w-md leading-relaxed mt-4" style={{ fontWeight: 300 }}>
-                Vent is an agent CLI for testing voice agents. Real
-                calls, 50+ metrics, and prompt regressions — all caught,
-                diffed, and fixed autonomously with full codebase context.
+                Vent gives your coding agent tools to call, evaluate, and fix your voice agent autonomously — so you never have to test by hand. We evaluate calls based on 55+ metrics, real audio, regression diffs, and more.
               </p>
             }
             cta={

@@ -56,8 +56,8 @@ export function AgentCarousel() {
   }, []);
 
   return (
-    <div className="flex items-center gap-2 text-sm text-muted-foreground/70" style={{ fontFamily: "var(--font-heading)", fontWeight: 300 }}>
-      <span>Available with</span>
+    <div className="flex items-center gap-2 text-sm text-foreground" style={{ fontFamily: "var(--font-heading)", fontWeight: 300 }}>
+      <span className="tracking-[0.15em] text-xs">Install Vent CLI for</span>
       <span className="inline-flex items-center gap-1.5 min-w-[120px]">
         <span className="relative w-4 h-4">
           {agents.map((agent, i) => (
