@@ -142,6 +142,7 @@ export const ToolCallMetricsSchema = z.object({
 export const PlatformConfigSchema = z.object({
   provider: z.enum(["vapi", "retell", "elevenlabs", "bland"]),
   api_key_env: z.string(),
+  api_key: z.string().optional(),
   agent_id: z.string().optional(),
 });
 

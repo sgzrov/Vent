@@ -135,6 +135,7 @@ export interface ToolCallMetrics {
 export interface PlatformConfig {
   provider: "vapi" | "retell" | "elevenlabs" | "bland";
   api_key_env: string;
+  api_key?: string;
   agent_id?: string;
 }
 
