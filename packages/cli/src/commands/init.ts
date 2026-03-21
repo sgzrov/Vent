@@ -80,7 +80,7 @@ const allEditors: Editor[] = [
       const dir = path.join(cwd, ".claude", "skills", "vent");
       await fs.mkdir(dir, { recursive: true });
       await fs.writeFile(path.join(dir, "SKILL.md"), claudeCodeSkill);
-      printSuccess("Claude Code: .claude/skills/vent/SKILL.md");
+      printSuccess("Claude Code: .claude/skills/vent/SKILL.md", { force: true });
     },
   },
   {
@@ -91,7 +91,7 @@ const allEditors: Editor[] = [
       const dir = path.join(cwd, ".cursor", "rules");
       await fs.mkdir(dir, { recursive: true });
       await fs.writeFile(path.join(dir, "vent.mdc"), cursorSkill);
-      printSuccess("Cursor: .cursor/rules/vent.mdc");
+      printSuccess("Cursor: .cursor/rules/vent.mdc", { force: true });
     },
   },
   {
@@ -100,7 +100,7 @@ const allEditors: Editor[] = [
     detect: () => existsSync(path.join(home, ".codex")) || findBinary("codex"),
     install: async (cwd: string) => {
       await fs.writeFile(path.join(cwd, "AGENTS.md"), codexSkill);
-      printSuccess("Codex: AGENTS.md");
+      printSuccess("Codex: AGENTS.md", { force: true });
     },
   },
 ];
@@ -117,9 +117,9 @@ export async function initCommand(args: InitArgs): Promise<number> {
       return 2;
     }
     await saveApiKey(args.apiKey);
-    printSuccess("API key saved to ~/.vent/credentials");
+    printSuccess("API key saved to ~/.vent/credentials", { force: true });
   } else if (key) {
-    printSuccess("Authenticated.");
+    printSuccess("Authenticated.", { force: true });
   } else {
     // No key — run device auth flow (opens browser, polls for approval)
     const result = await deviceAuthFlow();
@@ -127,7 +127,7 @@ export async function initCommand(args: InitArgs): Promise<number> {
       printError("Authentication failed. Run `npx vent-hq init` to try again.");
       return 1;
     }
-    printSuccess("Logged in! API key saved to ~/.vent/credentials");
+    printSuccess("Logged in! API key saved to ~/.vent/credentials", { force: true });
   }
 
   // 2. Detect editors and let user select
@@ -147,7 +147,7 @@ export async function initCommand(args: InitArgs): Promise<number> {
     });
 
     if (isCancel(result)) {
-      printInfo("Cancelled.");
+      printInfo("Cancelled.", { force: true });
       return 0;
     }
     selected = result;
@@ -182,6 +182,6 @@ export async function initCommand(args: InitArgs): Promise<number> {
     await fs.writeFile(suitePath, SUITE_SCAFFOLD + "\n");
   }
 
-  printSuccess("Ready — your coding agent can now make test calls with `npx vent-hq run`.");
+  printSuccess("Ready — your coding agent can now make test calls with `npx vent-hq run`.", { force: true });
   return 0;
 }
