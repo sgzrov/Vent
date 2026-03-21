@@ -86,6 +86,11 @@ export function buildTestSpec(cfg: Record<string, unknown>) {
     });
   }
 
+  // Strip api_key from platform before persisting to DB (secrets stay in job queue only)
+  const platformForDb = cfg.platform
+    ? { ...(cfg.platform as Record<string, unknown>), api_key: undefined }
+    : null;
+
   return {
     testSpecJson: {
       conversation_tests: conversationTests ?? null,
@@ -97,7 +102,7 @@ export function buildTestSpec(cfg: Record<string, unknown>) {
       health_endpoint: cfg.health_endpoint ?? null,
       agent_url: agentUrl ?? null,
       target_phone_number: targetPhoneNumber ?? null,
-      platform: cfg.platform ?? null,
+      platform: platformForDb,
     },
     adapter,
     agentUrl,

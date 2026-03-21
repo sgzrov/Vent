@@ -86,7 +86,7 @@ export function createAudioChannel(config: AudioChannelConfig): AudioChannel {
     }
 
     case "vapi": {
-      const apiKey = process.env[config.platform?.api_key_env ?? "VAPI_API_KEY"] ?? "";
+      const apiKey = config.platform?.api_key || process.env[config.platform?.api_key_env ?? "VAPI_API_KEY"] || "";
       const assistantId = config.platform?.agent_id ?? "";
       if (!apiKey) throw new Error("Vapi adapter requires API key (set VAPI_API_KEY or platform.api_key_env)");
       if (!assistantId) throw new Error("Vapi adapter requires platform.agent_id");
@@ -95,7 +95,7 @@ export function createAudioChannel(config: AudioChannelConfig): AudioChannel {
     }
 
     case "retell": {
-      const apiKey = process.env[config.platform?.api_key_env ?? "RETELL_API_KEY"] ?? "";
+      const apiKey = config.platform?.api_key || process.env[config.platform?.api_key_env ?? "RETELL_API_KEY"] || "";
       const agentId = config.platform?.agent_id ?? "";
       if (!apiKey) throw new Error("Retell adapter requires API key (set RETELL_API_KEY or platform.api_key_env)");
       if (!agentId) throw new Error("Retell adapter requires platform.agent_id");
@@ -121,7 +121,7 @@ export function createAudioChannel(config: AudioChannelConfig): AudioChannel {
     }
 
     case "elevenlabs": {
-      const apiKey = process.env[config.platform?.api_key_env ?? "ELEVENLABS_API_KEY"] ?? "";
+      const apiKey = config.platform?.api_key || process.env[config.platform?.api_key_env ?? "ELEVENLABS_API_KEY"] || "";
       const agentId = config.platform?.agent_id ?? "";
       if (!apiKey) throw new Error("ElevenLabs adapter requires API key (set ELEVENLABS_API_KEY or platform.api_key_env)");
       if (!agentId) throw new Error("ElevenLabs adapter requires platform.agent_id");
@@ -130,7 +130,7 @@ export function createAudioChannel(config: AudioChannelConfig): AudioChannel {
     }
 
     case "bland": {
-      const apiKey = process.env[config.platform?.api_key_env ?? "BLAND_API_KEY"] ?? "";
+      const apiKey = config.platform?.api_key || process.env[config.platform?.api_key_env ?? "BLAND_API_KEY"] || "";
       if (!apiKey) throw new Error("Bland adapter requires API key (set BLAND_API_KEY or platform.api_key_env)");
       if (!config.targetPhoneNumber) throw new Error("Bland adapter requires targetPhoneNumber (the agent's phone number)");
 
