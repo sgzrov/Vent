@@ -97,7 +97,7 @@ export async function executeTests(opts: ExecuteTestsOpts): Promise<ExecuteTests
   const {
     testSpec,
     channelConfig,
-    concurrencyLimit = ["sip", "retell", "bland", "vapi"].includes(channelConfig.adapter) ? 5 : 10,
+    concurrencyLimit = 10,
     onTestStart,
     onTestComplete,
   } = opts;

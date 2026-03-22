@@ -73,6 +73,27 @@ async function executeLoadTestPhase(
   const loadSpec = testSpec.load_test;
   if (!loadSpec) return null;
 
+  // Preflight: check platform concurrency limit for Vapi
+  if (channelConfig.adapter === "vapi" && loadSpec.target_concurrency > 1) {
+    const { createAudioChannel } = await import("@vent/adapters");
+    const preflight = createAudioChannel(channelConfig);
+    try {
+      await preflight.connect();
+      const limit = (preflight as { platformConcurrencyLimit?: number | null }).platformConcurrencyLimit;
+      await preflight.disconnect();
+      if (limit != null && loadSpec.target_concurrency > limit) {
+        const msg = `Vapi concurrency limit is ${limit} but load test targets ${loadSpec.target_concurrency}. ` +
+          `Increase your limit at Vapi Dashboard > Billings & Add-ons ($10/line/month).`;
+        await emitEvent(db, job.run_id, "load_test_error", msg);
+        throw new Error(msg);
+      }
+    } catch (err) {
+      await preflight.disconnect().catch(() => {});
+      if ((err as Error).message.includes("concurrency limit")) throw err;
+      // Other connect errors — let the load test handle them
+    }
+  }
+
   await emitEvent(db, job.run_id, "load_test_started", `Starting load test — target concurrency: ${loadSpec.target_concurrency}`);
 
   const phaseCount = computeTierSizes(loadSpec.target_concurrency, loadSpec.ramps).length
