@@ -6,6 +6,7 @@ import { logoutCommand } from "./commands/logout.js";
 import { initCommand } from "./commands/init.js";
 
 import { printError } from "./lib/output.js";
+import { loadDotenv } from "./lib/dotenv.js";
 
 const USAGE = `Usage: vent-hq <command> [options]
 
@@ -41,6 +42,8 @@ Options:
   --stream       Stream live results instead of fetching current state`;
 
 async function main(): Promise<number> {
+  loadDotenv();
+
   const args = process.argv.slice(2);
   const command = args[0];
 
