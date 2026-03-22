@@ -45,6 +45,7 @@ If `.vent/` contains more than one suite file, **always check which adapter each
 ## Full Config Schema
 
 - IMPORTANT: ALWAYS run "conversation_tests", "red_team_tests", and "load_test" separately. Only one per run. Reduces tokens and latency.
+- Keep conversation_tests to 10 or fewer per run unless the user explicitly asks for more. Each test is a real concurrent call that counts against the platform's concurrency limit.
 - ALL tests MUST reference the agent's real context (system prompt, tools, knowledge base) from the codebase.
 
 <vent_run>
