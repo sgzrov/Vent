@@ -7,7 +7,7 @@
  * 3. Collect agent audio (VAD for end-of-turn)
  * 4. STT → text back to caller LLM
  * 5. Repeat until max_turns or caller says [END]
- * 6. Judge LLM evaluates behavioral metrics (observational)
+ * 6. Compute metrics (latency, audio, tool calls, prosody)
  */
 
 import type { AudioChannel } from "@vent/adapters";
@@ -24,7 +24,6 @@ import type {
 } from "@vent/shared";
 import { synthesize, TTSSession, BatchVAD, VoiceActivityDetector, StreamingTranscriber, applyEffects, resolveAccentVoiceId, resolveLanguageVoiceId, analyzeAudioQuality, type AudioQualityMetrics } from "@vent/voice";
 import { CallerLLM } from "./caller-llm.js";
-import { JudgeLLM } from "./judge-llm.js";
 import { executeAudioAction, mixCallerWithNoise } from "./audio-actions.js";
 import { collectUntilEndOfTurn, linearRegressionSlope } from "../audio-tests/helpers.js";
 import { computeAllMetrics } from "../metrics/index.js";
@@ -330,12 +329,8 @@ export async function runConversationTest(
       }
     }
 
-    // Step 7: Judge evaluates behavioral metrics (observational) + prosody in parallel
-    const judge = new JudgeLLM();
-    const [behavioral, prosodyResult] = await Promise.all([
-      judge.evaluateAllBehavioral(transcript, language),
-      spec.prosody ? analyzeProsody(agentAudioBuffers) : Promise.resolve(null),
-    ]);
+    // Step 7: Prosody analysis (if enabled)
+    const prosodyResult = spec.prosody ? await analyzeProsody(agentAudioBuffers) : null;
 
     // Compute deep metrics (instant — pure functions)
     const totalDurationMs = Math.round(performance.now() - startTime);
@@ -478,7 +473,6 @@ export async function runConversationTest(
       mean_ttfw_ms: meanTtfw,
       transcript: transcriptMetrics,
       latency,
-      behavioral,
       signal_quality: signalQuality,
       tool_calls: toolCallMetrics,
       audio_analysis,

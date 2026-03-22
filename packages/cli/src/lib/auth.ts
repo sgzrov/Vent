@@ -32,9 +32,9 @@ export async function deviceAuthFlow(): Promise<AuthResult> {
   }
 
   // 2. Show code and open browser
-  printInfo(`Your authorization code: ${startData.user_code}`);
-  printInfo(`Opening browser to log in...`);
-  printInfo(`If the browser doesn't open, visit: ${startData.verification_url}`);
+  printInfo(`Your authorization code: ${startData.user_code}`, { force: true });
+  printInfo(`Opening browser to log in...`, { force: true });
+  printInfo(`If the browser doesn't open, visit: ${startData.verification_url}`, { force: true });
   openBrowser(startData.verification_url);
 
   // 3. Poll for approval

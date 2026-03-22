@@ -43,6 +43,11 @@ interface VapiCreateCallResponse {
   transport?: {
     websocketCallUrl?: string;
   };
+  subscriptionLimits?: {
+    concurrencyLimit?: number;
+    remainingConcurrentCalls?: number;
+    concurrencyBlocked?: boolean;
+  };
 }
 
 interface VapiCallMessage {
@@ -104,6 +109,9 @@ export class VapiAudioChannel extends BaseAudioChannel {
   private callId: string | null = null;
   private cachedCallResponse: VapiCallResponse | null = null;
 
+  /** Vapi account concurrency limit, populated after first connect() */
+  platformConcurrencyLimit: number | null = null;
+
   // Component latency tracking from WebSocket text frames
   private turnTimings: TurnTiming[] = [];
   private currentTurnIndex = -1;
@@ -147,6 +155,18 @@ export class VapiAudioChannel extends BaseAudioChannel {
 
     const callData = (await res.json()) as VapiCreateCallResponse;
     this.callId = callData.id;
+
+    // Capture platform concurrency limits
+    if (callData.subscriptionLimits?.concurrencyLimit != null) {
+      this.platformConcurrencyLimit = callData.subscriptionLimits.concurrencyLimit;
+    }
+    if (callData.subscriptionLimits?.concurrencyBlocked) {
+      throw new Error(
+        `Vapi concurrency limit reached (${callData.subscriptionLimits.concurrencyLimit} concurrent calls). ` +
+        `Increase your limit at Vapi Dashboard > Billings & Add-ons.`
+      );
+    }
+
     const wsUrl = callData.transport?.websocketCallUrl;
 
     if (!wsUrl) {
@@ -175,6 +195,10 @@ export class VapiAudioChannel extends BaseAudioChannel {
   }
 
   async disconnect(): Promise<void> {
+    if (this.pingTimer) {
+      clearInterval(this.pingTimer);
+      this.pingTimer = null;
+    }
     if (this.ws) {
       this.ws.close();
       this.ws = null;
@@ -298,24 +322,36 @@ export class VapiAudioChannel extends BaseAudioChannel {
     return null;
   }
 
+  private pingTimer: ReturnType<typeof setInterval> | null = null;
+
   private async connectWebSocket(wsUrl: string): Promise<void> {
-    return new Promise((resolve, reject) => {
+    return new Promise<void>((resolve, reject) => {
       const ws = new WebSocket(wsUrl);
       ws.binaryType = "nodebuffer";
+      let resolved = false;
 
       ws.on("open", () => {
         this.ws = ws;
+
+        // Send WebSocket-level pings every 5s — Vapi expects keepalive frames
+        this.pingTimer = setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) ws.ping();
+        }, 5000);
 
         ws.on("message", (data: WebSocket.RawData, isBinary: boolean) => {
           if (isBinary) {
             const chunk = data instanceof Buffer ? data : Buffer.from(data as ArrayBuffer);
             this._stats.bytesReceived += chunk.length;
-            // Resample 16kHz → 24kHz before emitting
             const resampled = resample(chunk, 16000, 24000);
             this.emit("audio", resampled);
           } else {
-            // Parse text frames for component latency tracking
             this.handleControlMessage(data.toString());
+
+            // Resolve on first server message — proves the call is fully provisioned
+            if (!resolved) {
+              resolved = true;
+              resolve();
+            }
           }
         });
 
@@ -323,16 +359,27 @@ export class VapiAudioChannel extends BaseAudioChannel {
           this._stats.errorEvents.push(err.message);
           this.emit("error", err);
         });
+
         ws.on("close", () => {
+          if (this.pingTimer) {
+            clearInterval(this.pingTimer);
+            this.pingTimer = null;
+          }
           this.ws = null;
+          if (!resolved) {
+            resolved = true;
+            reject(new Error("Vapi WebSocket closed before call was provisioned"));
+            return;
+          }
           this.emit("disconnected");
         });
-
-        resolve();
       });
 
       ws.on("error", (err) => {
-        reject(new Error(`Vapi WebSocket connection failed: ${err.message}`));
+        if (!resolved) {
+          resolved = true;
+          reject(new Error(`Vapi WebSocket connection failed: ${err.message}`));
+        }
       });
     });
   }

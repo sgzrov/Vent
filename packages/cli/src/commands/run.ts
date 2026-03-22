@@ -88,7 +88,20 @@ export async function runCommand(args: RunArgs): Promise<number> {
     debug(`filtered to test: ${args.test}`);
   }
 
-  // 2c. Auto-assign a free port for local agents so parallel runs don't collide
+  // 2c. Resolve platform API key from local env so the worker doesn't need it
+  const cfgPlatform = (config as { connection?: { platform?: { api_key_env?: string; api_key?: string } } });
+  if (cfgPlatform.connection?.platform?.api_key_env && !cfgPlatform.connection.platform.api_key) {
+    const envName = cfgPlatform.connection.platform.api_key_env;
+    const resolved = process.env[envName];
+    if (!resolved) {
+      printError(`Platform API key not found: environment variable ${envName} is not set.`);
+      return 2;
+    }
+    cfgPlatform.connection.platform.api_key = resolved;
+    debug(`resolved platform API key from ${envName}`);
+  }
+
+  // 2d. Auto-assign a free port for local agents so parallel runs don't collide
   const cfg = config as { connection?: { start_command?: string; agent_port?: number } };
   if (cfg.connection?.start_command) {
     const freePort = await findFreePort();

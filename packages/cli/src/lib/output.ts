@@ -209,17 +209,23 @@ export function printError(message: string): void {
   }
 }
 
-export function printInfo(message: string): void {
-  if (!isTTY && !_verbose) return;
-  process.stderr.write(blue("▸") + ` ${message}\n`);
+export function printInfo(message: string, { force }: { force?: boolean } = {}): void {
+  if (!force && !isTTY && !_verbose) return;
+  const line = blue("▸") + ` ${message}\n`;
+  process.stderr.write(line);
+  if (!isTTY && force) stdoutSync(line);
 }
 
-export function printSuccess(message: string): void {
-  if (!isTTY && !_verbose) return;
-  process.stderr.write(green("✔") + ` ${message}\n`);
+export function printSuccess(message: string, { force }: { force?: boolean } = {}): void {
+  if (!force && !isTTY && !_verbose) return;
+  const line = green("✔") + ` ${message}\n`;
+  process.stderr.write(line);
+  if (!isTTY && force) stdoutSync(line);
 }
 
-export function printWarn(message: string): void {
-  if (!isTTY && !_verbose) return;
-  process.stderr.write(yellow("⚠") + ` ${message}\n`);
+export function printWarn(message: string, { force }: { force?: boolean } = {}): void {
+  if (!force && !isTTY && !_verbose) return;
+  const line = yellow("⚠") + ` ${message}\n`;
+  process.stderr.write(line);
+  if (!isTTY && force) stdoutSync(line);
 }

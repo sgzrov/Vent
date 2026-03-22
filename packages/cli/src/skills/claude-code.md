@@ -19,10 +19,10 @@ Test voice agents from the terminal. Tests run in the cloud — results stream b
 
 | Command | Purpose |
 |---------|---------|
-| `npx vent-hq run -f .vent/suite.json --list` | List test names from suite |
-| `npx vent-hq run -f .vent/suite.json --test <name>` | Run a single test by name |
+| `npx vent-hq run -f .vent/suite.<adapter>.json --list` | List test names from suite |
+| `npx vent-hq run -f .vent/suite.<adapter>.json --test <name>` | Run a single test by name |
 | `npx vent-hq run --config '{...}'` | Run from inline JSON (one-off, no file needed) |
-| `npx vent-hq run -f .vent/suite.json --test <name> --submit` | Submit test, return immediately with run_id (deployed agents) |
+| `npx vent-hq run -f .vent/suite.<adapter>.json --test <name> --submit` | Submit test, return immediately with run_id (deployed agents) |
 | `npx vent-hq status <run-id> --json` | Poll results for a submitted run (--submit only) |
 
 
@@ -40,18 +40,22 @@ Test voice agents from the terminal. Tests run in the cloud — results stream b
 
 1. Read the voice agent's codebase — understand its system prompt, tools, intents, and domain.
 2. Read the **Full Config Schema** section below for all available fields.
-3. Create `.vent/suite.json` with tests tailored to the agent's actual behavior:
+3. Create the suite file in `.vent/` using the naming convention: `.vent/suite.<adapter>.json` (e.g., `.vent/suite.vapi.json`, `.vent/suite.websocket.json`, `.vent/suite.retell.json`). This prevents confusion when multiple adapters are tested in the same project.
    - Name tests after specific flows (e.g., `"reschedule-appointment"`, not `"test-1"`)
    - Write `caller_prompt` as a realistic persona with a specific goal, based on the agent's domain
    - Set `max_turns` based on the flow complexity (simple FAQ: 4-6, booking: 8-12, complex: 12-20)
    - After conversation tests pass, suggest a separate red team run for security testing
+
+### Multiple suite files
+
+If `.vent/` contains more than one suite file, **always check which adapter each suite uses before running**. Read the `connection.adapter` field in each file. Never run a suite intended for a different adapter — results will be meaningless or fail. When reporting results, always state which suite file produced them (e.g., "Results from `.vent/suite.vapi.json`:").
 
 ### Run tests
 
 1. Run the full suite (all tests run concurrently on the server):
    ```bash
    # timeout: 300000
-   npx vent-hq run -f .vent/suite.json
+   npx vent-hq run -f .vent/suite.<adapter>.json
    ```
 
 2. Analyze all results, identify failures, correlate with the codebase, and fix.
@@ -66,7 +70,7 @@ Test voice agents from the terminal. Tests run in the cloud — results stream b
 
 4. To re-run a single failing test for debugging:
    ```bash
-   npx vent-hq run -f .vent/suite.json --test <failing-test-name>
+   npx vent-hq run -f .vent/suite.<adapter>.json --test <failing-test-name>
    ```
 
 ### After modifying voice agent code
@@ -94,6 +98,7 @@ npx vent-hq run --config '{"connection":{"adapter":"websocket","start_command":"
 ## Full Config Schema
 
 - IMPORTANT: ALWAYS run "conversation_tests", "red_team_tests", and "load_test" separately. Only one per run. Reduces tokens and latency.
+- Keep conversation_tests to 10 or fewer per run unless the user explicitly asks for more. Each test is a real concurrent call that counts against the platform's concurrency limit.
 - ALL tests MUST reference the agent's real context (system prompt, tools, knowledge base) from the codebase.
 
 <vent_run>

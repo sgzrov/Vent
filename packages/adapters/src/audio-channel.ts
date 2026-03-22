@@ -34,6 +34,8 @@ export interface AudioChannel {
   getComponentTimings?(): ComponentLatency[];
   /** Get platform's own STT transcripts for cross-referencing with Vent's STT. */
   getTranscripts?(): Array<{ turnIndex: number; text: string }>;
+  /** Platform-reported concurrency limit (e.g. Vapi returns this on call creation). */
+  platformConcurrencyLimit?: number | null;
 
   on<E extends keyof AudioChannelEvents>(event: E, listener: AudioChannelEvents[E]): this;
   off<E extends keyof AudioChannelEvents>(event: E, listener: AudioChannelEvents[E]): this;
