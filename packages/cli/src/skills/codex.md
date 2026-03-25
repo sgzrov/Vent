@@ -8,10 +8,23 @@ Test voice agents from the terminal. Tests run in the cloud (30-120s).
 - After changing audio/telephony config: run tests
 - Before marking a task complete that touches agent behavior: run tests
 
+## Setup (if no API key)
+
+If `~/.vent/credentials` does not exist and `VENT_API_KEY` is not set, run setup first:
+
+1. Ask the user for their email address
+2. `npx vent-hq agent-setup --email <email>` — sends a 6-digit code to their email
+3. Ask the user for the code
+4. `npx vent-hq agent-setup --email <email> --code <code>` — verifies and saves API key + installs skill files
+
+This is a one-time setup. After this, all `vent run` commands work automatically.
+
 ## Commands
 
 | Command | Purpose |
 |---------|---------|
+| `npx vent-hq agent-setup --email <email>` | Send verification code (first-time setup) |
+| `npx vent-hq agent-setup --email <email> --code <code>` | Verify code and save API key |
 | `npx vent-hq run -f .vent/suite.<adapter>.json --list` | List test names from suite |
 | `npx vent-hq run -f .vent/suite.<adapter>.json --test <name>` | Run a single test by name |
 | `npx vent-hq run --config '{...}'` | Run from inline JSON (one-off, no file needed) |
