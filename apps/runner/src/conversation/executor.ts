@@ -87,7 +87,66 @@ export async function runConversationTest(
   const audioActionResults: AudioActionResult[] = [];
   let agentText: string | null = null;
 
+  // AEC gap: LiveKit agents suppress incoming audio for ~500ms after their
+  // own speech ends (Acoustic Echo Cancellation warmup). Track when the agent
+  // last finished speaking so we can ensure a minimum gap before sendAudio.
+  const AEC_GAP_MS = 500;
+  let lastAgentDoneAt = 0;
+
+  const ensureAecGap = async () => {
+    if (lastAgentDoneAt === 0) return;
+    const elapsed = Date.now() - lastAgentDoneAt;
+    if (elapsed < AEC_GAP_MS) {
+      await new Promise((r) => setTimeout(r, AEC_GAP_MS - elapsed));
+    }
+  };
+
   try {
+    // ── Agent greeting capture ──────────────────────────────
+    // Voice agents always greet first. Wait for the agent to finish
+    // speaking, capture the greeting, and let CallerLLM respond naturally.
+    // Early audio buffered in BaseAudioChannel is flushed here.
+    {
+      const greetingVAD = new VoiceActivityDetector({ silenceThresholdMs: 1500 });
+      await greetingVAD.init();
+
+      const greetingResult = await collectUntilEndOfTurn(channel, {
+        timeoutMs: 30000,
+        vad: greetingVAD,
+      });
+      greetingVAD.destroy();
+
+      if (greetingResult.stats.speechOnsetAt !== null && greetingResult.audio.length > 4800) {
+        // Agent spoke a greeting — transcribe it and use as first agent turn
+        transcriber.resetForNextTurn();
+        transcriber.feedAudio(greetingResult.audio);
+        const { text: greetingText } = await transcriber.finalize();
+
+        if (greetingText) {
+          console.log(`    Agent greeting: "${greetingText.slice(0, 80)}..."`);
+          agentText = greetingText;
+
+          const greetingTimestamp = performance.now() - startTime;
+          const greetingDurationMs = Math.round((greetingResult.audio.length / 2 / 24000) * 1000);
+          turnAudioData.push({ role: "agent", audioDurationMs: greetingDurationMs });
+          transcript.push({
+            role: "agent",
+            text: greetingText,
+            timestamp_ms: Math.round(greetingTimestamp),
+            audio_duration_ms: greetingDurationMs,
+          });
+
+          // Discard the pre-fetched first utterance — CallerLLM will now
+          // generate a response to the greeting instead of a cold open.
+          prefetchedText = null;
+          prefetchedAudio = null;
+        }
+      } else if (greetingResult.timedOut) {
+        throw new Error("Agent connected but did not speak within 30s");
+      }
+      lastAgentDoneAt = Date.now();
+    }
+
     for (let turn = 0; turn < spec.max_turns; turn++) {
       // Check for audio action at this turn (silence, split_sentence skip CallerLLM)
       const audioAction = spec.audio_actions?.find((a) => a.at_turn === turn);
@@ -114,6 +173,7 @@ export async function runConversationTest(
         );
         audioActionResults.push(actionResult);
         agentText = actionAgentText;
+        lastAgentDoneAt = Date.now();
 
         const agentTimestamp = performance.now() - startTime;
         turnAudioData.push({ role: "agent", audioDurationMs: 0 });
@@ -175,8 +235,10 @@ export async function runConversationTest(
       const feedSTT = (chunk: Buffer) => transcriber.feedAudio(chunk);
       channel.on("audio", feedSTT);
 
+      // Ensure AEC suppression window has passed before sending caller audio
+      await ensureAecGap();
       const sendTime = Date.now();
-      channel.sendAudio(callerAudio);
+      await channel.sendAudio(callerAudio);
 
       // Handle interrupt action: wait for agent speech, then send interrupt
       if (audioAction?.action === "interrupt") {
@@ -188,6 +250,7 @@ export async function runConversationTest(
         channel.off("audio", feedSTT);
 
         agentText = actionAgentText;
+        lastAgentDoneAt = Date.now();
         const agentTimestamp = performance.now() - startTime;
         turnAudioData.push({ role: "agent", audioDurationMs: 0 });
         transcript.push({
@@ -208,6 +271,7 @@ export async function runConversationTest(
         channel.off("audio", feedSTT);
 
         agentText = actionAgentText;
+        lastAgentDoneAt = Date.now();
         const agentTimestamp = performance.now() - startTime;
         turnAudioData.push({ role: "agent", audioDurationMs: 0 });
         transcript.push({
@@ -219,12 +283,24 @@ export async function runConversationTest(
       }
 
       // Step 3: Collect agent response via VAD (reused instance)
-      const { audio: agentAudio, stats } = await collectUntilEndOfTurn(
+      // 30s timeout: LiveKit sendAudio is fire-and-forget with real-time pacing,
+      // so frames take seconds to deliver. The agent also needs processing time
+      // (STT → LLM → TTS) before responding.
+      const { audio: agentAudio, stats, timedOut } = await collectUntilEndOfTurn(
         channel,
-        { timeoutMs: 15000, vad: turnVAD }
+        { timeoutMs: 30000, vad: turnVAD }
       );
+      lastAgentDoneAt = Date.now();
 
       channel.off("audio", feedSTT);
+
+      // Fail fast: if no speech detected within timeout, agent has stopped responding
+      if (timedOut && stats.speechOnsetAt === null) {
+        throw new Error(
+          `Agent stopped responding — no speech detected for 30s after turn ${turn + 1}. ` +
+          `This may indicate the agent's backend (STT/LLM/TTS) is overwhelmed or rate-limited.`
+        );
+      }
 
       // Adapt threshold for next turn based on this turn's response cadence
       adaptiveThreshold.update(stats);
@@ -259,8 +335,22 @@ export async function runConversationTest(
       // Step 4: Get streaming STT result + batch VAD analysis
       if (agentAudio.length > 0) {
         const sttStart = performance.now();
-        const { text, confidence } = await transcriber.finalize();
+        let { text, confidence } = await transcriber.finalize();
         const sttMs = Math.round(performance.now() - sttStart);
+
+        // Fallback: use real-time platform transcript when STT finds nothing
+        // (e.g. Bland sends agent text via control messages but binary audio is sparse)
+        if (!text && channel.consumeAgentText) {
+          const platformText = channel.consumeAgentText();
+          if (platformText) {
+            text = platformText;
+            confidence = 1;
+          }
+        } else {
+          // Consume and discard — keep buffer from growing across turns
+          channel.consumeAgentText?.();
+        }
+
         agentText = text;
 
         // Update noise_on_caller action result with actual transcription

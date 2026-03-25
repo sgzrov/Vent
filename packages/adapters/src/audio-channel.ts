@@ -16,12 +16,14 @@ export interface AudioChannelEvents {
   audio: (chunk: Buffer) => void;
   error: (err: Error) => void;
   disconnected: () => void;
+  /** Platform signals that the agent finished speaking (e.g. LiveKit agent state → "listening"). */
+  platformEndOfTurn: () => void;
 }
 
 export interface AudioChannel {
   connect(): Promise<void>;
   /** Send raw PCM audio to the agent (16-bit 24kHz mono) */
-  sendAudio(pcm: Buffer): void;
+  sendAudio(pcm: Buffer): void | Promise<void>;
   disconnect(): Promise<void>;
   readonly connected: boolean;
   readonly stats: ChannelStats;
@@ -34,6 +36,8 @@ export interface AudioChannel {
   getComponentTimings?(): ComponentLatency[];
   /** Get platform's own STT transcripts for cross-referencing with Vent's STT. */
   getTranscripts?(): Array<{ turnIndex: number; text: string }>;
+  /** Consume accumulated real-time agent transcript text (resets buffer). Used as STT fallback. */
+  consumeAgentText?(): string;
   /** Platform-reported concurrency limit (e.g. Vapi returns this on call creation). */
   platformConcurrencyLimit?: number | null;
 
@@ -51,12 +55,48 @@ export abstract class BaseAudioChannel extends EventEmitter implements AudioChan
     connectLatencyMs: 0,
   };
 
+  /** Early audio buffer — captures greeting audio before executor attaches listeners. */
+  private _earlyAudioBuffer: Buffer[] = [];
+  private _bufferingAudio = true;
+
   get stats(): ChannelStats {
     return this._stats;
   }
 
+  /**
+   * Override emit to buffer audio events before any listener attaches.
+   * This ensures agent greeting audio is never lost, regardless of adapter timing.
+   */
+  emit<E extends keyof AudioChannelEvents>(event: E, ...args: Parameters<AudioChannelEvents[E]>): boolean {
+    if (event === "audio" && this._bufferingAudio) {
+      this._earlyAudioBuffer.push(args[0] as Buffer);
+      return true;
+    }
+    return super.emit(event, ...args);
+  }
+
+  /**
+   * Override on to flush buffered greeting audio when the first audio listener attaches.
+   */
+  on<E extends keyof AudioChannelEvents>(event: E, listener: AudioChannelEvents[E]): this {
+    super.on(event, listener);
+    if (event === "audio" && this._bufferingAudio) {
+      this._bufferingAudio = false;
+      // Flush buffered greeting audio to the new listener on next tick
+      // (so the listener is fully registered before receiving events)
+      const buffered = this._earlyAudioBuffer;
+      this._earlyAudioBuffer = [];
+      process.nextTick(() => {
+        for (const chunk of buffered) {
+          (listener as AudioChannelEvents["audio"])(chunk);
+        }
+      });
+    }
+    return this;
+  }
+
   abstract connect(): Promise<void>;
-  abstract sendAudio(pcm: Buffer): void;
+  abstract sendAudio(pcm: Buffer): void | Promise<void>;
   abstract disconnect(): Promise<void>;
   abstract get connected(): boolean;
 }

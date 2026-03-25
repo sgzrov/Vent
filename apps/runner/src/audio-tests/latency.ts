@@ -64,7 +64,7 @@ export async function runLatencyTest(
         channel.on("audio", feedSTT);
 
         const sendTime = Date.now();
-        channel.sendAudio(callerAudio);
+        await channel.sendAudio(callerAudio);
 
         const { audio: agentAudio, stats } = await collectUntilEndOfTurn(channel, {
           timeoutMs: 15000,
@@ -104,7 +104,7 @@ export async function runLatencyTest(
         channel.on("audio", feedSTT);
 
         const sendTime = Date.now();
-        channel.sendAudio(callerAudio);
+        await channel.sendAudio(callerAudio);
 
         const { audio: agentAudio, stats } = await collectUntilEndOfTurn(channel, {
           timeoutMs: 15000,

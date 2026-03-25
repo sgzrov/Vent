@@ -282,7 +282,7 @@ async function runSingleCall(
       channel.on("audio", feedSTT);
 
       const sendTime = Date.now();
-      channel.sendAudio(callerAudio);
+      await channel.sendAudio(callerAudio);
 
       // Collect agent response via VAD
       const { audio: agentAudio, stats } = await collectUntilEndOfTurn(

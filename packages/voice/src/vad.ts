@@ -19,6 +19,14 @@ export interface VoiceActivityDetectorConfig {
   hopSize?: number;
   /** VAD detection threshold [0.0, 1.0]. Default: 0.5 */
   vadThreshold?: number;
+  /**
+   * Minimum RMS energy (int16 scale) for a frame to be considered for speech.
+   * Frames below this are treated as silence without consulting the neural
+   * network. Filters WebRTC comfort noise (~30-200 RMS) that otherwise
+   * triggers false positives and prevents end-of-turn detection.
+   * Default: 250
+   */
+  energyFloorRms?: number;
 }
 
 interface TenVADModule {
@@ -45,11 +53,20 @@ export class VoiceActivityDetector {
   private handle = 0;
   private readonly hopSize: number;
   private readonly vadThreshold: number;
+  private readonly energyFloorRms: number;
   /** Silence duration (ms) after speech before returning "end_of_turn". Mutable for adaptive thresholds. */
   silenceThresholdMs: number;
 
-  private silenceStartMs: number | null = null;
   private hasSpeech = false;
+
+  // Audio-timeline silence tracking (frame count, not wall-clock).
+  // Each frame = hopSize samples at 16kHz = hopSize/16 ms.
+  // Using frame count avoids the wall-clock vs audio-clock mismatch that
+  // occurs when the event loop processes audio frames in bursts under CPU
+  // contention — Date.now() barely advances between burst-processed frames,
+  // so real 800ms silences appear as <10ms of wall-clock time.
+  private silenceFrames = 0;
+  private readonly frameDurationMs: number;
 
   // Pre-allocated WASM memory pointers
   private audioPtr = 0;
@@ -64,7 +81,10 @@ export class VoiceActivityDetector {
     this.hopSize = config.hopSize ?? 256;
     this.vadThreshold = config.vadThreshold ?? 0.5;
     this.silenceThresholdMs = config.silenceThresholdMs ?? 1500;
+    this.energyFloorRms = config.energyFloorRms ?? 250;
     this.sampleBuffer = new Int16Array(this.hopSize);
+    // 256 samples at 16kHz = 16ms per frame
+    this.frameDurationMs = (this.hopSize / 16000) * 1000;
   }
 
   async init(): Promise<void> {
@@ -143,8 +163,8 @@ export class VoiceActivityDetector {
 
   private currentState(): VADState {
     if (!this.hasSpeech) return "silence";
-    if (this.silenceStartMs !== null) {
-      if (Date.now() - this.silenceStartMs >= this.silenceThresholdMs) {
+    if (this.silenceFrames > 0) {
+      if (this.silenceFrames * this.frameDurationMs >= this.silenceThresholdMs) {
         return "end_of_turn";
       }
     }
@@ -153,6 +173,28 @@ export class VoiceActivityDetector {
 
   private processFrame(samples: Int16Array): VADState {
     const mod = this.module!;
+
+    // Energy gate: skip VAD neural network for frames below the noise floor.
+    // WebRTC comfort noise (generated when the remote party is silent) has
+    // RMS ~30-200 on int16 scale. Without this gate, the neural network
+    // sporadically classifies comfort noise as speech (~17% of frames),
+    // preventing the silence counter from ever reaching the end-of-turn
+    // threshold.
+    let sumSq = 0;
+    for (let i = 0; i < samples.length; i++) {
+      sumSq += samples[i]! * samples[i]!;
+    }
+    const rms = Math.sqrt(sumSq / samples.length);
+
+    if (rms < this.energyFloorRms) {
+      // Below noise floor — treat as silence without consulting the model
+      if (!this.hasSpeech) return "silence";
+      this.silenceFrames++;
+      if (this.silenceFrames * this.frameDurationMs >= this.silenceThresholdMs) {
+        return "end_of_turn";
+      }
+      return "silence";
+    }
 
     // Copy int16 samples into WASM heap
     mod.HEAP16.set(samples, this.audioPtr / 2);
@@ -174,11 +216,10 @@ export class VoiceActivityDetector {
     }
 
     const isVoice = mod.HEAP32[this.flagPtr >> 2] === 1;
-    const now = Date.now();
 
     if (isVoice) {
       this.hasSpeech = true;
-      this.silenceStartMs = null;
+      this.silenceFrames = 0;
       return "speech";
     }
 
@@ -187,12 +228,10 @@ export class VoiceActivityDetector {
       return "silence";
     }
 
-    // Had speech before, now silence — track duration
-    if (this.silenceStartMs === null) {
-      this.silenceStartMs = now;
-    }
+    // Had speech before, now silence — count frames on audio timeline
+    this.silenceFrames++;
 
-    if (now - this.silenceStartMs >= this.silenceThresholdMs) {
+    if (this.silenceFrames * this.frameDurationMs >= this.silenceThresholdMs) {
       return "end_of_turn";
     }
 
@@ -207,8 +246,28 @@ export class VoiceActivityDetector {
 
   reset(): void {
     this.hasSpeech = false;
-    this.silenceStartMs = null;
+    this.silenceFrames = 0;
     this.sampleBufferOffset = 0;
+
+    // Reset WASM model state by destroying and recreating the VAD handle.
+    // TEN VAD's RNN/GRU accumulates hidden state across frames. After
+    // processing thousands of silence frames between conversation turns,
+    // the hidden state drifts toward silence classification — causing the
+    // model to miss real speech on later turns. The WASM module stays
+    // loaded (no recompilation), only the model state is reset.
+    if (this.module && this.handle) {
+      const handlePtr = this.module._malloc(4);
+      this.module.HEAP32[handlePtr >> 2] = this.handle;
+      this.module._ten_vad_destroy(handlePtr);
+
+      const result = this.module._ten_vad_create(handlePtr, this.hopSize, this.vadThreshold);
+      if (result !== 0) {
+        this.module._free(handlePtr);
+        throw new Error("Failed to recreate TEN VAD instance on reset");
+      }
+      this.handle = this.module.HEAP32[handlePtr >> 2]!;
+      this.module._free(handlePtr);
+    }
   }
 
   destroy(): void {

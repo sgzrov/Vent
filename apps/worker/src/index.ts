@@ -1,6 +1,7 @@
 import { Worker } from "bullmq";
 import IORedis from "ioredis";
 import type { PlatformConfig } from "@vent/shared";
+import { SharedSipServer } from "@vent/adapters";
 import { executeRun } from "./jobs/run-executor.js";
 
 const redisUrl = process.env["REDIS_URL"] ?? "redis://localhost:6379";
@@ -52,11 +53,11 @@ function createWorkerForQueue(queueName: string) {
     {
       connection,
       concurrency: perUserConcurrency,
-      // Voice tests run 30-120s. Default lockDuration is 30s — any job over
-      // that gets falsely marked as stalled and restarted.
-      lockDuration: 150_000,       // 2.5 min — headroom above max 120s job
+      // Bland runs: 6 calls × 10s gap = 60s initiation + ~120s audio = ~180s minimum.
+      // Lock must exceed the longest possible run to prevent false stall detection.
+      lockDuration: 600_000,       // 10 min — covers worst-case Bland runs
       stalledInterval: 30_000,     // check every 30s (default, explicit for clarity)
-      // lockRenewTime auto-set to lockDuration/2 = 75s — do not override
+      // lockRenewTime auto-set to lockDuration/2 = 300s — do not override
       maxStalledCount: 1,          // 1 retry on stall, then fail
       removeOnComplete: { age: 3600, count: 1000 },
       removeOnFail: { age: 86_400, count: 5000 },
@@ -76,6 +77,21 @@ function createWorkerForQueue(queueName: string) {
 }
 
 async function start() {
+  // Start persistent HTTP server for SIP callbacks (Twilio/Bland webhooks).
+  // Must listen at boot so Fly.io's proxy routes traffic to this machine.
+  const sipPort = parseInt(process.env["RUNNER_LISTEN_PORT"] ?? "0", 10);
+  const sipHost = process.env["RUNNER_PUBLIC_HOST"] ?? "";
+  if (sipPort && sipHost) {
+    await SharedSipServer.startPersistentServer({
+      accountSid: process.env["TWILIO_ACCOUNT_SID"] ?? "",
+      authToken: process.env["TWILIO_AUTH_TOKEN"] ?? "",
+      fromNumber: process.env["TWILIO_FROM_NUMBER"] ?? "",
+      publicHost: sipHost,
+      port: sipPort,
+      publicPort: null, // Behind Fly reverse proxy (443 → 8443)
+    });
+  }
+
   // Discover existing per-user queues from Redis Set
   const existingQueues = await connection.smembers("vent:active-queues");
   for (const queueName of existingQueues) {

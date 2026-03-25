@@ -33,6 +33,7 @@ Test voice agents from the terminal. Tests run in the cloud — results stream b
 3. **If the call gets backgrounded** — The system may move long-running calls to background automatically. If this happens, immediately call `TaskOutput` with `block: true` and `timeout: 300000` to wait for the result.
 4. **This skill is self-contained** — The full config schema is below. Do NOT re-read this file.
 5. **Always analyze results** — The run command outputs complete JSON with full transcript, latency, behavior scores, and tool calls. Analyze this output directly — do NOT run `vent status` afterwards, the data is already there.
+6. **ENFORCE concurrency limits** — Before running ANY suite, count the total concurrent tests (number of tests × repeat). If this exceeds the platform's limit, REDUCE the test count or split into multiple runs. Default limits if unknown: LiveKit=5, Vapi=10, Bland=10. Tests that exceed the limit will hang forever waiting for agents that never connect. This is NOT optional.
 
 ## Workflow
 
@@ -98,7 +99,16 @@ npx vent-hq run --config '{"connection":{"adapter":"websocket","start_command":"
 ## Full Config Schema
 
 - IMPORTANT: ALWAYS run "conversation_tests", "red_team_tests", and "load_test" separately. Only one per run. Reduces tokens and latency.
-- Keep conversation_tests to 10 or fewer per run unless the user explicitly asks for more. Each test is a real concurrent call that counts against the platform's concurrency limit.
+- **HARD CONCURRENCY LIMITS — NEVER EXCEED** — Each test is a real concurrent call. If you create more tests than the platform allows, excess tests hang forever (agents never connect). Before running, count: total_concurrent = number_of_tests × max(repeat, 1). If total_concurrent > platform limit, REDUCE tests or split into sequential runs.
+  | Platform | Default limit (assume if unknown) | Ask user for tier |
+  |----------|----------------------------------|-------------------|
+  | LiveKit (webrtc) | **5** | Build=5, Ship=20, Scale=50+ |
+  | Vapi | **10** | Starter=10, Growth=50, Enterprise=100+ |
+  | Bland (sip) | **3** (SIP-based, 10s between calls) | Max 3 concurrent. Bland uses phone calls (SIP), not WebSocket/WebRTC. All calls route through one Twilio number — Bland drops calls when 4+ target the same number. Scaling beyond 3 requires a Twilio number pool (not yet implemented). |
+  | ElevenLabs | **5** | Ask user |
+  | Retell | **5** | Ask user |
+  | websocket (custom) | No platform limit | — |
+  If the existing suite file has more tests than the limit, run with `--test` to pick a subset, or split into multiple sequential runs. Do NOT just run the full suite and hope for the best.
 - ALL tests MUST reference the agent's real context (system prompt, tools, knowledge base) from the codebase.
 
 <vent_run>
@@ -126,7 +136,7 @@ OR
     "health_endpoint": "health check path after start_command (default: /health, relay only, required for local)",
     "agent_url": "deployed agent URL (wss:// or https://). Required for deployed agents.",
     "agent_port": "local agent port (default: 3001, required for local)",
-    "target_phone_number": "agent's phone number (required for sip, retell, bland)",
+    "target_phone_number": "agent's phone number (required for sip, retell)",
     "platform": "{"provider", "api_key_env", "agent_id"} — required for vapi, retell, elevenlabs, bland"
   }
 }
@@ -171,18 +181,19 @@ Bland:
 {
   "connection": {
     "adapter": "bland",
-    "target_phone_number": "+14155551234",
-    "platform": { "provider": "bland", "api_key_env": "BLAND_API_KEY", "agent_id": "agent_xyz789" }
+    "platform": { "provider": "bland", "api_key_env": "BLAND_API_KEY", "agent_id": "pathway_uuid_here" }
   }
 }
+Note: Bland agent_id is a pathway_id (UUID). The env var is BLAND_PATHWAY_ID. Vent calls the agent via telephony (POST /v1/calls + SIP) — no additional config needed. Rate limiting (10s between calls) and concurrency (max 3) are handled automatically server-side. Unlike Vapi/LiveKit/ElevenLabs (which use WebSocket/WebRTC for unlimited parallel calls), Bland routes through a single Twilio phone number — so concurrent calls are limited by telephony constraints.
 
 Vapi:
 {
   "connection": {
     "adapter": "vapi",
-    "platform": { "provider": "vapi", "api_key_env": "VAPI_API_KEY", "agent_id": "asst_abc123" }
+    "platform": { "provider": "vapi", "api_key_env": "VAPI_API_KEY", "agent_id": "asst_abc123", "max_concurrency": 10 }
   }
 }
+max_concurrency for Vapi: Starter=10, Growth=50, Enterprise=100+. Ask the user which tier they're on. If unknown, default to 10.
 
 ElevenLabs:
 {
@@ -192,12 +203,20 @@ ElevenLabs:
   }
 }
 
-WebRTC (LiveKit — requires LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET env vars):
+WebRTC / LiveKit:
 {
   "connection": {
-    "adapter": "webrtc"
+    "adapter": "webrtc",
+    "platform": { "provider": "livekit", "agent_name": "my-agent", "max_concurrency": 5 }
   }
 }
+IMPORTANT — LiveKit requires these variables in the project's .env file:
+  - LIVEKIT_URL=wss://my-project-xxxx.livekit.cloud
+  - LIVEKIT_API_KEY=your_key
+  - LIVEKIT_API_SECRET=your_secret
+The CLI loads .env automatically — no need to export them in the shell. If .env already has these vars, just run the test. Only ask the user if .env doesn't contain them.
+agent_name is optional — only needed if the LiveKit agent registers with an explicit agent_name in WorkerOptions. If omitted, Vent relies on automatic dispatch (agent auto-joins when a participant connects). Check the agent's WorkerOptions for an agent_name field.
+max_concurrency controls how many tests run in parallel. Set based on the user's LiveKit Cloud tier: Free/Build=5, Ship=20, Scale=50+. Ask the user which tier they're on. If unknown, default to 5.
 </config_adapter_rules>
 </config_connection>
 

@@ -57,13 +57,38 @@ export async function collectUntilEndOfTurn(
   let firstChunkAt: number | null = null;
   let speechOnsetAt: number | null = null;
 
+  // Energy diagnostics: track RMS distribution to understand what audio the VAD sees
+  const energyBuckets = { below100: 0, r100_250: 0, r250_500: 0, r500_1000: 0, r1000_3000: 0, above3000: 0 };
+  let maxRms = 0;
+  let speechChunkRmsSum = 0;
+  let speechChunkCount = 0;
+
   try {
     await new Promise<void>((resolve) => {
       const onAudio = (chunk: Buffer) => {
         chunks.push(chunk);
+
+        // Compute chunk-level RMS for diagnostics
+        const int16 = new Int16Array(chunk.buffer, chunk.byteOffset, chunk.length / 2);
+        let sumSq = 0;
+        for (let i = 0; i < int16.length; i++) sumSq += int16[i]! * int16[i]!;
+        const rms = Math.sqrt(sumSq / int16.length);
+        if (rms > maxRms) maxRms = rms;
+        if (rms < 100) energyBuckets.below100++;
+        else if (rms < 250) energyBuckets.r100_250++;
+        else if (rms < 500) energyBuckets.r250_500++;
+        else if (rms < 1000) energyBuckets.r500_1000++;
+        else if (rms < 3000) energyBuckets.r1000_3000++;
+        else energyBuckets.above3000++;
+
         const state = vad.process(chunk);
         const now = Date.now();
         if (firstChunkAt === null) firstChunkAt = now;
+
+        if (state === "speech") {
+          speechChunkRmsSum += rms;
+          speechChunkCount++;
+        }
 
         // Track speech → silence transition
         if (state === "silence" && prevState === "speech") {
@@ -89,30 +114,44 @@ export async function collectUntilEndOfTurn(
         prevState = state;
 
         if (state === "end_of_turn") {
-          clearTimeout(timeout);
-          channel.off("audio", onAudio);
-          channel.off("error", onError);
+          cleanup();
           resolve();
         }
       };
 
       const onError = (err: Error) => {
         timedOut = true;
-        clearTimeout(timeout);
-        channel.off("audio", onAudio);
-        channel.off("error", onError);
+        cleanup();
+        resolve();
+      };
+
+      // Platform-level end-of-turn signal (e.g. LiveKit agent state → "listening").
+      // Fires when the platform knows the agent finished speaking — more reliable
+      // than VAD for streaming TTS which produces audio in tiny bursts.
+      const onPlatformEOT = () => {
+        cleanup();
         resolve();
       };
 
       const timeout = setTimeout(() => {
         timedOut = true;
-        channel.off("audio", onAudio);
-        channel.off("error", onError);
+        const avgSpeechRms = speechChunkCount > 0 ? Math.round(speechChunkRmsSum / speechChunkCount) : 0;
+        console.log(`    [vad-diag] collection timed out: chunks=${chunks.length} speechSegments=${speechSegments} speechOnset=${speechOnsetAt !== null}`);
+        console.log(`    [vad-diag] energy: <100=${energyBuckets.below100} 100-250=${energyBuckets.r100_250} 250-500=${energyBuckets.r250_500} 500-1k=${energyBuckets.r500_1000} 1k-3k=${energyBuckets.r1000_3000} >3k=${energyBuckets.above3000} maxRms=${Math.round(maxRms)} avgSpeechRms=${avgSpeechRms}`);
+        cleanup();
         resolve();
       }, timeoutMs);
 
+      function cleanup() {
+        clearTimeout(timeout);
+        channel.off("audio", onAudio);
+        channel.off("error", onError);
+        channel.off("platformEndOfTurn", onPlatformEOT);
+      }
+
       channel.on("audio", onAudio);
       channel.on("error", onError);
+      channel.on("platformEndOfTurn", onPlatformEOT);
     });
   } finally {
     // Account for speech that was still ongoing at end
@@ -228,7 +267,7 @@ export async function streamSilence(
   const chunks = Math.ceil(durationMs / chunkMs);
 
   for (let i = 0; i < chunks; i++) {
-    channel.sendAudio(chunk);
+    await channel.sendAudio(chunk);
     // Pace at real-time to avoid buffer flooding
     await new Promise((r) => setTimeout(r, chunkMs));
   }

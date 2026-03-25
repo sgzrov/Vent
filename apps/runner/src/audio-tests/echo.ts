@@ -30,7 +30,7 @@ export async function runEchoTest(
 
   // Phase 1: Send a real prompt and collect the agent's first response
   const promptAudio = await synthesize(prompt);
-  channel.sendAudio(promptAudio);
+  await channel.sendAudio(promptAudio);
 
   const { audio: initialAudio } = await collectUntilEndOfTurn(channel, { timeoutMs: 15000 });
   const initialText = await transcribeAudio(initialAudio);
@@ -62,7 +62,7 @@ export async function runEchoTest(
 
   // Phase 3: Recovery — send a follow-up prompt to check if agent is responsive
   const recoveryAudio = await synthesize(RECOVERY_PROMPT);
-  channel.sendAudio(recoveryAudio);
+  await channel.sendAudio(recoveryAudio);
 
   const { audio: recoveryResponseAudio, timedOut: recoveryTimedOut } = await collectUntilEndOfTurn(channel, {
     timeoutMs: 15000,

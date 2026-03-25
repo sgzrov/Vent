@@ -89,7 +89,7 @@ export async function runCommand(args: RunArgs): Promise<number> {
   }
 
   // 2c. Resolve platform API key from local env so the worker doesn't need it
-  const cfgPlatform = (config as { connection?: { platform?: { api_key_env?: string; api_key?: string } } });
+  const cfgPlatform = (config as { connection?: { platform?: Record<string, unknown> & { api_key_env?: string; api_key?: string; provider?: string } } });
   if (cfgPlatform.connection?.platform?.api_key_env && !cfgPlatform.connection.platform.api_key) {
     const envName = cfgPlatform.connection.platform.api_key_env;
     const resolved = process.env[envName];
@@ -101,7 +101,53 @@ export async function runCommand(args: RunArgs): Promise<number> {
     debug(`resolved platform API key from ${envName}`);
   }
 
-  // 2d. Auto-assign a free port for local agents so parallel runs don't collide
+  // 2c2. Resolve LiveKit-specific env vars (URL, API key, API secret) from user's local env
+  const connAdapter = (config as { connection?: { adapter?: string } }).connection?.adapter;
+  if ((connAdapter === "webrtc" || connAdapter === "livekit")) {
+    const plat = cfgPlatform.connection?.platform ?? {};
+    if (!plat.livekit_url) {
+      const url = process.env["LIVEKIT_URL"];
+      if (!url) { printError("LiveKit adapter requires LIVEKIT_URL environment variable."); return 2; }
+      plat.livekit_url = url;
+    }
+    if (!plat.api_key) {
+      const key = process.env[plat.api_key_env ?? "LIVEKIT_API_KEY"];
+      if (!key) { printError("LiveKit adapter requires LIVEKIT_API_KEY environment variable."); return 2; }
+      plat.api_key = key;
+    }
+    if (!plat.api_secret) {
+      const secret = process.env["LIVEKIT_API_SECRET"];
+      if (!secret) { printError("LiveKit adapter requires LIVEKIT_API_SECRET environment variable."); return 2; }
+      plat.api_secret = secret;
+    }
+    // Ensure platform is set on connection
+    if (!cfgPlatform.connection!.platform) {
+      (cfgPlatform.connection as Record<string, unknown>).platform = { provider: "livekit", ...plat };
+    }
+    debug("resolved LiveKit credentials from local env");
+  }
+
+  // 2d. Enforce platform concurrency limits
+  const adapterForLimit = (config as { connection?: { adapter?: string } }).connection?.adapter;
+  const platformProvider = cfgPlatform.connection?.platform?.provider;
+  const defaultLimits: Record<string, number> = { livekit: 5, vapi: 10, bland: 10, elevenlabs: 5, retell: 5 };
+  const providerKey = platformProvider ?? (adapterForLimit === "webrtc" ? "livekit" : adapterForLimit);
+  const concurrencyLimit = providerKey ? defaultLimits[providerKey] : undefined;
+  if (concurrencyLimit) {
+    const convTests = (config as { conversation_tests?: Array<{ repeat?: number }> }).conversation_tests ?? [];
+    const redTests = (config as { red_team_tests?: Array<{ repeat?: number }> }).red_team_tests ?? [];
+    const allTests = [...convTests, ...redTests];
+    const totalConcurrent = allTests.reduce((sum, t) => sum + (t.repeat ?? 1), 0);
+    if (totalConcurrent > concurrencyLimit) {
+      printError(
+        `Too many concurrent tests (${totalConcurrent}) for ${providerKey} (limit: ${concurrencyLimit}). ` +
+        `Reduce test count or use --test to run a subset. Tests exceeding the limit will hang forever.`
+      );
+      return 2;
+    }
+  }
+
+  // 2e. Auto-assign a free port for local agents so parallel runs don't collide
   const cfg = config as { connection?: { start_command?: string; agent_port?: number } };
   if (cfg.connection?.start_command) {
     const freePort = await findFreePort();
