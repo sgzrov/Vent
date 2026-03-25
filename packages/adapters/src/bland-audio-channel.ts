@@ -471,7 +471,7 @@ export class BlandAudioChannel extends BaseAudioChannel {
     if (this.cachedCallResponse) return this.cachedCallResponse;
     if (!this.callId) return null;
 
-    const delays = [500, 1000, 2000, 3000];
+    const delays = [200, 400, 800, 1500, 3000, 5000];
     for (const delay of delays) {
       await sleep(delay);
       const res = await fetch(`${BLAND_API_BASE}/v1/calls/${this.callId}`, {
