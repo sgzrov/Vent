@@ -4,8 +4,6 @@ import { statusCommand } from "./commands/status.js";
 import { loginCommand } from "./commands/login.js";
 import { logoutCommand } from "./commands/logout.js";
 import { initCommand } from "./commands/init.js";
-import { agentSetupCommand } from "./commands/agent-setup.js";
-
 import { printError } from "./lib/output.js";
 import { loadDotenv } from "./lib/dotenv.js";
 
@@ -13,7 +11,6 @@ const USAGE = `Usage: vent-hq <command> [options]
 
 Commands:
   init         Set up Vent (auth + skill files + test scaffold)
-  agent-setup  Headless setup for coding agents (no browser needed)
   run          Run voice tests
   status       Check status of a previous run
   login        Save API key (for re-auth or CI/scripts)
@@ -73,23 +70,6 @@ async function main(): Promise<number> {
         strict: true,
       });
       return initCommand({ apiKey: values["api-key"] });
-    }
-
-    case "agent-setup": {
-      const { values } = parseArgs({
-        args: commandArgs,
-        options: {
-          email: { type: "string" },
-          code: { type: "string" },
-          "api-key": { type: "string" },
-        },
-        strict: true,
-      });
-      return agentSetupCommand({
-        email: values.email,
-        code: values.code,
-        apiKey: values["api-key"],
-      });
     }
 
     case "run": {
