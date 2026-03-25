@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { eq, and, desc, asc } from "drizzle-orm";
 import { schema } from "@vent/db";
 import { subscribe, unsubscribe } from "../lib/run-subscribers.js";
-import { RunSubmitSchema, submitRun } from "../lib/run-submit.js";
+import { RunSubmitSchema, submitRun, UsageLimitError } from "../lib/run-submit.js";
 
 export async function runRoutes(app: FastifyInstance) {
   const authPreHandler = { preHandler: app.verifyAuth };
@@ -21,12 +21,25 @@ export async function runRoutes(app: FastifyInstance) {
       });
     }
 
-    const result = await submitRun(app, {
-      apiKeyId: request.apiKeyId!,
-      userId: request.userId!,
-      config: parsed.data.config,
-      idempotencyKey: parsed.data.idempotency_key,
-    });
+    let result;
+    try {
+      result = await submitRun(app, {
+        apiKeyId: request.apiKeyId!,
+        userId: request.userId!,
+        config: parsed.data.config,
+        idempotencyKey: parsed.data.idempotency_key,
+      });
+    } catch (err) {
+      if (err instanceof UsageLimitError) {
+        return reply.status(403).send({
+          error: err.message,
+          code: "USAGE_LIMIT",
+          limit: err.limit,
+          used: err.used,
+        });
+      }
+      throw err;
+    }
 
     return reply.status(201).send(result);
   });
