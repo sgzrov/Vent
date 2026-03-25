@@ -102,6 +102,8 @@ export class BlandAudioChannel extends BaseAudioChannel {
   private cachedCallResponse: BlandCallResponse | null = null;
   private cachedCorrectedTranscripts: BlandCorrectedTranscriptEntry[] | null = null;
   private componentLatencies: ComponentLatency[] = [];
+  private firstAudioReceivedAt: number | null = null;
+  private firstNonSilentAudioAt: number | null = null;
 
   constructor(config: BlandAudioChannelConfig) {
     super();
@@ -377,6 +379,25 @@ export class BlandAudioChannel extends BaseAudioChannel {
         this._stats.bytesReceived += mulaw.length;
         const pcm8k = mulawToPcm(mulaw);
         const pcm24k = resample(pcm8k, 8000, 24000);
+
+        if (!this.firstAudioReceivedAt) {
+          this.firstAudioReceivedAt = Date.now();
+        }
+        if (!this.firstNonSilentAudioAt) {
+          const samples = new Int16Array(pcm24k.buffer, pcm24k.byteOffset, pcm24k.length / 2);
+          let hasAudio = false;
+          for (let i = 0; i < samples.length; i++) {
+            if (Math.abs(samples[i]!) > 200) { hasAudio = true; break; }
+          }
+          if (hasAudio) {
+            this.firstNonSilentAudioAt = Date.now();
+            const silencePadMs = this.firstNonSilentAudioAt - this.firstAudioReceivedAt;
+            if (silencePadMs > 500) {
+              console.warn(`[bland] Silence pad: ${silencePadMs}ms of silence before first word (call_id=${this.callId})`);
+            }
+          }
+        }
+
         this.emit("audio", pcm24k);
       }
 
