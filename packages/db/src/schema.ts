@@ -5,6 +5,7 @@ import {
   timestamp,
   integer,
   bigint,
+  boolean,
   jsonb,
   pgEnum,
   uniqueIndex,
@@ -16,6 +17,7 @@ export const runStatusEnum = pgEnum("run_status", [
   "running",
   "pass",
   "fail",
+  "cancelled",
 ]);
 
 export const sourceTypeEnum = pgEnum("source_type", ["bundle", "remote", "relay"]);
@@ -108,6 +110,8 @@ export const apiKeys = pgTable("api_keys", {
   key_hash: text("key_hash").notNull().unique(),
   name: text("name").notNull(),
   prefix: text("prefix").notNull().default(""),
+  is_anonymous: boolean("is_anonymous").notNull().default(false),
+  run_limit: integer("run_limit"),
   revoked_at: timestamp("revoked_at", { withTimezone: true }),
   created_at: timestamp("created_at", { withTimezone: true })
     .notNull()
