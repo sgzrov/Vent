@@ -412,19 +412,24 @@ export class BlandAudioChannel extends BaseAudioChannel {
 
       try {
         const event = JSON.parse(body) as Record<string, unknown>;
-        const eventType = (event.event ?? event.type ?? "") as string;
+        const eventType = (event.event ?? event.type ?? event.category ?? "") as string;
 
-        if (
-          eventType === "latency" ||
-          event.stt_latency != null ||
-          event.llm_latency != null ||
-          event.tts_latency != null
-        ) {
-          const timing: ComponentLatency = {};
-          if (typeof event.stt_latency === "number") timing.stt_ms = event.stt_latency;
-          if (typeof event.llm_latency === "number") timing.llm_ms = event.llm_latency;
-          if (typeof event.tts_latency === "number") timing.tts_ms = event.tts_latency;
-          this.componentLatencies.push(timing);
+        console.log(`[bland] Webhook (${this.channelId}): type=${eventType} ${JSON.stringify(event)}`);
+
+        if (eventType === "latency" || event.stt_latency != null || event.llm_latency != null || event.tts_latency != null) {
+          // Check top-level fields first, then nested under event.data
+          const source = (typeof event.data === "object" && event.data !== null ? event.data : event) as Record<string, unknown>;
+          const stt = typeof source.stt_latency === "number" ? source.stt_latency : (typeof event.stt_latency === "number" ? event.stt_latency : undefined);
+          const llm = typeof source.llm_latency === "number" ? source.llm_latency : (typeof event.llm_latency === "number" ? event.llm_latency : undefined);
+          const tts = typeof source.tts_latency === "number" ? source.tts_latency : (typeof event.tts_latency === "number" ? event.tts_latency : undefined);
+
+          if (stt != null || llm != null || tts != null) {
+            const timing: ComponentLatency = {};
+            if (stt != null) timing.stt_ms = stt;
+            if (llm != null) timing.llm_ms = llm;
+            if (tts != null) timing.tts_ms = tts;
+            this.componentLatencies.push(timing);
+          }
         }
       } catch {
         // Ignore malformed webhook payloads
