@@ -242,7 +242,7 @@ export async function submitRun(
       health_endpoint: cfg.health_endpoint as string | undefined,
       agent_url: agentUrl,
       platform: cfg.platform ?? null,
-    });
+    }, { jobId: runId });
 
     return { run_id: runId, status: "queued" };
   }

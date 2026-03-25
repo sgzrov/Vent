@@ -5,12 +5,15 @@ import IORedis from "ioredis";
 declare module "fastify" {
   interface FastifyInstance {
     getRunQueue: (userId: string) => Queue;
+    redis: IORedis;
   }
 }
 
 export const queuePlugin = fp(async (app) => {
   const redisUrl = process.env["REDIS_URL"] ?? "redis://localhost:6379";
   const connection = new IORedis(redisUrl, { maxRetriesPerRequest: null });
+
+  app.decorate("redis", connection);
 
   const queues = new Map<string, Queue>();
 
