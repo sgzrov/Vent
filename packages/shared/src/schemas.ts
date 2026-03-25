@@ -115,7 +115,7 @@ export const TestSpecSchema = z
     { message: "Only one of conversation_tests, red_team_tests, or load_test can be used per run" }
   );
 
-export const AdapterTypeSchema = z.enum(["websocket", "sip", "webrtc", "vapi", "retell", "elevenlabs", "bland"]);
+export const AdapterTypeSchema = z.enum(["websocket", "sip", "webrtc", "livekit", "vapi", "retell", "elevenlabs", "bland"]);
 
 // ============================================================
 // Tool call schemas
@@ -140,11 +140,12 @@ export const ToolCallMetricsSchema = z.object({
 });
 
 export const PlatformConfigSchema = z.object({
-  provider: z.enum(["vapi", "retell", "elevenlabs", "bland"]),
-  api_key_env: z.string(),
+  provider: z.enum(["vapi", "retell", "elevenlabs", "bland", "livekit"]),
+  api_key_env: z.string().optional(),
   api_key: z.string().optional(),
   agent_id: z.string().optional(),
-});
+  agent_name: z.string().optional(),
+}).passthrough();
 
 export const AudioAnalysisGradeThresholdsSchema = z.object({
   agent_speech_ratio_min: z.number().min(0).max(1).optional(),
@@ -350,10 +351,10 @@ export const CallMetadataSchema = z.object({
   duration_s: z.number().optional(),
   cost_usd: z.number().optional(),
   cost_breakdown: CostBreakdownSchema.optional(),
-  recording_url: z.string().optional(),
-  summary: z.string().optional(),
-  success_evaluation: z.string().optional(),
-  user_sentiment: z.string().optional(),
+  recording_url: z.string().nullable().optional(),
+  summary: z.string().nullable().optional(),
+  success_evaluation: z.string().nullable().optional(),
+  user_sentiment: z.string().nullable().optional(),
   call_successful: z.boolean().optional(),
 });
 

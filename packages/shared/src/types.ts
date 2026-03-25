@@ -13,7 +13,7 @@ export const AUDIO_TEST_NAMES = [
 
 export type AudioTestName = (typeof AUDIO_TEST_NAMES)[number];
 
-export type AdapterType = "websocket" | "sip" | "webrtc" | "vapi" | "retell" | "elevenlabs" | "bland";
+export type AdapterType = "websocket" | "sip" | "webrtc" | "livekit" | "vapi" | "retell" | "elevenlabs" | "bland";
 
 export interface CallerPersona {
   pace?: "slow" | "normal" | "fast";
@@ -133,10 +133,14 @@ export interface ToolCallMetrics {
 }
 
 export interface PlatformConfig {
-  provider: "vapi" | "retell" | "elevenlabs" | "bland";
-  api_key_env: string;
+  provider: "vapi" | "retell" | "elevenlabs" | "bland" | "livekit";
+  api_key_env?: string;
   api_key?: string;
   agent_id?: string;
+  /** LiveKit explicit dispatch — agent_name from WorkerOptions. Omit for automatic dispatch. */
+  agent_name?: string;
+  /** Provider-specific options passed through to the adapter (e.g. Bland task, tools, voice) */
+  [key: string]: unknown;
 }
 
 

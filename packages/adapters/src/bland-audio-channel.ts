@@ -1,26 +1,55 @@
 /**
  * Bland AI Audio Channel
  *
- * Composes a SipAudioChannel (inbound mode) for bidirectional audio
- * with Bland's REST API for call creation and tool call extraction.
+ * Uses POST /v1/calls + SIP inbound via SharedSipServer.
+ * Bland dials our Twilio number — real audio over SIP, call_id upfront,
+ * webhook events for component latency, concurrent testing support.
  *
- * Flow:
- *   1. connect()  — fetches agent config from GET /v1/inbound/{phone},
- *      sets up Twilio inbound, then asks Bland to call us via POST /v1/calls
- *      → call_id known immediately
- *   2. sendAudio() / on("audio") — bidirectional PCM 24kHz over SIP
- *   3. disconnect() — hangs up the SIP call
- *   4. getCallData() — fetches tool calls from GET /v1/calls/{call_id}
+ * Post-call data is fetched from GET /v1/calls/{call_id}.
  */
 
-import type { ObservedToolCall, CallMetadata } from "@vent/shared";
+import http from "node:http";
+import { randomBytes } from "node:crypto";
+import { WebSocket } from "ws";
+import { pcmToMulaw, mulawToPcm, resample } from "@vent/voice";
+import type { ObservedToolCall, CallMetadata, ComponentLatency } from "@vent/shared";
 import { BaseAudioChannel } from "./audio-channel.js";
-import { SipAudioChannel, type SipAudioChannelConfig } from "./sip-audio-channel.js";
+import { SharedSipServer, type SharedSipServerConfig } from "./shared-sip-server.js";
+
+const BLAND_API_BASE = "https://api.bland.ai";
+
+/** Bland call parameters passable from platform config */
+export interface BlandCallOptions {
+  /** Task prompt — used instead of pathway_id for simple agents */
+  task?: string;
+  /** Tool definitions (inline objects) or tool IDs (TL-xxx strings) */
+  tools?: unknown[];
+  /** Voice name ("maya", "josh") or UUID */
+  voice?: string;
+  /** Model: "base" (full features), "enhanced" (faster), "turbo" (fastest, no tools) */
+  model?: string;
+  /** Opening sentence — overrides any greeting in the task/pathway */
+  first_sentence?: string;
+  /** If true, agent waits for callee to speak first (default: false) */
+  wait_for_greeting?: boolean;
+  /** Max call duration in minutes (default: 30) */
+  max_duration?: number;
+  /** Temperature 0-1 (default: 0.7) */
+  temperature?: number;
+  /** Language code e.g. "babel-en", "babel-es" */
+  language?: string;
+  /** How quickly agent stops speaking when interrupted, in ms (default: 500) */
+  interruption_threshold?: number;
+}
 
 export interface BlandAudioChannelConfig {
   apiKey: string;
-  phoneNumber: string;
-  sip: SipAudioChannelConfig;
+  /** pathway_id (UUID) or empty if using task mode */
+  agentId?: string;
+  /** Shared SIP server config (Twilio credentials + public host) */
+  server: SharedSipServerConfig;
+  /** Bland-specific call options */
+  callOptions?: BlandCallOptions;
 }
 
 interface BlandTranscriptEntry {
@@ -28,6 +57,14 @@ interface BlandTranscriptEntry {
   created_at: string;
   text: string;
   user: "user" | "assistant" | "robot" | "agent-action";
+}
+
+interface BlandCorrectedTranscriptEntry {
+  speaker: "user" | "assistant";
+  text: string;
+  start: number;
+  end: number;
+  confidence: number;
 }
 
 interface BlandCallResponse {
@@ -42,9 +79,9 @@ interface BlandCallResponse {
     text?: string;
     data?: Record<string, unknown>;
   }>;
-  call_length?: number; // minutes (decimal)
-  corrected_duration?: string; // seconds as string
-  price?: number; // USD
+  call_length?: number;
+  corrected_duration?: string;
+  price?: number;
   recording_url?: string;
   summary?: string;
   answered_by?: string;
@@ -52,96 +89,132 @@ interface BlandCallResponse {
   error_message?: string;
 }
 
-interface BlandInboundConfig {
-  pathway_id?: string;
-  prompt?: string;
-  voice_id?: number;
-  max_duration?: number;
-}
-
-interface BlandSendCallResponse {
-  status: string;
-  call_id: string;
-}
-
 export class BlandAudioChannel extends BaseAudioChannel {
   private config: BlandAudioChannelConfig;
-  private sipChannel: SipAudioChannel | null = null;
+  private sharedServer: SharedSipServer | null = null;
+  private channelId: string;
+  private toolCallToken: string;
+  private ws: WebSocket | null = null;
+  private streamSid: string | null = null;
+  private callSid: string | null = null;
   private callId: string | null = null;
   private cachedCallResponse: BlandCallResponse | null = null;
+  private cachedCorrectedTranscripts: BlandCorrectedTranscriptEntry[] | null = null;
+  private componentLatencies: ComponentLatency[] = [];
 
   constructor(config: BlandAudioChannelConfig) {
     super();
     this.config = config;
+    this.channelId = randomBytes(12).toString("hex");
+    this.toolCallToken = randomBytes(24).toString("hex");
   }
 
   get connected(): boolean {
-    return this.sipChannel?.connected ?? false;
+    return this.ws?.readyState === WebSocket.OPEN;
   }
 
   async connect(): Promise<void> {
     const connectStart = Date.now();
-    // Fetch agent config from Bland's inbound number
-    const agentConfig = await this.fetchInboundConfig();
 
-    // Start SIP in inbound mode — Twilio app created, number configured, waiting
-    this.sipChannel = new SipAudioChannel({ ...this.config.sip, mode: "inbound" });
+    // 1. Acquire shared server (starts HTTP + Twilio on first channel)
+    this.sharedServer = await SharedSipServer.acquire(this.config.server);
 
-    this.sipChannel.on("audio", (chunk) => {
-      this._stats.bytesReceived += chunk.length;
-      this.emit("audio", chunk);
+    const webhookUrl = `${this.sharedServer.publicBaseUrl}/bland-webhook/${this.channelId}`;
+
+    // 2. Register for WebSocket dispatch (FIFO queue)
+    const connectionPromise = this.sharedServer.registerChannel({
+      channelId: this.channelId,
+      webhookHandler: (req, res) => this.handleBlandWebhook(req, res),
+      toolCallToken: this.toolCallToken,
+      toolCallHandler: (req, res) => this.handleToolCallPost(req, res),
     });
-    this.sipChannel.on("error", (err) => {
-      this._stats.errorEvents.push(err.message);
-      this.emit("error", err);
+
+    // Prevent unhandled rejection if timeout fires while we're blocked on initiation lock
+    let connectionError: Error | null = null;
+    connectionPromise.catch((err) => {
+      connectionError = err;
     });
-    this.sipChannel.on("disconnected", () => this.emit("disconnected"));
 
-    await this.sipChannel.connect();
+    // 3. Acquire initiation lock (serializes Bland API calls, 10s gap)
+    const releaseInit = await this.sharedServer.acquireInitiationLock();
 
-    // Ask Bland to call our Twilio number — call_id returned immediately
-    const callBody: Record<string, unknown> = {
-      phone_number: this.config.sip.fromNumber,
-    };
-
-    // Use pathway_id if available, otherwise fall back to task (prompt)
-    if (agentConfig.pathway_id) {
-      callBody.pathway_id = agentConfig.pathway_id;
-    } else if (agentConfig.prompt) {
-      callBody.task = agentConfig.prompt;
+    // Check if connection already timed out while waiting for lock
+    if (connectionError) {
+      releaseInit();
+      throw connectionError;
     }
 
-    const res = await fetch("https://api.bland.ai/v1/calls", {
-      method: "POST",
-      headers: {
-        authorization: this.config.apiKey,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(callBody),
-    });
-
-    if (!res.ok) {
-      const errorText = await res.text();
-      throw new Error(`Bland send-call failed (${res.status}): ${errorText}`);
+    try {
+      // 4. Fire POST /v1/calls → Bland dials our number
+      await this.initiateCall(webhookUrl);
+    } catch (err) {
+      releaseInit();
+      throw err;
     }
 
-    const data = (await res.json()) as BlandSendCallResponse;
-    this.callId = data.call_id;
+    // Release lock immediately after POST — don't hold through WebSocket connect.
+    // The 10s gap in acquireInitiationLock() handles rate limiting.
+    releaseInit();
+
+    // 5. Wait for Bland's call to arrive (WebSocket connects)
+    const { ws, streamSid, callSid } = await connectionPromise;
+    this.ws = ws;
+    this.streamSid = streamSid;
+    this.callSid = callSid;
+
+    // Set up audio message handling
+    this.setupMediaHandlers();
+
     this._stats.connectLatencyMs = Date.now() - connectStart;
+    console.log(`[bland] Connected: call_id=${this.callId}, callSid=${this.callSid}, took ${this._stats.connectLatencyMs}ms`);
   }
 
   sendAudio(pcm: Buffer): void {
-    if (!this.sipChannel) {
-      throw new Error("Bland channel not connected");
+    if (!this.ws || !this.streamSid) {
+      throw new Error("Bland SIP channel not connected");
     }
+
     this._stats.bytesSent += pcm.length;
-    this.sipChannel.sendAudio(pcm);
+    const pcm8k = resample(pcm, 24000, 8000);
+    const mulaw = pcmToMulaw(pcm8k);
+
+    const CHUNK_SIZE = 160; // 20ms at 8kHz mulaw
+    for (let offset = 0; offset < mulaw.length; offset += CHUNK_SIZE) {
+      const chunk = mulaw.subarray(offset, Math.min(offset + CHUNK_SIZE, mulaw.length));
+      this.ws.send(
+        JSON.stringify({
+          event: "media",
+          streamSid: this.streamSid,
+          media: { payload: chunk.toString("base64") },
+        }),
+      );
+    }
   }
 
   async disconnect(): Promise<void> {
-    if (this.sipChannel) {
-      await this.sipChannel.disconnect();
-      this.sipChannel = null;
+    // Hang up the Twilio call
+    if (this.callSid && this.config.server.accountSid) {
+      const twilio = (await import("twilio")).default(
+        this.config.server.accountSid,
+        this.config.server.authToken,
+      );
+      await twilio
+        .calls(this.callSid)
+        .update({ status: "completed" })
+        .catch(() => {});
+      this.callSid = null;
+    }
+
+    // Close our WebSocket (doesn't affect the shared server)
+    if (this.ws) {
+      this.ws.close();
+      this.ws = null;
+    }
+
+    // Release our ref on the shared server
+    if (this.sharedServer) {
+      await this.sharedServer.release(this.channelId);
+      this.sharedServer = null;
     }
   }
 
@@ -155,11 +228,13 @@ export class BlandAudioChannel extends BaseAudioChannel {
     const data = await this.fetchCallResponse();
     if (!data) return null;
 
-    const durationS = data.corrected_duration != null
-      ? parseFloat(data.corrected_duration)
-      : data.call_length != null ? data.call_length * 60 : undefined;
+    const durationS =
+      data.corrected_duration != null
+        ? parseFloat(data.corrected_duration)
+        : data.call_length != null
+          ? data.call_length * 60
+          : undefined;
 
-    // Determine ended_reason from available fields
     let endedReason = data.status;
     if (data.call_ended_by) endedReason = `ended_by_${data.call_ended_by.toLowerCase()}`;
     if (data.error_message) endedReason = `error: ${data.error_message}`;
@@ -169,12 +244,30 @@ export class BlandAudioChannel extends BaseAudioChannel {
       ended_reason: endedReason,
       duration_s: durationS,
       cost_usd: data.price,
-      recording_url: data.recording_url,
-      summary: data.summary,
+      recording_url: data.recording_url ?? undefined,
+      summary: data.summary ?? undefined,
     };
   }
 
+  getComponentTimings(): ComponentLatency[] {
+    return this.componentLatencies;
+  }
+
   getTranscripts(): Array<{ turnIndex: number; text: string }> {
+    if (this.cachedCorrectedTranscripts?.length) {
+      const transcripts: Array<{ turnIndex: number; text: string }> = [];
+      let callerTurnIndex = 0;
+      for (const entry of this.cachedCorrectedTranscripts) {
+        if (entry.speaker === "user") {
+          transcripts.push({ turnIndex: callerTurnIndex, text: entry.text });
+          callerTurnIndex++;
+        } else if (entry.speaker === "assistant") {
+          callerTurnIndex++;
+        }
+      }
+      return transcripts;
+    }
+
     const data = this.cachedCallResponse;
     if (!data?.transcripts) return [];
 
@@ -191,17 +284,191 @@ export class BlandAudioChannel extends BaseAudioChannel {
     return transcripts;
   }
 
-  // ── Private helpers ─────────────────────────────────────────
+  // ── Private helpers ────────────────────────────────────────
+
+  private async initiateCall(webhookUrl: string): Promise<void> {
+    const callBody = this.buildCallBody(webhookUrl);
+    console.log(
+      `[bland] POST /v1/calls → phone_number: ${callBody.phone_number}, pathway_id: ${callBody.pathway_id ?? "none"}`,
+    );
+
+    const MAX_RETRIES = 3;
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+      const res = await fetch(`${BLAND_API_BASE}/v1/calls`, {
+        method: "POST",
+        headers: {
+          authorization: this.config.apiKey,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(callBody),
+      });
+
+      if (res.status === 429) {
+        console.warn(`[bland] Rate limited (429), waiting 10s before retry ${attempt + 1}/${MAX_RETRIES}...`);
+        await sleep(10_000);
+        continue;
+      }
+
+      if (!res.ok) {
+        const errorText = await res.text();
+        throw new Error(`Bland POST /v1/calls failed (${res.status}): ${errorText}`);
+      }
+
+      const callData = (await res.json()) as { call_id?: string; status?: string; message?: string };
+      if (!callData.call_id) {
+        throw new Error(`Bland POST /v1/calls response missing call_id: ${JSON.stringify(callData)}`);
+      }
+
+      this.callId = callData.call_id;
+      console.log(`[bland] Call initiated: ${this.callId}, waiting for Bland to dial...`);
+      return;
+    }
+
+    throw new Error("Bland POST /v1/calls failed: rate limited after 3 retries");
+  }
+
+  private buildCallBody(webhookUrl: string): Record<string, unknown> {
+    const opts = this.config.callOptions;
+    const body: Record<string, unknown> = {
+      phone_number: this.config.server.fromNumber,
+      record: true,
+      wait_for_greeting: opts?.wait_for_greeting ?? false,
+      webhook: webhookUrl,
+      webhook_events: ["latency", "tool"],
+    };
+
+    if (this.config.agentId) body.pathway_id = this.config.agentId;
+    if (opts?.task) body.task = opts.task;
+    if (opts?.voice) body.voice = opts.voice;
+    if (opts?.model) body.model = opts.model;
+    if (opts?.first_sentence) body.first_sentence = opts.first_sentence;
+    if (opts?.max_duration != null) body.max_duration = opts.max_duration;
+    if (opts?.temperature != null) body.temperature = opts.temperature;
+    if (opts?.language) body.language = opts.language;
+    if (opts?.interruption_threshold != null) body.interruption_threshold = opts.interruption_threshold;
+    if (opts?.tools?.length) body.tools = opts.tools;
+
+    return body;
+  }
+
+  private setupMediaHandlers(): void {
+    if (!this.ws) return;
+
+    this.ws.on("message", (data: Buffer | ArrayBuffer | Buffer[]) => {
+      let raw: string;
+      if (Buffer.isBuffer(data)) {
+        raw = data.toString();
+      } else if (data instanceof ArrayBuffer) {
+        raw = Buffer.from(new Uint8Array(data)).toString();
+      } else {
+        raw = Buffer.concat(data as Buffer[]).toString();
+      }
+
+      let msg: { event: string; media?: { payload: string } };
+      try {
+        msg = JSON.parse(raw);
+      } catch {
+        return;
+      }
+
+      if (msg.event === "media" && msg.media?.payload) {
+        const mulaw = Buffer.from(msg.media.payload, "base64");
+        this._stats.bytesReceived += mulaw.length;
+        const pcm8k = mulawToPcm(mulaw);
+        const pcm24k = resample(pcm8k, 8000, 24000);
+        this.emit("audio", pcm24k);
+      }
+
+      if (msg.event === "stop") {
+        this.emit("disconnected");
+      }
+    });
+
+    this.ws.on("close", () => {
+      this.emit("disconnected");
+    });
+
+    this.ws.on("error", (err) => {
+      this._stats.errorEvents.push(err.message);
+      this.emit("error", err);
+    });
+  }
+
+  private handleBlandWebhook(req: http.IncomingMessage, res: http.ServerResponse): void {
+    if (req.method !== "POST") {
+      res.writeHead(405);
+      res.end();
+      return;
+    }
+
+    let body = "";
+    req.on("data", (chunk: Buffer) => {
+      body += chunk.toString();
+    });
+    req.on("end", () => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end('{"status":"ok"}');
+
+      try {
+        const event = JSON.parse(body) as Record<string, unknown>;
+        const eventType = (event.event ?? event.type ?? "") as string;
+
+        if (
+          eventType === "latency" ||
+          event.stt_latency != null ||
+          event.llm_latency != null ||
+          event.tts_latency != null
+        ) {
+          const timing: ComponentLatency = {};
+          if (typeof event.stt_latency === "number") timing.stt_ms = event.stt_latency;
+          if (typeof event.llm_latency === "number") timing.llm_ms = event.llm_latency;
+          if (typeof event.tts_latency === "number") timing.tts_ms = event.tts_latency;
+          this.componentLatencies.push(timing);
+        }
+      } catch {
+        // Ignore malformed webhook payloads
+      }
+    });
+  }
+
+  private handleToolCallPost(req: http.IncomingMessage, res: http.ServerResponse): void {
+    if (req.method === "OPTIONS") {
+      res.writeHead(204, {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type",
+      });
+      res.end();
+      return;
+    }
+
+    if (req.method !== "POST") {
+      res.writeHead(405);
+      res.end();
+      return;
+    }
+
+    let body = "";
+    req.on("data", (chunk: Buffer) => {
+      body += chunk.toString();
+    });
+    req.on("end", () => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end('{"status":"ok"}');
+      // Tool call tracking could be added here if needed
+    });
+  }
+
+  // ── Post-call data ────────────────────────────────────────
 
   private async fetchCallResponse(): Promise<BlandCallResponse | null> {
     if (this.cachedCallResponse) return this.cachedCallResponse;
     if (!this.callId) return null;
 
-    // Poll with backoff — Bland needs time to process call data after disconnect
     const delays = [500, 1000, 2000, 3000];
     for (const delay of delays) {
       await sleep(delay);
-      const res = await fetch(`https://api.bland.ai/v1/calls/${this.callId}`, {
+      const res = await fetch(`${BLAND_API_BASE}/v1/calls/${this.callId}`, {
         headers: { authorization: this.config.apiKey },
       });
       if (!res.ok) continue;
@@ -209,6 +476,7 @@ export class BlandAudioChannel extends BaseAudioChannel {
       const data = (await res.json()) as BlandCallResponse;
       if (data.completed || data.status === "completed" || data.status === "failed") {
         this.cachedCallResponse = data;
+        await this.fetchCorrectedTranscripts();
         return data;
       }
     }
@@ -216,31 +484,29 @@ export class BlandAudioChannel extends BaseAudioChannel {
     return null;
   }
 
-  private async fetchInboundConfig(): Promise<BlandInboundConfig> {
-    const res = await fetch(
-      `https://api.bland.ai/v1/inbound/${encodeURIComponent(this.config.phoneNumber)}`,
-      { headers: { authorization: this.config.apiKey } },
-    );
-
-    if (!res.ok) {
-      const errorText = await res.text();
-      throw new Error(
-        `Bland get-inbound-number failed (${res.status}): ${errorText}`
-      );
+  private async fetchCorrectedTranscripts(): Promise<void> {
+    if (!this.callId) return;
+    try {
+      const res = await fetch(`${BLAND_API_BASE}/v1/calls/${this.callId}/corrected-transcript`, {
+        headers: { authorization: this.config.apiKey },
+      });
+      if (res.ok) {
+        const data = (await res.json()) as { aligned?: BlandCorrectedTranscriptEntry[] };
+        if (data.aligned?.length) {
+          this.cachedCorrectedTranscripts = data.aligned;
+        }
+      }
+    } catch {
+      // Non-critical — fall back to raw transcripts
     }
-
-    return (await res.json()) as BlandInboundConfig;
   }
 
   private parseToolCalls(data: BlandCallResponse): ObservedToolCall[] {
     const toolCalls: ObservedToolCall[] = [];
 
-    // Extract tool calls from transcript entries with user type "agent-action"
     const transcripts = data.transcripts ?? [];
     for (const entry of transcripts) {
       if (entry.user === "agent-action") {
-        // Bland agent-action entries contain tool invocation info in the text
-        // Try to parse as JSON, fall back to using text as the tool name
         try {
           const parsed = JSON.parse(entry.text) as {
             name?: string;
@@ -264,7 +530,6 @@ export class BlandAudioChannel extends BaseAudioChannel {
       }
     }
 
-    // Also check pathway_logs for tool invocations
     const pathwayLogs = data.pathway_logs ?? [];
     for (const log of pathwayLogs) {
       if (log.data && (log.data.tool_name || log.data.function_name)) {

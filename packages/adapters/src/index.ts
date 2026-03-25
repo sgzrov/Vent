@@ -3,7 +3,7 @@ import { RUNNER_CALLBACK_HEADER } from "@vent/shared";
 import type { AudioChannel } from "./audio-channel.js";
 import { WsAudioChannel } from "./ws-audio-channel.js";
 import { WebRtcAudioChannel } from "./webrtc-audio-channel.js";
-import { SipAudioChannel } from "./sip-audio-channel.js";
+import { SipAudioChannel, type SipAudioChannelConfig } from "./sip-audio-channel.js";
 import { VapiAudioChannel } from "./vapi-audio-channel.js";
 import { ElevenLabsAudioChannel } from "./elevenlabs-audio-channel.js";
 import { RetellAudioChannel } from "./retell-audio-channel.js";
@@ -19,6 +19,7 @@ export type { VapiAssistantConfig } from "./vapi-audio-channel.js";
 export { RetellAudioChannel } from "./retell-audio-channel.js";
 export { ElevenLabsAudioChannel } from "./elevenlabs-audio-channel.js";
 export { BlandAudioChannel } from "./bland-audio-channel.js";
+export { SharedSipServer } from "./shared-sip-server.js";
 
 export interface AudioChannelConfig {
   adapter: AdapterType;
@@ -26,6 +27,19 @@ export interface AudioChannelConfig {
   targetPhoneNumber?: string;
   platform?: PlatformConfig;
   relayHeaders?: Record<string, string>;
+}
+
+/** SIP server port config from environment. On Fly.io, use a fixed port behind the reverse proxy. */
+function sipPortConfig(): { port?: number; publicPort?: number | null } {
+  const listenPort = parseInt(process.env["RUNNER_LISTEN_PORT"] ?? "0", 10) || undefined;
+  return listenPort ? { port: listenPort, publicPort: null } : {};
+}
+
+/** Resolve agent_id: direct value → custom env var → default env var for provider */
+function resolveAgentId(platform: PlatformConfig | undefined, defaultEnv: string): string {
+  return platform?.agent_id
+    || process.env[platform?.agent_id_env as string ?? defaultEnv]
+    || "";
 }
 
 export function createAudioChannel(config: AudioChannelConfig): AudioChannel {
@@ -49,17 +63,25 @@ export function createAudioChannel(config: AudioChannelConfig): AudioChannel {
       return new WsAudioChannel({ wsUrl, headers });
     }
 
-    case "webrtc": {
-      const livekitUrl = process.env["LIVEKIT_URL"] ?? "";
-      const apiKey = process.env["LIVEKIT_API_KEY"] ?? "";
-      const apiSecret = process.env["LIVEKIT_API_SECRET"] ?? "";
-      const roomName = `vent-${process.env["RUN_ID"] ?? crypto.randomUUID().slice(0, 8)}`;
+    case "webrtc":
+    case "livekit": {
+      const p = config.platform;
+      const apiKey = (p?.api_key as string) || process.env[p?.api_key_env ?? "LIVEKIT_API_KEY"] || "";
+      const apiSecret = (p?.api_secret as string) || process.env["LIVEKIT_API_SECRET"] || "";
+      const livekitUrl = (p?.livekit_url as string) || process.env["LIVEKIT_URL"] || "";
+      const agentName = p?.agent_name as string | undefined;
 
+      if (!livekitUrl) throw new Error("LiveKit adapter requires LIVEKIT_URL env or platform.livekit_url");
+      if (!apiKey) throw new Error("LiveKit adapter requires API key (set LIVEKIT_API_KEY or platform.api_key_env)");
+      if (!apiSecret) throw new Error("LiveKit adapter requires LIVEKIT_API_SECRET env or platform.api_secret");
+
+      const roomName = `vent-${crypto.randomUUID().replace(/-/g, "").slice(0, 8)}`;
       return new WebRtcAudioChannel({
         livekitUrl,
         apiKey,
         apiSecret,
         roomName,
+        agentName,
       });
     }
 
@@ -82,23 +104,24 @@ export function createAudioChannel(config: AudioChannelConfig): AudioChannel {
         accountSid,
         authToken,
         publicHost,
+        ...sipPortConfig(),
       });
     }
 
     case "vapi": {
       const apiKey = config.platform?.api_key || process.env[config.platform?.api_key_env ?? "VAPI_API_KEY"] || "";
-      const assistantId = config.platform?.agent_id ?? "";
+      const assistantId = resolveAgentId(config.platform, "VAPI_ASSISTANT_ID");
       if (!apiKey) throw new Error("Vapi adapter requires API key (set VAPI_API_KEY or platform.api_key_env)");
-      if (!assistantId) throw new Error("Vapi adapter requires platform.agent_id");
+      if (!assistantId) throw new Error("Vapi adapter requires VAPI_ASSISTANT_ID env or platform.agent_id");
 
       return new VapiAudioChannel({ apiKey, assistantId });
     }
 
     case "retell": {
       const apiKey = config.platform?.api_key || process.env[config.platform?.api_key_env ?? "RETELL_API_KEY"] || "";
-      const agentId = config.platform?.agent_id ?? "";
+      const agentId = resolveAgentId(config.platform, "RETELL_AGENT_ID");
       if (!apiKey) throw new Error("Retell adapter requires API key (set RETELL_API_KEY or platform.api_key_env)");
-      if (!agentId) throw new Error("Retell adapter requires platform.agent_id");
+      if (!agentId) throw new Error("Retell adapter requires RETELL_AGENT_ID env or platform.agent_id");
       if (!config.targetPhoneNumber) throw new Error("Retell adapter requires targetPhoneNumber (the agent's phone number)");
 
       const retellAccountSid = process.env["TWILIO_ACCOUNT_SID"] ?? "";
@@ -116,39 +139,57 @@ export function createAudioChannel(config: AudioChannelConfig): AudioChannel {
           accountSid: retellAccountSid,
           authToken: retellAuthToken,
           publicHost: retellPublicHost,
+          ...sipPortConfig(),
         },
       });
     }
 
     case "elevenlabs": {
       const apiKey = config.platform?.api_key || process.env[config.platform?.api_key_env ?? "ELEVENLABS_API_KEY"] || "";
-      const agentId = config.platform?.agent_id ?? "";
+      const agentId = resolveAgentId(config.platform, "ELEVENLABS_AGENT_ID");
       if (!apiKey) throw new Error("ElevenLabs adapter requires API key (set ELEVENLABS_API_KEY or platform.api_key_env)");
-      if (!agentId) throw new Error("ElevenLabs adapter requires platform.agent_id");
+      if (!agentId) throw new Error("ElevenLabs adapter requires ELEVENLABS_AGENT_ID env or platform.agent_id");
 
       return new ElevenLabsAudioChannel({ apiKey, agentId });
     }
 
     case "bland": {
-      const apiKey = config.platform?.api_key || process.env[config.platform?.api_key_env ?? "BLAND_API_KEY"] || "";
+      const p = config.platform;
+      const apiKey = p?.api_key || process.env[p?.api_key_env ?? "BLAND_API_KEY"] || "";
+      const agentId = resolveAgentId(p, "BLAND_PATHWAY_ID") || undefined;
+      const task = p?.task as string | undefined;
       if (!apiKey) throw new Error("Bland adapter requires API key (set BLAND_API_KEY or platform.api_key_env)");
-      if (!config.targetPhoneNumber) throw new Error("Bland adapter requires targetPhoneNumber (the agent's phone number)");
+      if (!agentId && !task) throw new Error("Bland adapter requires BLAND_PATHWAY_ID env, platform.agent_id, or platform.task (prompt)");
 
+      const blandFromNumber = process.env["TWILIO_FROM_NUMBER"] ?? "";
       const blandAccountSid = process.env["TWILIO_ACCOUNT_SID"] ?? "";
       const blandAuthToken = process.env["TWILIO_AUTH_TOKEN"] ?? "";
-      const blandFromNumber = process.env["TWILIO_FROM_NUMBER"] ?? "";
-      const blandPublicHost = process.env["RUNNER_PUBLIC_HOST"] ?? "localhost";
-      if (!blandFromNumber) throw new Error("Bland adapter requires TWILIO_FROM_NUMBER env var");
+      const blandPublicHost = process.env["RUNNER_PUBLIC_HOST"] ?? "";
+      if (!blandFromNumber || !blandAccountSid || !blandAuthToken || !blandPublicHost) {
+        throw new Error("Bland adapter requires Twilio credentials (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER) and RUNNER_PUBLIC_HOST");
+      }
 
       return new BlandAudioChannel({
         apiKey,
-        phoneNumber: config.targetPhoneNumber,
-        sip: {
-          phoneNumber: config.targetPhoneNumber,
-          fromNumber: blandFromNumber,
+        agentId,
+        server: {
           accountSid: blandAccountSid,
           authToken: blandAuthToken,
+          fromNumber: blandFromNumber,
           publicHost: blandPublicHost,
+          ...sipPortConfig(),
+        },
+        callOptions: {
+          task,
+          tools: p?.tools as unknown[] | undefined,
+          voice: p?.voice as string | undefined,
+          model: p?.model as string | undefined,
+          first_sentence: p?.first_sentence as string | undefined,
+          wait_for_greeting: p?.wait_for_greeting as boolean | undefined,
+          max_duration: p?.max_duration as number | undefined,
+          temperature: p?.temperature as number | undefined,
+          language: p?.language as string | undefined,
+          interruption_threshold: p?.interruption_threshold as number | undefined,
         },
       });
     }

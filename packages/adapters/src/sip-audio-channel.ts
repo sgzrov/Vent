@@ -28,6 +28,17 @@ export interface SipAudioChannelConfig {
   publicHost: string;
   /** "outbound" (default): Twilio dials phoneNumber. "inbound": wait for incoming call on fromNumber. */
   mode?: "inbound" | "outbound";
+  /** Fixed port for the HTTP server (default: 0 = random OS-assigned). Use a fixed port on Fly.io. */
+  port?: number;
+  /** Port to include in public URLs. `null` = omit port (standard 443). Default: use actual listen port. */
+  publicPort?: number | null;
+  /** Extra HTTP routes mounted on the same server (e.g. webhook receivers). */
+  additionalRoutes?: Array<{
+    path: string;
+    handler: (req: http.IncomingMessage, res: http.ServerResponse) => void;
+  }>;
+  /** Called after server + Twilio setup completes, before waiting for media. Use to trigger the inbound call. */
+  onReady?: () => Promise<void>;
 }
 
 interface TwilioStreamMessage {
@@ -66,7 +77,7 @@ export class SipAudioChannel extends BaseAudioChannel {
 
   get toolCallEndpointUrl(): string | null {
     if (this.port === 0) return null;
-    return `https://${this.config.publicHost}:${this.port}${this.toolCallPath()}`;
+    return `${this.publicBaseUrl("https")}${this.toolCallPath()}`;
   }
 
   async connect(): Promise<void> {
@@ -82,6 +93,8 @@ export class SipAudioChannel extends BaseAudioChannel {
     } else {
       await this.placeOutboundCall();
     }
+
+    if (this.config.onReady) await this.config.onReady();
 
     await this.waitForMediaConnection();
     this._stats.connectLatencyMs = Date.now() - connectStart;
@@ -167,7 +180,7 @@ export class SipAudioChannel extends BaseAudioChannel {
   }
 
   private async placeOutboundCall(): Promise<void> {
-    const answerUrl = `https://${this.config.publicHost}:${this.port}/answer`;
+    const answerUrl = `${this.publicBaseUrl("https")}/answer`;
 
     const call = await this.twilio.calls.create({
       to: this.config.phoneNumber,
@@ -180,7 +193,7 @@ export class SipAudioChannel extends BaseAudioChannel {
   }
 
   private async setupInbound(): Promise<void> {
-    const answerUrl = `https://${this.config.publicHost}:${this.port}/answer`;
+    const answerUrl = `${this.publicBaseUrl("https")}/answer`;
 
     // Create a temporary TwiML Application with our answer URL
     const app = await this.twilio.applications.create({
@@ -215,7 +228,7 @@ export class SipAudioChannel extends BaseAudioChannel {
       this.server = http.createServer((req, res) => {
         const pathname = this.parsePathname(req.url);
         if (req.url?.startsWith("/answer")) {
-          const wsUrl = `wss://${this.config.publicHost}:${this.port}/stream`;
+          const wsUrl = `${this.publicBaseUrl("wss")}/stream`;
           const twiml = [
             '<?xml version="1.0" encoding="UTF-8"?>',
             "<Response>",
@@ -240,8 +253,14 @@ export class SipAudioChannel extends BaseAudioChannel {
             res.end();
           }
         } else {
-          res.writeHead(404);
-          res.end();
+          // Check additional routes (e.g. webhook handlers)
+          const extra = this.config.additionalRoutes?.find((r) => pathname === r.path);
+          if (extra) {
+            extra.handler(req, res);
+          } else {
+            res.writeHead(404);
+            res.end();
+          }
         }
       });
 
@@ -302,7 +321,7 @@ export class SipAudioChannel extends BaseAudioChannel {
         });
       });
 
-      this.server.listen(0, () => {
+      this.server.listen(this.config.port ?? 0, () => {
         const addr = this.server!.address();
         if (addr && typeof addr !== "string") {
           this.port = addr.port;
@@ -310,6 +329,16 @@ export class SipAudioChannel extends BaseAudioChannel {
         resolve();
       });
     });
+  }
+
+  private publicBaseUrl(scheme: "https" | "wss"): string {
+    const pp = this.config.publicPort;
+    // publicPort === null → omit port (behind reverse proxy on standard 443)
+    if (pp === null) return `${scheme}://${this.config.publicHost}`;
+    // publicPort explicitly set → use it
+    if (pp !== undefined) return `${scheme}://${this.config.publicHost}:${pp}`;
+    // Default (local dev) → use actual bound port
+    return `${scheme}://${this.config.publicHost}:${this.port}`;
   }
 
   private toolCallPath(): string {
