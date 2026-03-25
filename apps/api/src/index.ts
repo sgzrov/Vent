@@ -10,6 +10,7 @@ import { callbackRoutes } from "./routes/callback.js";
 import { keyRoutes } from "./routes/keys.js";
 import { relayRoutes } from "./routes/relay.js";
 import { deviceRoutes } from "./routes/device.js";
+import { agentAuthRoutes } from "./routes/agent-auth.js";
 import { dbPlugin } from "./plugins/db.js";
 import { queuePlugin } from "./plugins/queue.js";
 import { authPlugin } from "./plugins/auth.js";
@@ -71,6 +72,7 @@ async function main() {
   await app.register(keyRoutes);
   await app.register(relayRoutes);
   await app.register(deviceRoutes);
+  await app.register(agentAuthRoutes);
 
   // Stuck run cleanup
   const cleanupEnabled = (process.env["RUN_CLEANUP_ENABLED"] ?? "true") !== "false";
