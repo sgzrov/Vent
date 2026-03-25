@@ -335,7 +335,7 @@ export class BlandAudioChannel extends BaseAudioChannel {
       record: true,
       wait_for_greeting: opts?.wait_for_greeting ?? false,
       webhook: webhookUrl,
-      webhook_events: ["latency", "tool"],
+      webhook_events: ["latency", "tool", "call"],
     };
 
     if (this.config.agentId) body.pathway_id = this.config.agentId;
