@@ -1,111 +1,48 @@
 import type { FastifyInstance } from "fastify";
-import { randomBytes, createHash } from "node:crypto";
-import { WorkOS } from "@workos-inc/node";
+import { randomBytes, createHash, randomUUID } from "node:crypto";
 import { schema } from "@vent/db";
 
-const WINDOW_MS = 15 * 60 * 1000; // 15 minutes
-const MAX_STARTS = 3; // per email per window
-const MAX_VERIFIES = 5; // per email per window
+const WINDOW_MS = 60 * 60 * 1000; // 1 hour
+const MAX_BOOTSTRAPS_PER_IP = 5;
+const DEFAULT_RUN_LIMIT = 10;
 
 interface RateEntry {
   count: number;
   resetAt: number;
 }
 
-const startLimiter = new Map<string, RateEntry>();
-const verifyLimiter = new Map<string, RateEntry>();
+const ipLimiter = new Map<string, RateEntry>();
 
-function checkRate(
-  limiter: Map<string, RateEntry>,
-  key: string,
-  max: number,
-): boolean {
+function checkRate(ip: string): boolean {
   const now = Date.now();
-  const entry = limiter.get(key);
+  const entry = ipLimiter.get(ip);
 
   if (!entry || now >= entry.resetAt) {
-    limiter.set(key, { count: 1, resetAt: now + WINDOW_MS });
+    ipLimiter.set(ip, { count: 1, resetAt: now + WINDOW_MS });
     return true;
   }
 
-  if (entry.count >= max) return false;
+  if (entry.count >= MAX_BOOTSTRAPS_PER_IP) return false;
   entry.count++;
   return true;
 }
 
 export async function agentAuthRoutes(app: FastifyInstance) {
-  const workosApiKey = process.env["WORKOS_API_KEY"];
-  const workosClientId = process.env["WORKOS_CLIENT_ID"];
+  // Anonymous bootstrap — zero-interaction account creation for agents
+  app.post("/auth/bootstrap", async (request, reply) => {
+    const ip = request.ip;
 
-  if (!workosApiKey || !workosClientId) {
-    app.log.info(
-      "Agent auth routes disabled — WORKOS_API_KEY and WORKOS_CLIENT_ID required.",
-    );
-    return;
-  }
-
-  const workos = new WorkOS(workosApiKey, { clientId: workosClientId });
-
-  // Send a 6-digit OTP to the user's email (no auth required)
-  app.post("/auth/magic-start", async (request, reply) => {
-    const { email } = request.body as { email?: string };
-    if (!email || typeof email !== "string") {
-      return reply.status(400).send({ error: "email is required" });
-    }
-
-    const normalizedEmail = email.toLowerCase().trim();
-
-    if (!checkRate(startLimiter, normalizedEmail, MAX_STARTS)) {
+    if (!checkRate(ip)) {
       return reply.status(429).send({
-        error: "Too many requests. Try again in a few minutes.",
+        error: "Too many accounts created. Try again later.",
       });
     }
 
-    try {
-      await workos.userManagement.createMagicAuth({ email: normalizedEmail });
-    } catch (err: any) {
-      app.log.error({ err }, "Failed to create magic auth");
-      return reply.status(500).send({ error: "Failed to send verification code." });
-    }
+    const runLimit =
+      parseInt(process.env["ANONYMOUS_RUN_LIMIT"] ?? "", 10) ||
+      DEFAULT_RUN_LIMIT;
 
-    return reply.send({ success: true });
-  });
-
-  // Verify the OTP and issue an API key (no auth required)
-  app.post("/auth/magic-verify", async (request, reply) => {
-    const { email, code } = request.body as {
-      email?: string;
-      code?: string;
-    };
-    if (!email || typeof email !== "string") {
-      return reply.status(400).send({ error: "email is required" });
-    }
-    if (!code || typeof code !== "string") {
-      return reply.status(400).send({ error: "code is required" });
-    }
-
-    const normalizedEmail = email.toLowerCase().trim();
-
-    if (!checkRate(verifyLimiter, normalizedEmail, MAX_VERIFIES)) {
-      return reply.status(429).send({
-        error: "Too many attempts. Try again in a few minutes.",
-      });
-    }
-
-    let userId: string;
-    try {
-      const authResponse =
-        await workos.userManagement.authenticateWithMagicAuth({
-          code: code.trim(),
-          email: normalizedEmail,
-        });
-      userId = authResponse.user.id;
-    } catch (err: any) {
-      app.log.warn({ err }, "Magic auth verification failed");
-      return reply.status(401).send({ error: "Invalid or expired code." });
-    }
-
-    // Create API key (same pattern as device.ts and keys.ts)
+    const userId = `anon_${randomUUID()}`;
     const rawKey = `vent_${randomBytes(24).toString("hex")}`;
     const keyHash = createHash("sha256").update(rawKey).digest("hex");
     const prefix = rawKey.slice(0, 12);
@@ -113,10 +50,15 @@ export async function agentAuthRoutes(app: FastifyInstance) {
     await app.db.insert(schema.apiKeys).values({
       user_id: userId,
       key_hash: keyHash,
-      name: "Agent Setup",
+      name: "Bootstrap",
       prefix,
+      is_anonymous: true,
+      run_limit: runLimit,
     });
 
-    return reply.send({ api_key: rawKey });
+    return reply.status(201).send({
+      api_key: rawKey,
+      run_limit: runLimit,
+    });
   });
 }
