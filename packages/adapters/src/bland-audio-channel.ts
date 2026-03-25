@@ -60,7 +60,8 @@ interface BlandTranscriptEntry {
 }
 
 interface BlandCorrectedTranscriptEntry {
-  speaker: "user" | "assistant";
+  speaker: number;
+  speaker_label: "user" | "assistant";
   text: string;
   start: number;
   end: number;
@@ -258,10 +259,10 @@ export class BlandAudioChannel extends BaseAudioChannel {
       const transcripts: Array<{ turnIndex: number; text: string }> = [];
       let callerTurnIndex = 0;
       for (const entry of this.cachedCorrectedTranscripts) {
-        if (entry.speaker === "user") {
+        if (entry.speaker_label === "user") {
           transcripts.push({ turnIndex: callerTurnIndex, text: entry.text });
           callerTurnIndex++;
-        } else if (entry.speaker === "assistant") {
+        } else if (entry.speaker_label === "assistant") {
           callerTurnIndex++;
         }
       }
@@ -487,12 +488,14 @@ export class BlandAudioChannel extends BaseAudioChannel {
   private async fetchCorrectedTranscripts(): Promise<void> {
     if (!this.callId) return;
     try {
-      const res = await fetch(`${BLAND_API_BASE}/v1/calls/${this.callId}/corrected-transcript`, {
+      const res = await fetch(`${BLAND_API_BASE}/v1/calls/${this.callId}/correct`, {
         headers: { authorization: this.config.apiKey },
       });
       if (res.ok) {
-        const data = (await res.json()) as { aligned?: BlandCorrectedTranscriptEntry[] };
-        if (data.aligned?.length) {
+        const data = (await res.json()) as BlandCorrectedTranscriptEntry[] | { aligned?: BlandCorrectedTranscriptEntry[] };
+        if (Array.isArray(data) && data.length > 0) {
+          this.cachedCorrectedTranscripts = data;
+        } else if (!Array.isArray(data) && data.aligned?.length) {
           this.cachedCorrectedTranscripts = data.aligned;
         }
       }
