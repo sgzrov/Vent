@@ -1,5 +1,4 @@
-import { loadApiKey, saveApiKey, validateApiKeyFormat } from "../lib/config.js";
-import { deviceAuthFlow } from "../lib/auth.js";
+import { loadApiKey, saveApiKey, validateApiKeyFormat, API_BASE } from "../lib/config.js";
 import { printError, printSuccess } from "../lib/output.js";
 import { installSkillsAndScaffold } from "../lib/setup.js";
 
@@ -23,18 +22,38 @@ export async function initCommand(args: InitArgs): Promise<number> {
   } else if (key) {
     printSuccess("Authenticated.", { force: true });
   } else {
-    // No key — run device auth flow (opens browser, polls for approval)
-    const result = await deviceAuthFlow();
-    if (!result.ok) {
-      printError("Authentication failed. Run `npx vent-hq init` to try again.");
+    // No key — anonymous bootstrap (zero interaction)
+    let res: Response;
+    try {
+      res = await fetch(`${API_BASE}/auth/bootstrap`, { method: "POST" });
+    } catch (err) {
+      printError(`Failed to reach API: ${(err as Error).message}`);
       return 1;
     }
-    printSuccess("Logged in! API key saved to ~/.vent/credentials", { force: true });
+
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      printError((body as any).error ?? `Bootstrap failed (${res.status}).`);
+      return 1;
+    }
+
+    const { api_key, run_limit } = (await res.json()) as {
+      api_key: string;
+      run_limit: number;
+    };
+    await saveApiKey(api_key);
+    printSuccess(
+      `Account created (${run_limit} free runs). Run \`npx vent-hq login\` for unlimited.`,
+      { force: true },
+    );
   }
 
   // 2. Detect editors, install skills, scaffold suite
   await installSkillsAndScaffold(cwd);
 
-  printSuccess("Ready — your coding agent can now make test calls with `npx vent-hq run`.", { force: true });
+  printSuccess(
+    "Ready — your coding agent can now run tests with `npx vent-hq run`.",
+    { force: true },
+  );
   return 0;
 }
