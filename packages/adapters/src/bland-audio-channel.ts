@@ -483,6 +483,9 @@ export class BlandAudioChannel extends BaseAudioChannel {
       if (data.completed || data.status === "completed" || data.status === "failed") {
         this.cachedCallResponse = data;
         await this.fetchCorrectedTranscripts();
+        if (this.componentLatencies.length === 0) {
+          await this.fetchEventStream();
+        }
         return data;
       }
     }
@@ -506,6 +509,44 @@ export class BlandAudioChannel extends BaseAudioChannel {
       }
     } catch {
       // Non-critical — fall back to raw transcripts
+    }
+  }
+
+  private async fetchEventStream(): Promise<void> {
+    if (!this.callId) return;
+    try {
+      const res = await fetch(`${BLAND_API_BASE}/v1/event_stream/${this.callId}`, {
+        headers: { authorization: this.config.apiKey },
+      });
+      if (!res.ok) return;
+
+      const events = (await res.json()) as Array<{
+        level?: string;
+        message?: string;
+        category?: string;
+        call_id?: string;
+        timestamp?: string;
+      }>;
+
+      console.log(`[bland] Event stream: ${events.length} events for ${this.callId}`);
+
+      for (const evt of events) {
+        if (evt.category === "performance" && evt.message) {
+          console.log(`[bland] Performance event: ${evt.message}`);
+          const timing: ComponentLatency = {};
+          const sttMatch = evt.message.match(/stt[:\s]+(\d+)/i);
+          const llmMatch = evt.message.match(/llm[:\s]+(\d+)/i);
+          const ttsMatch = evt.message.match(/tts[:\s]+(\d+)/i);
+          if (sttMatch) timing.stt_ms = parseInt(sttMatch[1]!, 10);
+          if (llmMatch) timing.llm_ms = parseInt(llmMatch[1]!, 10);
+          if (ttsMatch) timing.tts_ms = parseInt(ttsMatch[1]!, 10);
+          if (timing.stt_ms != null || timing.llm_ms != null || timing.tts_ms != null) {
+            this.componentLatencies.push(timing);
+          }
+        }
+      }
+    } catch {
+      // Non-critical — webhooks are primary source
     }
   }
 
