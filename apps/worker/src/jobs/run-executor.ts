@@ -197,9 +197,12 @@ async function executeRemoteRun(db: Database, job: RunJob): Promise<void> {
       console.log(`Remote load test ${job.run_id} completed: ${status}`);
     } else {
       // Conversation or red team test run
+      const platform = job.platform as PlatformConfig | undefined;
+      const platformConcurrency = platform?.max_concurrency as number | undefined;
       const { status, conversationResults, redTeamResults, aggregate } = await executeTests({
         testSpec,
         channelConfig,
+        concurrencyLimit: platformConcurrency,
         onTestComplete: async (result, testType) => {
           completedTests++;
           const testName = result.name ?? testType;
@@ -335,9 +338,12 @@ async function executeRelayRun(db: Database, job: RunJob, relayMachineId?: strin
       console.log(`Relay load test ${job.run_id} completed: ${status}`);
     } else {
       // Conversation or red team test run
+      const relayPlatform = job.platform as PlatformConfig | undefined;
+      const relayConcurrency = relayPlatform?.max_concurrency as number | undefined;
       const { status, conversationResults, redTeamResults, aggregate } = await executeTests({
         testSpec,
         channelConfig,
+        concurrencyLimit: relayConcurrency,
         onTestComplete: async (result, testType) => {
           completedTests++;
           const testName = result.name ?? testType;
@@ -479,11 +485,12 @@ export async function executeRun(job: RunJob): Promise<void> {
     job.adapter === "vapi" ||
     job.adapter === "retell" ||
     job.adapter === "elevenlabs" ||
-    job.adapter === "bland";
+    job.adapter === "bland" ||
+    job.adapter === "livekit" ||
+    job.adapter === "webrtc";
   const isRemote =
     isPlatformAdapter ||
     job.adapter === "sip" ||
-    job.adapter === "webrtc" ||
     !!job.agent_url;
   if (isRemote) {
     await emitEvent(db, job.run_id, "connecting", `Connecting to remote agent (${job.adapter ?? "websocket"})...`);

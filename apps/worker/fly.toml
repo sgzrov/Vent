@@ -6,6 +6,14 @@ primary_region = "iad"
 
 [env]
   NODE_ENV = "production"
+  RUNNER_LISTEN_PORT = "8443"
+
+# Expose HTTP port for inbound SIP callbacks (Twilio/Bland webhooks)
+[http_service]
+  internal_port = 8443
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
 
 [[vm]]
   memory = "2048mb"

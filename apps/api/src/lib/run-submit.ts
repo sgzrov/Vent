@@ -110,8 +110,8 @@ export function buildTestSpec(cfg: Record<string, unknown>) {
     targetPhoneNumber,
     conversationTests: conversationTests ?? null,
     redTeamTests: redTeamTests ?? null,
-    isRemote: ["vapi", "retell", "elevenlabs", "bland"].includes(adapter)
-      || adapter === "sip" || adapter === "webrtc" || !!agentUrl,
+    isRemote: ["vapi", "retell", "elevenlabs", "bland", "livekit", "webrtc"].includes(adapter)
+      || adapter === "sip" || !!agentUrl,
   };
 }
 
