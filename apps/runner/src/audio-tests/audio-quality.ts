@@ -32,7 +32,7 @@ export async function runAudioQualityTest(
   const startTime = performance.now();
 
   const promptAudio = await synthesize(prompt);
-  channel.sendAudio(promptAudio);
+  await channel.sendAudio(promptAudio);
 
   const { audio: agentAudio } = await collectUntilEndOfTurn(channel, {
     timeoutMs: 20000,

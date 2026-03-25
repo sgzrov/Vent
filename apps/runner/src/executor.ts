@@ -97,10 +97,17 @@ export async function executeTests(opts: ExecuteTestsOpts): Promise<ExecuteTests
   const {
     testSpec,
     channelConfig,
-    concurrencyLimit = 10,
+    concurrencyLimit: userConcurrency,
     onTestStart,
     onTestComplete,
   } = opts;
+
+  // Bland uses SIP (phone calls) instead of WebSocket/WebRTC. All calls route
+  // through a single Twilio number, and Bland drops later calls when 3+ are
+  // active on the same destination. Cap at 3 concurrent for reliability.
+  // To scale beyond 3, rotate Twilio destination numbers (number pool).
+  const isBland = channelConfig.adapter === "bland";
+  const concurrencyLimit = userConcurrency ?? (isBland ? 3 : 10);
 
   // Determine which test type is active (XOR — only one will be populated)
   const isRedTeam = (testSpec.red_team_tests?.length ?? 0) > 0;
@@ -117,7 +124,7 @@ export async function executeTests(opts: ExecuteTestsOpts): Promise<ExecuteTests
   // Platform adapters (vapi, retell, elevenlabs, bland) don't need this —
   // it would waste a real API call + credits just to verify connectivity.
   // The first real test will fail with a clear error if config is wrong.
-  const isPlatformAdapter = ["vapi", "retell", "elevenlabs", "bland"].includes(channelConfig.adapter);
+  const isPlatformAdapter = ["vapi", "retell", "elevenlabs", "bland", "livekit", "webrtc"].includes(channelConfig.adapter);
   if (allTests.length > 0 && !isPlatformAdapter) {
     const probeChannel = createAudioChannel(channelConfig);
     try {
@@ -189,8 +196,23 @@ export async function executeTests(opts: ExecuteTestsOpts): Promise<ExecuteTests
     const channel = createAudioChannel(channelConfig);
     const start = Date.now();
     try {
-      await channel.connect();
-      const result = await runConversationTest(spec, channel);
+      // Per-test timeout: scales with max_turns to accommodate agents that
+      // use tool calls (each turn can take 15-20s with STT → LLM → tools → TTS).
+      // Minimum 120s, plus 25s per turn beyond the baseline 4 turns.
+      const TEST_TIMEOUT_MS = Math.max(120_000, (spec.max_turns ?? 10) * 25_000);
+      const testResult = await Promise.race([
+        (async () => {
+          await channel.connect();
+          return await runConversationTest(spec, channel);
+        })(),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error(
+            `Test "${testName}" timed out after ${TEST_TIMEOUT_MS / 1000}s. ` +
+            `The agent may have connected but not produced audio.`
+          )), TEST_TIMEOUT_MS)
+        ),
+      ]);
+      const result = testResult;
       // Successful connection — reset circuit breaker counter
       circuitState.consecutiveConnectionFailures = 0;
       console.log(`    Status: ${result.status} (${result.duration_ms}ms)`);

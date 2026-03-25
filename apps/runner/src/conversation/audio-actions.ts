@@ -101,7 +101,7 @@ async function executeInterrupt(
 
   // Send interrupt
   const interruptTime = Date.now();
-  ctx.channel.sendAudio(interruptAudio);
+  await ctx.channel.sendAudio(interruptAudio);
 
   // Collect post-interrupt response
   ctx.transcriber.resetForNextTurn();
@@ -229,7 +229,7 @@ async function executeInjectNoise(
   const noise = noiseGenerator(noiseDurationMs);
 
   // Send noise while agent is speaking
-  ctx.channel.sendAudio(noise);
+  await ctx.channel.sendAudio(noise);
 
   // Collect rest of agent response
   ctx.transcriber.resetForNextTurn();
@@ -292,7 +292,7 @@ async function executeSplitSentence(
   }
 
   // Send part A
-  ctx.channel.sendAudio(audioA);
+  await ctx.channel.sendAudio(audioA);
 
   // During the pause, check for premature agent response
   const { timedOut: noPremature } = await waitForSpeech(ctx.channel, pause_ms);
@@ -304,7 +304,7 @@ async function executeSplitSentence(
   }
 
   // Send part B
-  ctx.channel.sendAudio(audioB);
+  await ctx.channel.sendAudio(audioB);
 
   // Collect the agent's full response
   ctx.transcriber.resetForNextTurn();

@@ -10,7 +10,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import type { ConversationTurn, BehavioralMetrics } from "@vent/shared";
 import { LANGUAGE_NAMES } from "@vent/voice";
 
-const MODEL = "claude-sonnet-4-6";
+const MODEL = "claude-haiku-4-5-20251001";
 const MAX_TOKENS = 300;
 
 function formatTranscript(transcript: ConversationTurn[]): string {
