@@ -146,6 +146,94 @@ export class TTSSession {
   }
 
   /**
+   * Stream-synthesize text to PCM audio. Yields 24kHz mono PCM chunks as
+   * Deepgram generates them — the first chunk arrives after ~100ms TTFB,
+   * while remaining chunks are still being generated.
+   *
+   * Auto-reconnects once if the session was closed.
+   */
+  async *synthesizeStream(text: string): AsyncGenerator<Buffer> {
+    if (!text.trim()) return;
+
+    // Auto-reconnect if Deepgram closed the connection
+    if (!this.connected || !this.live) {
+      console.log("[tts] Session disconnected — reconnecting…");
+      this.live = null;
+      this.client = null;
+      this.connected = false;
+      await this.connect();
+    }
+
+    // Async queue: Audio handler pushes, generator pulls
+    const queue: (Buffer | null)[] = [];
+    let waiting: (() => void) | null = null;
+    let streamError: Error | null = null;
+
+    const onAudio = (data: Buffer) => {
+      queue.push(data);
+      if (waiting) { waiting(); waiting = null; }
+    };
+    const onFlushed = () => {
+      queue.push(null); // sentinel: end of stream
+      if (waiting) { waiting(); waiting = null; }
+    };
+    const onError = (err: unknown) => {
+      streamError = new Error(`Deepgram TTS error during stream: ${err}`);
+      queue.push(null);
+      if (waiting) { waiting(); waiting = null; }
+    };
+    const onClose = () => {
+      if (queue[queue.length - 1] !== null) {
+        streamError = streamError ?? new Error("Deepgram TTS closed during stream");
+        queue.push(null);
+        if (waiting) { waiting(); waiting = null; }
+      }
+    };
+
+    // Override event handlers for streaming mode
+    this.live!.removeAllListeners(LiveTTSEvents.Audio);
+    this.live!.removeAllListeners(LiveTTSEvents.Flushed);
+    this.live!.on(LiveTTSEvents.Audio, onAudio);
+    this.live!.on(LiveTTSEvents.Flushed, onFlushed);
+    this.live!.on(LiveTTSEvents.Error, onError);
+    this.live!.on(LiveTTSEvents.Close, onClose);
+
+    try {
+      this.live!.sendText(text);
+      this.live!.flush();
+
+      while (true) {
+        while (queue.length === 0) {
+          await new Promise<void>((r) => { waiting = r; });
+        }
+        const chunk = queue.shift()!;
+        if (chunk === null) break;
+        if (streamError) throw streamError;
+        yield chunk;
+      }
+      if (streamError) throw streamError;
+    } finally {
+      // Restore original handlers for buffered synthesize()
+      this.live?.removeAllListeners(LiveTTSEvents.Audio);
+      this.live?.removeAllListeners(LiveTTSEvents.Flushed);
+      this.live?.removeListener(LiveTTSEvents.Error, onError);
+      this.live?.removeListener(LiveTTSEvents.Close, onClose);
+      this.live?.on(LiveTTSEvents.Audio, (data: Buffer) => {
+        this.audioChunks.push(data);
+      });
+      this.live?.on(LiveTTSEvents.Flushed, () => {
+        if (this.resolveFlush) {
+          const buf = concatPcm(this.audioChunks);
+          this.audioChunks = [];
+          this.resolveFlush(buf);
+          this.resolveFlush = null;
+          this.rejectFlush = null;
+        }
+      });
+    }
+  }
+
+  /**
    * Barge-in: clear the current synthesis buffer.
    * Discards any pending audio and waits for server confirmation.
    */
