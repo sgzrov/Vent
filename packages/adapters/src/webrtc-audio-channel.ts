@@ -376,7 +376,7 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
    * and when real speech arrives, bitrate ramps linearly from 0 → 40kbps
    * over 20s — the agent's VAD never detects speech.
    */
-  private startComfortNoise(): void {
+  startComfortNoise(): void {
     this.comfortNoiseActive = true;
     const sampleRate = this.livekitSampleRate;
     const chunkSamples = Math.floor(sampleRate * 0.02); // 20ms
@@ -399,7 +399,7 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
     sendLoop();
   }
 
-  private stopComfortNoise(): void {
+  stopComfortNoise(): void {
     this.comfortNoiseActive = false;
     // Clear the AudioSource queue so comfort noise doesn't bleed into real audio
     if (this.audioSource) {
@@ -472,6 +472,53 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
         // AudioSource was closed during send (disconnect called mid-turn) — safe to ignore
       }
     })();
+  }
+
+  /**
+   * Stream PCM audio chunks to LiveKit as they arrive from TTS.
+   * Each chunk is resampled to 48kHz and sent via captureFrame.
+   */
+  async sendAudioStream(stream: AsyncIterable<Buffer>): Promise<void> {
+    if (!this.audioSource || !this.collecting) return;
+
+    if (this.comfortNoiseActive) this.stopComfortNoise();
+
+    this.currentTurnIndex++;
+    this.turnTimings[this.currentTurnIndex] = { audioSentAt: Date.now() };
+
+    const sampleRate = this.livekitSampleRate;
+    const chunkSamples = Math.floor(sampleRate * 0.02); // 20ms
+
+    for await (const pcmChunk of stream) {
+      if (!this.collecting || !this.audioSource) return;
+
+      this._stats.bytesSent += pcmChunk.length;
+      const resampled = resample(pcmChunk, 24000, sampleRate);
+      const samples = new Int16Array(
+        resampled.buffer, resampled.byteOffset, resampled.length / 2,
+      );
+
+      for (let offset = 0; offset < samples.length; offset += chunkSamples) {
+        if (!this.collecting || !this.audioSource) return;
+        const end = Math.min(offset + chunkSamples, samples.length);
+        const chunk = new Int16Array(samples.subarray(offset, end));
+        const frame = new AudioFrame(chunk, sampleRate, 1, chunk.length);
+        await this.audioSource.captureFrame(frame);
+      }
+    }
+
+    // Send 500ms silence so agent VAD detects end-of-turn
+    if (this.collecting && this.audioSource) {
+      const silenceSamples = Math.floor(sampleRate * 0.5);
+      const silence = new Int16Array(silenceSamples);
+      const silenceFrame = new AudioFrame(silence, sampleRate, 1, silenceSamples);
+      await this.audioSource.captureFrame(silenceFrame);
+    }
+
+    // Resume comfort noise
+    if (this.collecting && this.audioSource) {
+      this.startComfortNoise();
+    }
   }
 
   async disconnect(): Promise<void> {

@@ -1,4 +1,4 @@
-import type { AdapterType, PlatformConfig } from "@vent/shared";
+import type { AdapterType, PlatformConfig, BlandPlatformConfig, LiveKitPlatformConfig } from "@vent/shared";
 import { RUNNER_CALLBACK_HEADER } from "@vent/shared";
 import type { AudioChannel } from "./audio-channel.js";
 import { WsAudioChannel } from "./ws-audio-channel.js";
@@ -65,11 +65,11 @@ export function createAudioChannel(config: AudioChannelConfig): AudioChannel {
 
     case "webrtc":
     case "livekit": {
-      const p = config.platform;
-      const apiKey = (p?.api_key as string) || process.env[p?.api_key_env ?? "LIVEKIT_API_KEY"] || "";
-      const apiSecret = (p?.api_secret as string) || process.env["LIVEKIT_API_SECRET"] || "";
-      const livekitUrl = (p?.livekit_url as string) || process.env["LIVEKIT_URL"] || "";
-      const agentName = p?.agent_name as string | undefined;
+      const p = config.platform as LiveKitPlatformConfig | undefined;
+      const apiKey = p?.api_key || process.env[p?.api_key_env ?? "LIVEKIT_API_KEY"] || "";
+      const apiSecret = p?.api_secret || process.env["LIVEKIT_API_SECRET"] || "";
+      const livekitUrl = p?.livekit_url || process.env["LIVEKIT_URL"] || "";
+      const agentName = p?.agent_name;
 
       if (!livekitUrl) throw new Error("LiveKit adapter requires LIVEKIT_URL env or platform.livekit_url");
       if (!apiKey) throw new Error("LiveKit adapter requires API key (set LIVEKIT_API_KEY or platform.api_key_env)");
@@ -154,12 +154,11 @@ export function createAudioChannel(config: AudioChannelConfig): AudioChannel {
     }
 
     case "bland": {
-      const p = config.platform;
+      const p = config.platform as BlandPlatformConfig | undefined;
       const apiKey = p?.api_key || process.env[p?.api_key_env ?? "BLAND_API_KEY"] || "";
       const agentId = resolveAgentId(p, "BLAND_PATHWAY_ID") || undefined;
-      const task = p?.task as string | undefined;
       if (!apiKey) throw new Error("Bland adapter requires API key (set BLAND_API_KEY or platform.api_key_env)");
-      if (!agentId && !task) throw new Error("Bland adapter requires BLAND_PATHWAY_ID env, platform.agent_id, or platform.task (prompt)");
+      if (!agentId && !p?.task) throw new Error("Bland adapter requires BLAND_PATHWAY_ID env, platform.agent_id, or platform.task (prompt)");
 
       const blandFromNumber = process.env["TWILIO_FROM_NUMBER"] ?? "";
       const blandAccountSid = process.env["TWILIO_ACCOUNT_SID"] ?? "";
@@ -180,16 +179,24 @@ export function createAudioChannel(config: AudioChannelConfig): AudioChannel {
           ...sipPortConfig(),
         },
         callOptions: {
-          task,
-          tools: p?.tools as unknown[] | undefined,
-          voice: p?.voice as string | undefined,
-          model: p?.model as string | undefined,
-          first_sentence: p?.first_sentence as string | undefined,
-          wait_for_greeting: p?.wait_for_greeting as boolean | undefined,
-          max_duration: p?.max_duration as number | undefined,
-          temperature: p?.temperature as number | undefined,
-          language: p?.language as string | undefined,
-          interruption_threshold: p?.interruption_threshold as number | undefined,
+          task: p?.task,
+          tools: p?.tools,
+          voice: p?.voice,
+          model: p?.model,
+          first_sentence: p?.first_sentence,
+          wait_for_greeting: p?.wait_for_greeting,
+          max_duration: p?.max_duration,
+          temperature: p?.temperature,
+          language: p?.language,
+          interruption_threshold: p?.interruption_threshold,
+          block_interruptions: p?.block_interruptions,
+          noise_cancellation: p?.noise_cancellation,
+          background_track: p?.background_track,
+          keywords: p?.keywords,
+          request_data: p?.request_data,
+          pronunciation_guide: p?.pronunciation_guide,
+          start_node_id: p?.start_node_id,
+          pathway_version: p?.pathway_version,
         },
       });
     }
