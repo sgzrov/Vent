@@ -21,7 +21,7 @@ export interface CallerPersona {
   disfluencies?: boolean;
   cooperation?: "cooperative" | "reluctant" | "hostile";
   emotion?: "neutral" | "cheerful" | "confused" | "frustrated" | "skeptical" | "rushed";
-  interruption_style?: "none" | "occasional" | "frequent";
+  interruption_style?: "low" | "high";
   memory?: "reliable" | "unreliable";
   intent_clarity?: "clear" | "indirect" | "vague";
   confirmation_style?: "explicit" | "vague";
@@ -132,16 +132,84 @@ export interface ToolCallMetrics {
   names: string[];
 }
 
-export interface PlatformConfig {
-  provider: "vapi" | "retell" | "elevenlabs" | "bland" | "livekit";
+/** Shared fields across all platform configs */
+interface BasePlatformConfig {
   api_key_env?: string;
   api_key?: string;
   agent_id?: string;
-  /** LiveKit explicit dispatch — agent_name from WorkerOptions. Omit for automatic dispatch. */
-  agent_name?: string;
-  /** Provider-specific options passed through to the adapter (e.g. Bland task, tools, voice) */
-  [key: string]: unknown;
+  agent_id_env?: string;
+  /** Max concurrent test calls (platform-dependent) */
+  max_concurrency?: number;
 }
+
+export interface BlandPlatformConfig extends BasePlatformConfig {
+  provider: "bland";
+  /** Task prompt — used instead of pathway_id for simple agents */
+  task?: string;
+  /** Tool definitions (inline objects) or tool IDs (TL-xxx strings) */
+  tools?: unknown[];
+  /** Voice name ("maya", "josh") or custom voice clone UUID */
+  voice?: string;
+  /** Model: "base" (full features), "turbo" (fastest, limited features) */
+  model?: string;
+  /** Opening sentence — overrides any greeting in the task/pathway */
+  first_sentence?: string;
+  /** If true, agent waits for callee to speak first (default: false) */
+  wait_for_greeting?: boolean;
+  /** Max call duration in minutes (default: 30) */
+  max_duration?: number;
+  /** Temperature 0-1 (default: 0.7) */
+  temperature?: number;
+  /** Language code e.g. "babel-en", "babel-es" */
+  language?: string;
+  /** How quickly agent stops speaking when interrupted, in ms (default: 500) */
+  interruption_threshold?: number;
+  /** When true, agent ignores user interruptions entirely */
+  block_interruptions?: boolean;
+  /** When true, enable Bland's noise filtering on caller audio */
+  noise_cancellation?: boolean;
+  /** Background audio: "office", "cafe", "restaurant", "none", or null (default phone static) */
+  background_track?: string | null;
+  /** Boost transcription accuracy for specific words. Supports "word:boost_factor" */
+  keywords?: string[];
+  /** Key-value pairs accessible as {{variable}} in agent prompts/pathways */
+  request_data?: Record<string, unknown>;
+  /** Pronunciation overrides */
+  pronunciation_guide?: Array<{ word: string; pronunciation: string; case_sensitive?: boolean; spaced?: boolean }>;
+  /** Start pathway from a specific node instead of the default */
+  start_node_id?: string;
+  /** Specific pathway version to test (default: production) */
+  pathway_version?: number;
+}
+
+export interface LiveKitPlatformConfig extends BasePlatformConfig {
+  provider: "livekit";
+  /** LiveKit server URL (e.g. wss://your-app.livekit.cloud) */
+  livekit_url?: string;
+  /** API secret for LiveKit authentication */
+  api_secret?: string;
+  /** Explicit agent dispatch — agent_name from WorkerOptions. Omit for automatic dispatch. */
+  agent_name?: string;
+}
+
+export interface VapiPlatformConfig extends BasePlatformConfig {
+  provider: "vapi";
+}
+
+export interface RetellPlatformConfig extends BasePlatformConfig {
+  provider: "retell";
+}
+
+export interface ElevenLabsPlatformConfig extends BasePlatformConfig {
+  provider: "elevenlabs";
+}
+
+export type PlatformConfig =
+  | BlandPlatformConfig
+  | LiveKitPlatformConfig
+  | VapiPlatformConfig
+  | RetellPlatformConfig
+  | ElevenLabsPlatformConfig;
 
 
 export interface AudioAnalysisGradeThresholds {
@@ -287,6 +355,10 @@ export interface ConversationTurn {
   component_latency?: ComponentLatency;
   /** Platform's own STT transcript for cross-referencing with Vent's STT */
   platform_transcript?: string;
+  /** True if agent was interrupted mid-sentence by the caller */
+  interrupted?: boolean;
+  /** True if this caller turn was a barge-in interruption */
+  is_interruption?: boolean;
 }
 
 // ============================================================
@@ -335,29 +407,6 @@ export interface HarnessOverhead {
   mean_stt_ms: number;
 }
 
-export type SentimentValue = "positive" | "neutral" | "negative";
-
-export interface SentimentTrajectoryEntry {
-  turn: number;
-  role: "caller" | "agent";
-  value: SentimentValue;
-}
-
-export interface BehavioralMetrics {
-  // Conversational quality
-  intent_accuracy?: { score: number; reasoning: string };
-  context_retention?: { score: number; reasoning: string };
-  clarity_score?: { score: number; reasoning: string };
-  topic_drift?: { score: number; reasoning: string };
-  // Sentiment & empathy
-  sentiment_trajectory?: SentimentTrajectoryEntry[];
-  empathy_score?: { score: number; reasoning: string };
-  // Safety & compliance
-  hallucination_detected?: { detected: boolean; reasoning: string };
-  safety_compliance?: { compliant: boolean; reasoning: string };
-  compliance_adherence?: { score: number; reasoning: string };
-  escalation_handling?: { triggered: boolean; handled_appropriately: boolean; score: number; reasoning: string };
-}
 
 export interface SignalQualityMetrics {
   /** Mean signal-to-noise ratio across turns (dB). >20 good, <10 bad */
@@ -454,6 +503,8 @@ export interface CallMetadata {
   user_sentiment?: string;
   /** Whether the platform judged the call as successful */
   call_successful?: boolean;
+  /** Final pathway/agent variables at end of call (Bland: pathway state, Vapi: extracted data) */
+  variables?: Record<string, unknown>;
 }
 
 export interface ConversationMetrics {
@@ -462,7 +513,6 @@ export interface ConversationMetrics {
   mean_ttfw_ms?: number;
   transcript?: TranscriptMetrics;
   latency?: LatencyMetrics;
-  behavioral?: BehavioralMetrics;
   tool_calls?: ToolCallMetrics;
   /** Raw audio signal quality (SNR, clipping, energy, F0) — aggregated across turns */
   signal_quality?: SignalQualityMetrics;
