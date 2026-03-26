@@ -65,9 +65,6 @@ export async function statusCommand(args: StatusArgs): Promise<number> {
               const dur = (formatted.duration_ms / 1000).toFixed(1) + "s";
               const parts = [s, bold(name), dim(dur)];
 
-              if (formatted.behavior?.intent_accuracy) {
-                parts.push(`intent: ${formatted.behavior.intent_accuracy.score}`);
-              }
               if (formatted.latency?.p50_ttfw_ms != null) {
                 parts.push(`p50: ${formatted.latency.p50_ttfw_ms}ms`);
               }

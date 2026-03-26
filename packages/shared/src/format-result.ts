@@ -12,7 +12,6 @@ import type {
   ObservedToolCall,
   AudioActionResult,
   LatencyMetrics,
-  BehavioralMetrics,
   TranscriptMetrics,
   AudioAnalysisMetrics,
   ProsodyMetrics,
@@ -84,13 +83,6 @@ interface FormattedEmotion {
   peak_frustration: number;
 }
 
-interface FormattedBehavior {
-  intent_accuracy?: { score: number; reasoning: string };
-  context_retention?: { score: number; reasoning: string };
-  hallucination_detected?: { detected: boolean; reasoning: string };
-  safety_compliance?: { compliant: boolean; score?: number; reasoning: string };
-  escalation_handling?: { triggered: boolean; handled_appropriately: boolean; score: number; reasoning: string };
-}
 
 interface FormattedComponentLatency {
   mean_stt_ms?: number;
@@ -113,6 +105,7 @@ interface FormattedCallMetadata {
   success_evaluation?: string;
   user_sentiment?: string;
   call_successful?: boolean;
+  variables?: Record<string, unknown>;
 }
 
 export interface FormattedConversationResult {
@@ -123,7 +116,6 @@ export interface FormattedConversationResult {
   error: string | null;
   transcript: FormattedTranscriptTurn[];
   latency: FormattedLatency | null;
-  behavior: FormattedBehavior | null;
   transcript_quality: Partial<TranscriptMetrics> | null;
   audio_analysis: FormattedAudioAnalysis | null;
   tool_calls: FormattedToolCalls;
@@ -149,7 +141,6 @@ export function formatConversationResult(raw: unknown): FormattedConversationRes
     error: r.error ?? null,
     transcript: formatTranscript(r.transcript),
     latency: r.metrics?.latency ? formatLatency(r.metrics.latency, r.metrics) : null,
-    behavior: r.metrics?.behavioral ? formatBehavior(r.metrics.behavioral) : null,
     transcript_quality: r.metrics?.transcript && hasContent(r.metrics.transcript) ? filterTranscriptMetrics(r.metrics.transcript) : null,
     audio_analysis: r.metrics?.audio_analysis ? formatAudioAnalysis(r.metrics.audio_analysis) : null,
     tool_calls: formatToolCalls(r.metrics?.tool_calls, r.observed_tool_calls),
@@ -239,26 +230,6 @@ function formatToolCalls(
   };
 }
 
-function formatBehavior(b: BehavioralMetrics): FormattedBehavior | null {
-  const result: FormattedBehavior = {};
-
-  if (b.intent_accuracy) result.intent_accuracy = b.intent_accuracy;
-  if (b.context_retention) result.context_retention = b.context_retention;
-  if (b.hallucination_detected) result.hallucination_detected = b.hallucination_detected;
-
-  // Merge compliance_adherence score into safety_compliance
-  if (b.safety_compliance || b.compliance_adherence) {
-    result.safety_compliance = {
-      compliant: b.safety_compliance?.compliant ?? true,
-      score: b.compliance_adherence?.score,
-      reasoning: b.safety_compliance?.reasoning ?? b.compliance_adherence?.reasoning ?? "",
-    };
-  }
-
-  if (b.escalation_handling) result.escalation_handling = b.escalation_handling;
-
-  return hasContent(result) ? result : null;
-}
 
 function filterTranscriptMetrics(t: TranscriptMetrics): Partial<TranscriptMetrics> {
   const { vocabulary_diversity, filler_word_rate, words_per_minute, ...kept } = t;
@@ -304,6 +275,7 @@ function formatCallMetadata(meta: CallMetadata | undefined): FormattedCallMetada
     success_evaluation: meta.success_evaluation,
     user_sentiment: meta.user_sentiment,
     call_successful: meta.call_successful,
+    variables: meta.variables,
   };
 }
 

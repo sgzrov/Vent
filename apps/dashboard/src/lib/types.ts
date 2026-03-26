@@ -195,7 +195,6 @@ export interface ConversationMetrics {
   mean_ttfw_ms?: number;
   transcript?: TranscriptMetrics;
   latency?: LatencyMetrics;
-  behavioral?: BehavioralMetrics;
   tool_calls?: ToolCallMetrics;
   audio_analysis?: AudioAnalysisMetrics;
   audio_analysis_warnings?: AudioAnalysisWarning[];
@@ -233,27 +232,6 @@ export interface TranscriptMetrics {
   vocabulary_diversity?: number;
 }
 
-export interface BehavioralMetrics {
-  intent_accuracy?: { score: number; reasoning: string };
-  context_retention?: { score: number; reasoning: string };
-  clarity_score?: { score: number; reasoning: string };
-  topic_drift?: { score: number; reasoning: string };
-  sentiment_trajectory?: Array<{
-    turn: number;
-    role: "caller" | "agent";
-    value: "positive" | "neutral" | "negative";
-  }>;
-  empathy_score?: { score: number; reasoning: string };
-  hallucination_detected?: { detected: boolean; reasoning: string };
-  safety_compliance?: { compliant: boolean; reasoning: string };
-  compliance_adherence?: { score: number; reasoning: string };
-  escalation_handling?: {
-    triggered: boolean;
-    handled_appropriately: boolean;
-    score: number;
-    reasoning: string;
-  };
-}
 
 export interface ToolCallMetrics {
   total: number;

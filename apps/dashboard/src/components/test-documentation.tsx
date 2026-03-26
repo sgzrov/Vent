@@ -162,16 +162,6 @@ export function TestDocumentation() {
                 </ul>
               </div>
               <div className="rounded-md bg-muted/30 p-3 space-y-2">
-                <p className="text-sm font-medium">Behavioral Metrics</p>
-                <p className="text-xs text-muted-foreground leading-relaxed">
-                  In parallel, the judge evaluates behavioral dimensions:
-                  intent accuracy, context retention, clarity, empathy,
-                  topic drift, sentiment trajectory, hallucination detection,
-                  safety compliance, and escalation handling. Each receives a
-                  0-1 score with reasoning.
-                </p>
-              </div>
-              <div className="rounded-md bg-muted/30 p-3 space-y-2">
                 <p className="text-sm font-medium">Audio Analysis</p>
                 <p className="text-xs text-muted-foreground leading-relaxed">
                   Vent uses batch VAD (Voice Activity Detection) on the
