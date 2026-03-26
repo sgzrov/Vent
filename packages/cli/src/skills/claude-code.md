@@ -1,6 +1,6 @@
 ---
 name: vent
-description: Voice agent testing — run tests against your voice agent, get pass/fail results with latency and behavioral metrics
+description: Voice agent testing — run tests against your voice agent, get pass/fail results with latency and latency metrics
 allowed-tools: Bash(npx vent-hq *)
 ---
 
@@ -15,14 +15,26 @@ Test voice agents from the terminal. Tests run in the cloud — results stream b
 - Before marking a task complete that touches agent behavior: run tests
 - Do NOT skip testing — voice agents are non-deterministic, small changes can break flows
 
+## Setup (if no API key)
+
+If `~/.vent/credentials` does not exist and `VENT_API_KEY` is not set:
+
+```bash
+npx vent-hq init
+```
+
+One command. No email, no browser, no human interaction needed. You get 10 free runs instantly.
+
 ## Commands
 
 | Command | Purpose |
 |---------|---------|
+| `npx vent-hq init` | First-time setup (creates account + installs skills) |
 | `npx vent-hq run -f .vent/suite.<adapter>.json --list` | List test names from suite |
 | `npx vent-hq run -f .vent/suite.<adapter>.json --test <name>` | Run a single test by name |
 | `npx vent-hq run --config '{...}'` | Run from inline JSON (one-off, no file needed) |
 | `npx vent-hq run -f .vent/suite.<adapter>.json --test <name> --submit` | Submit test, return immediately with run_id (deployed agents) |
+| `npx vent-hq stop <run-id>` | Cancel a queued or running test |
 | `npx vent-hq status <run-id> --json` | Poll results for a submitted run (--submit only) |
 
 
@@ -32,7 +44,7 @@ Test voice agents from the terminal. Tests run in the cloud — results stream b
 2. **5-minute timeout** — Set `timeout: 300000` on the Bash call. The full suite takes 1-3 minutes (tests run concurrently), but can reach 5 minutes.
 3. **If the call gets backgrounded** — The system may move long-running calls to background automatically. If this happens, immediately call `TaskOutput` with `block: true` and `timeout: 300000` to wait for the result.
 4. **This skill is self-contained** — The full config schema is below. Do NOT re-read this file.
-5. **Always analyze results** — The run command outputs complete JSON with full transcript, latency, behavior scores, and tool calls. Analyze this output directly — do NOT run `vent status` afterwards, the data is already there.
+5. **Always analyze results** — The run command outputs complete JSON with full transcript, latency, and tool calls. Analyze this output directly — do NOT run `vent status` afterwards, the data is already there.
 6. **ENFORCE concurrency limits** — Before running ANY suite, count the total concurrent tests (number of tests × repeat). If this exceeds the platform's limit, REDUCE the test count or split into multiple runs. Default limits if unknown: LiveKit=5, Vapi=10, Bland=10. Tests that exceed the limit will hang forever waiting for agents that never connect. This is NOT optional.
 
 ## Workflow
@@ -181,10 +193,28 @@ Bland:
 {
   "connection": {
     "adapter": "bland",
-    "platform": { "provider": "bland", "api_key_env": "BLAND_API_KEY", "agent_id": "pathway_uuid_here" }
+    "platform": {
+      "provider": "bland",
+      "api_key_env": "BLAND_API_KEY",
+      "agent_id": "pathway_uuid_here"
+    }
   }
 }
 Note: Bland agent_id is a pathway_id (UUID). The env var is BLAND_PATHWAY_ID. Vent calls the agent via telephony (POST /v1/calls + SIP) — no additional config needed. Rate limiting (10s between calls) and concurrency (max 3) are handled automatically server-side. Unlike Vapi/LiveKit/ElevenLabs (which use WebSocket/WebRTC for unlimited parallel calls), Bland routes through a single Twilio phone number — so concurrent calls are limited by telephony constraints.
+
+Bland-specific platform options (all optional):
+- `background_track` — Background audio: `"office"`, `"cafe"`, `"restaurant"`, `"none"`, or omit for default phone static. Use `"none"` for cleaner test audio.
+- `keywords` — Boost Bland's transcription accuracy for domain terms. Array of strings, supports `"word:boost_factor"` format. Example: `["SafetySpec:2", "HVAC:1.5"]`
+- `request_data` — Key-value pairs accessible as `{{variable}}` in agent prompts/pathways. Example: `{ "customer_tier": "enterprise" }`
+- `pronunciation_guide` — Override pronunciation for specific words. Array of `{ "word": "HVAC", "pronunciation": "H-V-A-C" }`.
+- `start_node_id` — Start pathway from a specific node (for testing specific branches).
+- `pathway_version` — Test a specific pathway version instead of production.
+- `block_interruptions` — When `true`, agent ignores interruptions. Only set if needed.
+- `noise_cancellation` — Enable Bland's noise filtering on caller audio.
+- `interruption_threshold` — Ms before agent responds after silence (default: 500).
+- `max_duration` — Max call duration in minutes (default: 30).
+- `temperature` — LLM temperature 0-1 (default: 0.7).
+- `language` — Language code e.g. `"babel-en"`, `"babel-es"`.
 
 Vapi:
 {
@@ -207,9 +237,17 @@ WebRTC / LiveKit:
 {
   "connection": {
     "adapter": "webrtc",
-    "platform": { "provider": "livekit", "agent_name": "my-agent", "max_concurrency": 5 }
+    "platform": {
+      "provider": "livekit",
+      "agent_name": "my-agent",
+      "max_concurrency": 5
+    }
   }
 }
+LiveKit-specific platform options (all optional):
+- `livekit_url` — LiveKit server URL (e.g. `wss://my-project.livekit.cloud`). Can also be set via `LIVEKIT_URL` env var.
+- `api_secret` — API secret. Can also be set via `LIVEKIT_API_SECRET` env var.
+- `agent_name` — Explicit agent dispatch name from WorkerOptions. Omit for automatic dispatch.
 IMPORTANT — LiveKit requires these variables in the project's .env file:
   - LIVEKIT_URL=wss://my-project-xxxx.livekit.cloud
   - LIVEKIT_API_KEY=your_key
@@ -245,7 +283,7 @@ WebSocket/WebRTC/SIP: user's agent must emit tool calls:
         "disfluencies": "true | false",
         "cooperation": "cooperative | reluctant | hostile",
         "emotion": "neutral | cheerful | confused | frustrated | skeptical | rushed",
-        "interruption_style": "none | occasional | frequent",
+        "interruption_style": "low (~3/10 turns) | high (~7/10 turns)",
         "memory": "reliable | unreliable",
         "intent_clarity": "clear | indirect | vague",
         "confirmation_style": "explicit | vague"
@@ -290,7 +328,7 @@ WebSocket/WebRTC/SIP: user's agent must emit tool calls:
   "name": "noisy-interruption-booking",
   "caller_prompt": "You are James, an impatient customer calling from a loud coffee shop to book a plumber for tomorrow morning. You interrupt the agent mid-sentence when they start listing availability — you just want the earliest slot.",
   "max_turns": 12,
-  "persona": { "pace": "fast", "cooperation": "reluctant", "emotion": "rushed", "interruption_style": "frequent" },
+  "persona": { "pace": "fast", "cooperation": "reluctant", "emotion": "rushed", "interruption_style": "high" },
   "audio_actions": [
     { "action": "interrupt", "at_turn": 3, "prompt": "Just give me the earliest one!" },
     { "action": "inject_noise", "at_turn": 1, "noise_type": "babble", "snr_db": 15 }
@@ -313,20 +351,16 @@ WebSocket/WebRTC/SIP: user's agent must emit tool calls:
   "error": null,
   "transcript": [
     { "role": "caller", "text": "Hi, I'd like to book..." },
-    { "role": "agent", "text": "Sure! What date?", "ttfb_ms": 650, "ttfw_ms": 780, "stt_confidence": 0.98, "audio_duration_ms": 2400, "silence_pad_ms": 130 }
+    { "role": "agent", "text": "Sure! What date?", "ttfb_ms": 650, "ttfw_ms": 780, "stt_confidence": 0.98, "audio_duration_ms": 2400, "silence_pad_ms": 130 },
+    { "role": "agent", "text": "Let me check avail—", "interrupted": true },
+    { "role": "caller", "text": "Just the earliest slot please", "is_interruption": true },
+    { "role": "agent", "text": "Sure, the earliest is 9 AM tomorrow." }
   ],
   "latency": {
     "mean_ttfw_ms": 890, "p50_ttfw_ms": 850, "p95_ttfw_ms": 1400, "p99_ttfw_ms": 1550,
     "first_turn_ttfw_ms": 1950, "total_silence_ms": 4200, "mean_turn_gap_ms": 380,
     "drift_slope_ms_per_turn": -45.2, "mean_silence_pad_ms": 128, "mouth_to_ear_est_ms": 1020,
     "ttfw_per_turn_ms": [940, 780, 1350, 710, 530]
-  },
-  "behavior": {
-    "intent_accuracy": { "score": 0.95, "reasoning": "..." },
-    "context_retention": { "score": 0.9, "reasoning": "..." },
-    "hallucination_detected": { "detected": false, "reasoning": "..." },
-    "safety_compliance": { "compliant": true, "score": 0.95, "reasoning": "..." },
-    "escalation_handling": { "triggered": false, "handled_appropriately": true, "score": 1.0, "reasoning": "..." }
   },
   "transcript_quality": {
     "wer": 0.04, "repetition_score": 0.05, "reprompt_count": 0
@@ -351,6 +385,18 @@ WebSocket/WebRTC/SIP: user's agent must emit tool calls:
 }
 
 All fields optional except name, status, caller_prompt, duration_ms, transcript. Fields appear only when relevant analysis ran (e.g., emotion requires prosody: true).
+
+### Interruption evaluation
+
+When the transcript contains `interrupted: true` / `is_interruption: true` turns, evaluate these metrics by reading the transcript:
+
+| Metric | How to evaluate | Target |
+|--------|----------------|--------|
+| **Recovery rate** | For each interrupted turn: does the post-interrupt agent response acknowledge or address the interruption? (e.g., "Sure, the earliest is 9 AM" after being cut off mid-availability-list) | >90% |
+| **Context retention** | After the interruption, does the agent remember pre-interrupt conversation state? (e.g., still knows the caller's name, booking details, etc.) | >95% |
+| **Stop latency** | Check `stop_latency_ms` in logs if available — time from interrupt to agent's new speech | <500ms acceptable |
+
+Report these alongside standard metrics when interruption tests run. Flag any turn where the agent ignores the interruption, repeats itself from scratch, or loses context.
 </output_conversation_test>
 </conversation_tests>
 
@@ -474,7 +520,7 @@ spike and soak only appear when configured. breaking_point only appears when a t
 ## Output
 
 - **Exit codes**: 0=pass, 1=fail, 2=error
-- The `run` command outputs **complete results as pretty-printed JSON** — including full transcript, latency metrics, behavior scores, tool calls, and audio analysis for every test. Do NOT run a separate `vent status` command — all data is already in the output.
+- The `run` command outputs **complete results as pretty-printed JSON** — including full transcript, latency metrics, tool calls, and audio analysis for every test. Do NOT run a separate `vent status` command — all data is already in the output.
 
 ## API Keys
 

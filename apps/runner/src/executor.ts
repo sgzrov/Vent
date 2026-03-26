@@ -193,6 +193,7 @@ export async function executeTests(opts: ExecuteTestsOpts): Promise<ExecuteTests
     const testName = spec.name ?? `${testType}:${spec.caller_prompt.slice(0, 50)}`;
     onTestStart?.({ test_name: testName, test_type: testType });
     console.log(`  ${testLabel}: ${spec.caller_prompt.slice(0, 60)}...`);
+
     const channel = createAudioChannel(channelConfig);
     const start = Date.now();
     try {

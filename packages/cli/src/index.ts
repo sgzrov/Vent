@@ -4,18 +4,19 @@ import { statusCommand } from "./commands/status.js";
 import { loginCommand } from "./commands/login.js";
 import { logoutCommand } from "./commands/logout.js";
 import { initCommand } from "./commands/init.js";
-
+import { stopCommand } from "./commands/stop.js";
 import { printError } from "./lib/output.js";
 import { loadDotenv } from "./lib/dotenv.js";
 
 const USAGE = `Usage: vent-hq <command> [options]
 
 Commands:
-  init      Set up Vent (auth + skill files + test scaffold)
-  run       Run voice tests
-  status    Check status of a previous run
-  login     Save API key (for re-auth or CI/scripts)
-  logout    Remove saved credentials
+  init         Set up Vent (auth + skill files + test scaffold)
+  run          Run voice tests
+  stop         Cancel a queued or running test
+  status       Check status of a previous run
+  login        Save API key (for re-auth or CI/scripts)
+  logout       Remove saved credentials
 Options:
   --help    Show help
   --version Show version
@@ -155,6 +156,20 @@ async function main(): Promise<number> {
         json: values.json!,
         stream: values.stream!,
       });
+    }
+
+    case "stop": {
+      const runId = commandArgs[0];
+      if (!runId || commandArgs.includes("--help")) {
+        console.log("Usage: vent-hq stop <run-id> [--api-key <key>]");
+        return runId ? 0 : 2;
+      }
+      const { values: stopValues } = parseArgs({
+        args: commandArgs.slice(1),
+        options: { "api-key": { type: "string" } },
+        strict: true,
+      });
+      return stopCommand({ runId, apiKey: stopValues["api-key"] });
     }
 
     case "login": {

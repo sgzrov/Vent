@@ -1,12 +1,10 @@
 import type {
   ConversationMetrics,
-  BehavioralMetrics,
   LatencyMetrics,
   TranscriptMetrics,
 } from "@/lib/types";
 import { formatDuration } from "@/lib/format";
 import { TtfbSparkline } from "@/components/ttfb-sparkline";
-import { SentimentChart } from "@/components/sentiment-chart";
 
 interface ConversationMetricsPanelProps {
   metrics: ConversationMetrics;
@@ -72,103 +70,6 @@ function LatencySection({ latency }: { latency: LatencyMetrics }) {
   );
 }
 
-function BehavioralSection({
-  behavioral,
-}: {
-  behavioral: BehavioralMetrics;
-}) {
-  const scores = [
-    behavioral.intent_accuracy && {
-      label: "Intent Accuracy",
-      ...behavioral.intent_accuracy,
-    },
-    behavioral.context_retention && {
-      label: "Context Retention",
-      ...behavioral.context_retention,
-    },
-    behavioral.clarity_score && {
-      label: "Clarity",
-      ...behavioral.clarity_score,
-    },
-    behavioral.empathy_score && {
-      label: "Empathy",
-      ...behavioral.empathy_score,
-    },
-    behavioral.topic_drift && {
-      label: "Topic Drift",
-      ...behavioral.topic_drift,
-    },
-    behavioral.compliance_adherence && {
-      label: "Compliance",
-      ...behavioral.compliance_adherence,
-    },
-  ].filter(Boolean) as Array<{
-    label: string;
-    score: number;
-    reasoning: string;
-  }>;
-
-  const flags = [
-    behavioral.hallucination_detected && {
-      label: "Hallucination",
-      flagged: behavioral.hallucination_detected.detected,
-      reasoning: behavioral.hallucination_detected.reasoning,
-    },
-    behavioral.safety_compliance && {
-      label: "Safety",
-      flagged: !behavioral.safety_compliance.compliant,
-      reasoning: behavioral.safety_compliance.reasoning,
-    },
-  ].filter(Boolean) as Array<{
-    label: string;
-    flagged: boolean;
-    reasoning: string;
-  }>;
-
-  if (scores.length === 0 && flags.length === 0) return null;
-
-  return (
-    <div>
-      <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">
-        Behavioral
-      </h4>
-      {scores.length > 0 && (
-        <div className="grid grid-cols-2 md:grid-cols-3 gap-2 mb-2">
-          {scores.map((s) => (
-            <div key={s.label} className="rounded-md border border-border p-2">
-              <p className="text-[10px] text-muted-foreground uppercase tracking-wider">
-                {s.label}
-              </p>
-              <p className="text-lg font-bold tabular-nums">
-                {s.score.toFixed(2)}
-              </p>
-              <p className="text-[10px] text-muted-foreground leading-tight mt-0.5">
-                {s.reasoning}
-              </p>
-            </div>
-          ))}
-        </div>
-      )}
-      {flags.length > 0 && (
-        <div className="flex gap-2">
-          {flags.map((f) => (
-            <span
-              key={f.label}
-              className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs ${
-                f.flagged
-                  ? "bg-red-50 text-red-700"
-                  : "bg-emerald-50 text-emerald-700"
-              }`}
-              title={f.reasoning}
-            >
-              {f.label}: {f.flagged ? "flagged" : "clean"}
-            </span>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
 
 function TranscriptSection({ transcript }: { transcript: TranscriptMetrics }) {
   const items: Array<{ label: string; value: string }> = [];
@@ -231,17 +132,6 @@ export function ConversationMetricsPanel({
       {metrics.transcript && (
         <TranscriptSection transcript={metrics.transcript} />
       )}
-
-      {metrics.behavioral && (
-        <BehavioralSection behavioral={metrics.behavioral} />
-      )}
-
-      {metrics.behavioral?.sentiment_trajectory &&
-        metrics.behavioral.sentiment_trajectory.length > 1 && (
-          <SentimentChart
-            trajectory={metrics.behavioral.sentiment_trajectory}
-          />
-        )}
 
       {metrics.tool_calls && (
         <div>

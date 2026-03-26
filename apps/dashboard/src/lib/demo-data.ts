@@ -140,38 +140,6 @@ export const DEMO_RUN: RunDetail = {
             words_per_minute: 145,
             vocabulary_diversity: 0.82,
           },
-          behavioral: {
-            intent_accuracy: {
-              score: 0.95,
-              reasoning:
-                "Agent correctly identified booking intent and collected all required information.",
-            },
-            context_retention: {
-              score: 0.92,
-              reasoning:
-                "Agent maintained context across all turns, referencing the time and service correctly.",
-            },
-            clarity_score: {
-              score: 0.88,
-              reasoning:
-                "Clear and concise responses with appropriate pacing.",
-            },
-            sentiment_trajectory: [
-              { turn: 1, role: "agent" as const, value: "positive" as const },
-              { turn: 2, role: "caller" as const, value: "neutral" as const },
-              { turn: 3, role: "agent" as const, value: "positive" as const },
-              { turn: 4, role: "caller" as const, value: "positive" as const },
-              { turn: 5, role: "agent" as const, value: "positive" as const },
-            ],
-            hallucination_detected: {
-              detected: false,
-              reasoning: "No factual inaccuracies detected.",
-            },
-            safety_compliance: {
-              compliant: true,
-              reasoning: "Agent followed all safety protocols.",
-            },
-          },
           tool_calls: {
             total: 1,
             successful: 1,
@@ -280,40 +248,6 @@ export const DEMO_RUN: RunDetail = {
             filler_word_rate: 3,
             words_per_minute: 132,
             vocabulary_diversity: 0.74,
-          },
-          behavioral: {
-            intent_accuracy: {
-              score: 0.78,
-              reasoning:
-                "Agent identified the refund request but failed to properly distinguish between refund and replacement policies.",
-            },
-            context_retention: {
-              score: 0.85,
-              reasoning:
-                "Agent maintained order context but did not reference the damage issue when offering the replacement.",
-            },
-            clarity_score: {
-              score: 0.72,
-              reasoning:
-                "Responses were clear but the policy explanation was incomplete.",
-            },
-            sentiment_trajectory: [
-              { turn: 1, role: "agent" as const, value: "neutral" as const },
-              { turn: 2, role: "caller" as const, value: "negative" as const },
-              { turn: 3, role: "agent" as const, value: "positive" as const },
-              { turn: 4, role: "caller" as const, value: "neutral" as const },
-              { turn: 5, role: "agent" as const, value: "neutral" as const },
-              { turn: 6, role: "caller" as const, value: "neutral" as const },
-              { turn: 7, role: "agent" as const, value: "positive" as const },
-            ],
-            hallucination_detected: {
-              detected: false,
-              reasoning: "No factual inaccuracies in the information provided.",
-            },
-            safety_compliance: {
-              compliant: true,
-              reasoning: "No safety violations detected.",
-            },
           },
         },
       },

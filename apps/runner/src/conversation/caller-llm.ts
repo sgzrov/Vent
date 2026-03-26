@@ -22,7 +22,7 @@ Rules:
 - Respond with ONLY your next spoken line — no stage directions, no quotes, no labels.
 - Stay in character. Be natural and conversational.
 - When the conversation has reached a natural conclusion or your goal is met, respond with exactly: [END]
-- Keep responses concise (1-3 sentences max) — this is a phone call, not an essay.
+- Keep responses to 1-2 short sentences. Answer the agent's question OR ask a new one — never both in the same turn. On real phone lines, the agent will start responding as soon as it hears a complete thought.
 - If the agent asks you to repeat or clarify, do so naturally.`;
 
 // ---------------------------------------------------------------------------
@@ -54,9 +54,8 @@ const PERSONA_TRAIT_MAP: Record<string, Record<string, string>> = {
     rushed: "Be in a hurry. Mention you don't have much time. Push for quick resolution. Cut short long explanations.",
   },
   interruption_style: {
-    none: "",
-    occasional: "Occasionally interrupt the agent mid-sentence with follow-up questions or corrections.",
-    frequent: "Frequently cut off the agent. Start talking before they finish. Be impatient with long explanations.",
+    low: "Sometimes interrupt the agent mid-sentence with follow-up questions or corrections when they're being verbose.",
+    high: "Frequently cut off the agent. Start talking before they finish. Be impatient with long explanations.",
   },
   memory: {
     reliable: "",
@@ -172,6 +171,60 @@ export class CallerLLM {
     if (text === "[END]" || text.includes("[END]")) {
       return null;
     }
+
+    return text;
+  }
+
+  /**
+   * LLM-driven interrupt decision. Given partial agent speech, the CallerLLM
+   * decides whether to interrupt based on persona and conversation context.
+   *
+   * Returns the interruption text if the LLM decides to interrupt, or null
+   * if it decides to keep listening. The LLM's decision is contextual —
+   * an impatient caller interrupts verbose explanations, a cooperative caller
+   * lets the agent finish important details like booking confirmations.
+   */
+  async decideInterrupt(
+    partialAgentText: string,
+    transcript: ConversationTurn[]
+  ): Promise<string | null> {
+    // Use a separate call (not appended to history) so a [LISTEN] decision
+    // doesn't pollute the conversation history
+    const decisionMessages = [
+      ...this.history,
+      {
+        role: "user" as const,
+        content: `[The agent is mid-sentence. They are saying: "${partialAgentText}"]\n\nBased on your persona, decide: do you want to interrupt them right now, or let them finish?\n- If you want to interrupt, respond with ONLY your spoken interruption (what you'd actually say to cut them off).\n- If you want to let them finish, respond with exactly: [LISTEN]`,
+      },
+    ];
+
+    const response = await this.client.messages.create({
+      model: MODEL,
+      max_tokens: MAX_TOKENS,
+      temperature: 0.7,
+      system: this.systemPrompt,
+      messages: decisionMessages,
+    });
+
+    const text =
+      response.content[0]?.type === "text"
+        ? response.content[0].text.trim()
+        : "";
+
+    if (text === "[LISTEN]" || text.includes("[LISTEN]")) {
+      return null; // LLM decided not to interrupt
+    }
+
+    if (text === "[END]" || text.includes("[END]")) {
+      return null;
+    }
+
+    // LLM decided to interrupt — commit to conversation history
+    this.history.push({
+      role: "user",
+      content: `[You interrupted the agent mid-sentence. They were saying: "${partialAgentText}"]`,
+    });
+    this.history.push({ role: "assistant", content: text });
 
     return text;
   }

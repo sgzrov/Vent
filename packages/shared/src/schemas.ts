@@ -34,7 +34,7 @@ export const CallerPersonaSchema = z.object({
   disfluencies: z.boolean().optional(),
   cooperation: z.enum(["cooperative", "reluctant", "hostile"]).optional(),
   emotion: z.enum(["neutral", "cheerful", "confused", "frustrated", "skeptical", "rushed"]).optional(),
-  interruption_style: z.enum(["none", "occasional", "frequent"]).optional(),
+  interruption_style: z.enum(["low", "high"]).optional(),
   memory: z.enum(["reliable", "unreliable"]).optional(),
   intent_clarity: z.enum(["clear", "indirect", "vague"]).optional(),
   confirmation_style: z.enum(["explicit", "vague"]).optional(),
@@ -139,13 +139,66 @@ export const ToolCallMetricsSchema = z.object({
   names: z.array(z.string()),
 });
 
-export const PlatformConfigSchema = z.object({
-  provider: z.enum(["vapi", "retell", "elevenlabs", "bland", "livekit"]),
+const BasePlatformSchema = z.object({
   api_key_env: z.string().optional(),
   api_key: z.string().optional(),
   agent_id: z.string().optional(),
+  agent_id_env: z.string().optional(),
+});
+
+const BlandPlatformSchema = BasePlatformSchema.extend({
+  provider: z.literal("bland"),
+  task: z.string().optional(),
+  tools: z.array(z.unknown()).optional(),
+  voice: z.string().optional(),
+  model: z.string().optional(),
+  first_sentence: z.string().optional(),
+  wait_for_greeting: z.boolean().optional(),
+  max_duration: z.number().optional(),
+  temperature: z.number().min(0).max(1).optional(),
+  language: z.string().optional(),
+  interruption_threshold: z.number().optional(),
+  block_interruptions: z.boolean().optional(),
+  noise_cancellation: z.boolean().optional(),
+  background_track: z.string().nullable().optional(),
+  keywords: z.array(z.string()).optional(),
+  request_data: z.record(z.unknown()).optional(),
+  pronunciation_guide: z.array(z.object({
+    word: z.string(),
+    pronunciation: z.string(),
+    case_sensitive: z.boolean().optional(),
+    spaced: z.boolean().optional(),
+  })).optional(),
+  start_node_id: z.string().optional(),
+  pathway_version: z.number().optional(),
+});
+
+const LiveKitPlatformSchema = BasePlatformSchema.extend({
+  provider: z.literal("livekit"),
+  livekit_url: z.string().optional(),
+  api_secret: z.string().optional(),
   agent_name: z.string().optional(),
-}).passthrough();
+});
+
+const VapiPlatformSchema = BasePlatformSchema.extend({
+  provider: z.literal("vapi"),
+});
+
+const RetellPlatformSchema = BasePlatformSchema.extend({
+  provider: z.literal("retell"),
+});
+
+const ElevenLabsPlatformSchema = BasePlatformSchema.extend({
+  provider: z.literal("elevenlabs"),
+});
+
+export const PlatformConfigSchema = z.discriminatedUnion("provider", [
+  BlandPlatformSchema,
+  LiveKitPlatformSchema,
+  VapiPlatformSchema,
+  RetellPlatformSchema,
+  ElevenLabsPlatformSchema,
+]);
 
 export const AudioAnalysisGradeThresholdsSchema = z.object({
   agent_speech_ratio_min: z.number().min(0).max(1).optional(),
@@ -232,32 +285,6 @@ export const LatencyMetricsSchema = z.object({
   drift_slope_ms_per_turn: z.number().optional(),
 });
 
-const SentimentValueSchema = z.enum(["positive", "neutral", "negative"]);
-const SentimentTrajectoryEntrySchema = z.object({
-  turn: z.number().int().min(0),
-  role: z.enum(["caller", "agent"]),
-  value: SentimentValueSchema,
-});
-
-export const BehavioralMetricsSchema = z.object({
-  intent_accuracy: z.object({ score: z.number(), reasoning: z.string() }).optional(),
-  hallucination_detected: z.object({ detected: z.boolean(), reasoning: z.string() }).optional(),
-  sentiment_trajectory: z.array(SentimentTrajectoryEntrySchema).optional(),
-  context_retention: z.object({ score: z.number(), reasoning: z.string() }).optional(),
-  topic_drift: z.object({ score: z.number(), reasoning: z.string() }).optional(),
-  empathy_score: z.object({ score: z.number(), reasoning: z.string() }).optional(),
-  clarity_score: z.object({ score: z.number(), reasoning: z.string() }).optional(),
-  safety_compliance: z.object({ compliant: z.boolean(), reasoning: z.string() }).optional(),
-  compliance_adherence: z.object({ score: z.number(), reasoning: z.string() }).optional(),
-  escalation_handling: z
-    .object({
-      triggered: z.boolean(),
-      handled_appropriately: z.boolean(),
-      score: z.number(),
-      reasoning: z.string(),
-    })
-    .optional(),
-});
 
 export const AudioAnalysisMetricsSchema = z.object({
   agent_speech_ratio: z.number(),
@@ -356,6 +383,7 @@ export const CallMetadataSchema = z.object({
   success_evaluation: z.string().nullable().optional(),
   user_sentiment: z.string().nullable().optional(),
   call_successful: z.boolean().optional(),
+  variables: z.record(z.unknown()).optional(),
 });
 
 export const ConversationMetricsSchema = z.object({
@@ -363,7 +391,6 @@ export const ConversationMetricsSchema = z.object({
   mean_ttfw_ms: z.number().optional(),
   transcript: TranscriptMetricsSchema.optional(),
   latency: LatencyMetricsSchema.optional(),
-  behavioral: BehavioralMetricsSchema.optional(),
   tool_calls: ToolCallMetricsSchema.optional(),
   signal_quality: SignalQualityMetricsSchema.optional(),
   audio_analysis: AudioAnalysisMetricsSchema.optional(),

@@ -1,5 +1,5 @@
 import { randomUUID, createHash } from "node:crypto";
-import { eq, and } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
 import { schema } from "@vent/db";
 import { z } from "zod";
 import {
@@ -10,6 +10,22 @@ import {
   CallerAudioEffectsSchema,
 } from "@vent/shared";
 import type { FastifyInstance } from "fastify";
+
+// ---- Usage limit error ----
+
+export class UsageLimitError extends Error {
+  public limit: number;
+  public used: number;
+
+  constructor(limit: number, used: number) {
+    super(
+      `Free tier limit reached (${used}/${limit} runs). Run \`npx vent-hq login\` to upgrade.`,
+    );
+    this.name = "UsageLimitError";
+    this.limit = limit;
+    this.used = used;
+  }
+}
 
 // ---- Zod schema for run submission ----
 
@@ -166,6 +182,24 @@ export async function submitRun(
     }
   }
 
+  // Usage limit check for anonymous API keys
+  const [apiKeyRow] = await app.db
+    .select({ run_limit: schema.apiKeys.run_limit })
+    .from(schema.apiKeys)
+    .where(eq(schema.apiKeys.id, apiKeyId))
+    .limit(1);
+
+  if (apiKeyRow?.run_limit != null) {
+    const [{ count }] = await app.db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(schema.runs)
+      .where(eq(schema.runs.user_id, userId));
+
+    if (count >= apiKeyRow.run_limit) {
+      throw new UsageLimitError(apiKeyRow.run_limit, count);
+    }
+  }
+
   // Flatten connection into cfg
   const { connection, ...rest } = config;
   const cfg = { ...connection, ...rest } as Record<string, unknown>;
@@ -208,7 +242,7 @@ export async function submitRun(
       health_endpoint: cfg.health_endpoint as string | undefined,
       agent_url: agentUrl,
       platform: cfg.platform ?? null,
-    });
+    }, { jobId: runId });
 
     return { run_id: runId, status: "queued" };
   }

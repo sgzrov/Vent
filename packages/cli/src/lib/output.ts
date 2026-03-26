@@ -105,9 +105,6 @@ function printTestResult(meta: Record<string, unknown>): void {
 
   const parts = [statusIcon, bold(testName), dim(duration)];
 
-  if (result?.behavior?.intent_accuracy) {
-    parts.push(`intent: ${result.behavior.intent_accuracy.score}`);
-  }
   if (result?.latency?.p50_ttfw_ms != null) {
     parts.push(`p50: ${result.latency.p50_ttfw_ms}ms`);
   }
@@ -190,9 +187,6 @@ export function printSummary(
     for (const t of failures) {
       const duration = t.duration_ms != null ? (t.duration_ms / 1000).toFixed(1) + "s" : "—";
       const parts = [red("✘"), bold(t.name), dim(duration)];
-      if (t.intent_accuracy != null) {
-        parts.push(`intent: ${t.intent_accuracy}`);
-      }
       stdoutSync("  " + parts.join("  ") + "\n");
     }
   }

@@ -20,10 +20,23 @@ export interface AudioChannelEvents {
   platformEndOfTurn: () => void;
 }
 
+export interface SendAudioOptions {
+  /** When true, skip anti-echo measures (silence padding, mark await, clear).
+   *  Use for audio actions (interrupt, noise injection) where timing matters. */
+  raw?: boolean;
+}
+
 export interface AudioChannel {
   connect(): Promise<void>;
   /** Send raw PCM audio to the agent (16-bit 24kHz mono) */
-  sendAudio(pcm: Buffer): void | Promise<void>;
+  sendAudio(pcm: Buffer, opts?: SendAudioOptions): void | Promise<void>;
+  /** Stream PCM audio chunks to the agent as they arrive (16-bit 24kHz mono).
+   *  Returns immediately after the last chunk is sent — does not wait for playback. */
+  sendAudioStream?(stream: AsyncIterable<Buffer>, opts?: SendAudioOptions): Promise<void>;
+  /** Start sending low-level comfort noise to keep the line active during processing. */
+  startComfortNoise?(): void;
+  /** Stop comfort noise (called automatically by sendAudioStream). */
+  stopComfortNoise?(): void;
   disconnect(): Promise<void>;
   readonly connected: boolean;
   readonly stats: ChannelStats;
@@ -36,6 +49,8 @@ export interface AudioChannel {
   getComponentTimings?(): ComponentLatency[];
   /** Get platform's own STT transcripts for cross-referencing with Vent's STT. */
   getTranscripts?(): Array<{ turnIndex: number; text: string }>;
+  /** Get ALL caller speech as a single concatenated string (for WER without turn alignment). */
+  getFullCallerTranscript?(): string;
   /** Consume accumulated real-time agent transcript text (resets buffer). Used as STT fallback. */
   consumeAgentText?(): string;
   /** Platform-reported concurrency limit (e.g. Vapi returns this on call creation). */
@@ -96,7 +111,7 @@ export abstract class BaseAudioChannel extends EventEmitter implements AudioChan
   }
 
   abstract connect(): Promise<void>;
-  abstract sendAudio(pcm: Buffer): void | Promise<void>;
+  abstract sendAudio(pcm: Buffer, opts?: SendAudioOptions): void | Promise<void>;
   abstract disconnect(): Promise<void>;
   abstract get connected(): boolean;
 }

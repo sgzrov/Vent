@@ -4,6 +4,15 @@
 
 import type { ConversationTurn, TranscriptMetrics } from "@vent/shared";
 
+let _normalizer: { normalize(s: string): string } | null = null;
+async function getWerNormalizer() {
+  if (!_normalizer) {
+    const { EnglishTextNormalizer } = await import("@shelf/text-normalizer");
+    _normalizer = new EnglishTextNormalizer();
+  }
+  return _normalizer;
+}
+
 const FILLER_WORDS = new Set([
   "um", "uh", "erm", "er", "ah", "like", "hmm", "hm",
   "you know", "i mean", "sort of", "kind of",
@@ -11,9 +20,9 @@ const FILLER_WORDS = new Set([
 
 /**
  * Word Error Rate via word-level Levenshtein distance.
- * Compares expected text (caller prompt intent) to actual agent response.
- * For conversation testing, we compute between consecutive caller→agent pairs
- * to detect misunderstandings.
+ * Compares our STT transcript (reference) to the platform's STT transcript
+ * (hypothesis) of the same caller speech. Measures how accurately the
+ * agent's platform heard the caller.
  */
 export function computeWER(reference: string, hypothesis: string): number {
   const ref = tokenize(reference);
@@ -155,23 +164,39 @@ export function computeRepromptCount(agentTexts: string[]): number {
 /**
  * Compute all transcript metrics from conversation turns.
  */
-export function computeTranscriptMetrics(turns: ConversationTurn[]): TranscriptMetrics {
+export async function computeTranscriptMetrics(turns: ConversationTurn[], fullPlatformCallerText?: string): Promise<TranscriptMetrics> {
   const agentTurns = turns.filter((t) => t.role === "agent");
   const agentTexts = agentTurns.map((t) => t.text);
   const totalAgentAudioMs = agentTurns.reduce((sum, t) => sum + (t.audio_duration_ms ?? 0), 0);
 
-  // WER: average across consecutive caller→agent pairs
-  let totalWer = 0;
-  let werPairs = 0;
-  for (let i = 0; i < turns.length - 1; i++) {
-    if (turns[i]!.role === "caller" && turns[i + 1]!.role === "agent") {
-      totalWer += computeWER(turns[i]!.text, turns[i + 1]!.text);
-      werPairs++;
-    }
+  // WER: compare our caller speech text vs platform's STT of the same speech.
+  // Use fullPlatformCallerText (all user entries concatenated, no turn alignment)
+  // when available — avoids data loss from turn count mismatches.
+  const callerTexts = turns
+    .filter((t) => t.role === "caller" && t.text)
+    .map((t) => t.text);
+  const refStr = callerTexts.join(" ");
+
+  // Prefer full platform transcript (no turn alignment issues) over per-turn
+  const hypStr = fullPlatformCallerText?.trim()
+    || turns
+        .filter((t) => t.role === "caller" && t.platform_transcript)
+        .map((t) => t.platform_transcript!)
+        .join(" ");
+
+  // Whisper-style normalization: expand contractions, normalize numbers, lowercase, strip punctuation/fillers
+  let wer: number | undefined;
+  if (refStr.length > 0 && hypStr.length > 0) {
+    const normalizer = await getWerNormalizer();
+    const normRef = normalizer.normalize(refStr);
+    const normHyp = normalizer.normalize(hypStr);
+    wer = normRef.length > 0 && normHyp.length > 0
+      ? computeWER(normRef, normHyp)
+      : undefined;
   }
 
   return {
-    wer: werPairs > 0 ? totalWer / werPairs : undefined,
+    wer,
     repetition_score: computeRepetitionScore(agentTexts),
     reprompt_count: computeRepromptCount(agentTexts),
     filler_word_rate: computeFillerWordRate(agentTexts),
