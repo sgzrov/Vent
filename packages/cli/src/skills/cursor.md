@@ -44,7 +44,7 @@ One command. No email, no browser, no human interaction needed. You get 10 free 
 3. **Handle backgrounded commands** — If a test command gets moved to background by the system, wait for it to complete before proceeding. Never end your response without delivering test results.
 4. **Output format** — In non-TTY mode (when run by an agent), every SSE event is written to stdout as a JSON line. Results are always in stdout.
 5. **This skill is self-contained** — The full config schema is below. Do NOT re-read this file.
-6. **Always analyze results** — The run command outputs complete JSON with full transcript, latency, behavior scores, and tool calls. Analyze this output directly — do NOT run `vent status` afterwards, the data is already there.
+6. **Always analyze results** — The run command outputs complete JSON with full transcript, latency, and tool calls. Analyze this output directly — do NOT run `vent status` afterwards, the data is already there.
 7. **ENFORCE concurrency limits** — Before running ANY suite, count the total concurrent tests (number of tests × repeat). If this exceeds the platform's limit, REDUCE the test count or split into multiple runs. Default limits if unknown: LiveKit=5, Vapi=10, Bland=10. Tests that exceed the limit will hang forever waiting for agents that never connect. This is NOT optional.
 
 ## Workflow
@@ -190,10 +190,23 @@ Bland:
 {
   "connection": {
     "adapter": "bland",
-    "platform": { "provider": "bland", "api_key_env": "BLAND_API_KEY", "agent_id": "pathway_uuid_here" }
+    "platform": {
+      "provider": "bland",
+      "api_key_env": "BLAND_API_KEY",
+      "agent_id": "pathway_uuid_here"
+    }
   }
 }
-Note: Bland agent_id is a pathway_id (UUID). The env var is BLAND_PATHWAY_ID. Vent calls the agent via telephony (POST /v1/calls + SIP) — no additional config needed. Rate limiting (10s between calls) and concurrency (max 3) are handled automatically server-side. Unlike Vapi/LiveKit/ElevenLabs (which use WebSocket/WebRTC for unlimited parallel calls), Bland routes through a single Twilio phone number — so concurrent calls are limited by telephony constraints.
+Note: Bland agent_id is a pathway_id (UUID). The env var is BLAND_PATHWAY_ID. Vent calls the agent via telephony (POST /v1/calls + SIP) — no additional config needed. Rate limiting (10s between calls) and concurrency (max 3) are handled automatically server-side.
+
+Bland-specific platform options (all optional):
+- `background_track` — `"office"`, `"cafe"`, `"restaurant"`, `"none"`, or omit for default phone static.
+- `keywords` — Boost transcription for domain terms: `["SafetySpec:2", "HVAC:1.5"]`
+- `request_data` — Variables for agent prompts: `{ "customer_tier": "enterprise" }`
+- `pronunciation_guide` — `[{ "word": "HVAC", "pronunciation": "H-V-A-C" }]`
+- `start_node_id` — Test a specific pathway branch.
+- `pathway_version` — Test a specific pathway version instead of production.
+- `block_interruptions`, `noise_cancellation`, `interruption_threshold`, `max_duration`, `temperature`, `language` — See Bland API docs.
 
 Vapi:
 {
@@ -216,9 +229,17 @@ WebRTC / LiveKit:
 {
   "connection": {
     "adapter": "webrtc",
-    "platform": { "provider": "livekit", "agent_name": "my-agent", "max_concurrency": 5 }
+    "platform": {
+      "provider": "livekit",
+      "agent_name": "my-agent",
+      "max_concurrency": 5
+    }
   }
 }
+LiveKit-specific platform options (all optional):
+- `livekit_url` — LiveKit server URL. Can also be set via `LIVEKIT_URL` env var.
+- `api_secret` — API secret. Can also be set via `LIVEKIT_API_SECRET` env var.
+- `agent_name` — Explicit agent dispatch name. Omit for automatic dispatch.
 IMPORTANT — LiveKit requires these variables in the project's .env file:
   - LIVEKIT_URL=wss://my-project-xxxx.livekit.cloud
   - LIVEKIT_API_KEY=your_key
@@ -254,7 +275,7 @@ WebSocket/WebRTC/SIP: user's agent must emit tool calls:
         "disfluencies": "true | false",
         "cooperation": "cooperative | reluctant | hostile",
         "emotion": "neutral | cheerful | confused | frustrated | skeptical | rushed",
-        "interruption_style": "none | occasional | frequent",
+        "interruption_style": "low (~3/10 turns) | high (~7/10 turns)",
         "memory": "reliable | unreliable",
         "intent_clarity": "clear | indirect | vague",
         "confirmation_style": "explicit | vague"
@@ -299,7 +320,7 @@ WebSocket/WebRTC/SIP: user's agent must emit tool calls:
   "name": "noisy-interruption-booking",
   "caller_prompt": "You are James, an impatient customer calling from a loud coffee shop to book a plumber for tomorrow morning. You interrupt the agent mid-sentence when they start listing availability — you just want the earliest slot.",
   "max_turns": 12,
-  "persona": { "pace": "fast", "cooperation": "reluctant", "emotion": "rushed", "interruption_style": "frequent" },
+  "persona": { "pace": "fast", "cooperation": "reluctant", "emotion": "rushed", "interruption_style": "high" },
   "audio_actions": [
     { "action": "interrupt", "at_turn": 3, "prompt": "Just give me the earliest one!" },
     { "action": "inject_noise", "at_turn": 1, "noise_type": "babble", "snr_db": 15 }
@@ -322,20 +343,16 @@ WebSocket/WebRTC/SIP: user's agent must emit tool calls:
   "error": null,
   "transcript": [
     { "role": "caller", "text": "Hi, I'd like to book..." },
-    { "role": "agent", "text": "Sure! What date?", "ttfb_ms": 650, "ttfw_ms": 780, "stt_confidence": 0.98, "audio_duration_ms": 2400, "silence_pad_ms": 130 }
+    { "role": "agent", "text": "Sure! What date?", "ttfb_ms": 650, "ttfw_ms": 780, "stt_confidence": 0.98, "audio_duration_ms": 2400, "silence_pad_ms": 130 },
+    { "role": "agent", "text": "Let me check avail—", "interrupted": true },
+    { "role": "caller", "text": "Just the earliest slot please", "is_interruption": true },
+    { "role": "agent", "text": "Sure, the earliest is 9 AM tomorrow." }
   ],
   "latency": {
     "mean_ttfw_ms": 890, "p50_ttfw_ms": 850, "p95_ttfw_ms": 1400, "p99_ttfw_ms": 1550,
     "first_turn_ttfw_ms": 1950, "total_silence_ms": 4200, "mean_turn_gap_ms": 380,
     "drift_slope_ms_per_turn": -45.2, "mean_silence_pad_ms": 128, "mouth_to_ear_est_ms": 1020,
     "ttfw_per_turn_ms": [940, 780, 1350, 710, 530]
-  },
-  "behavior": {
-    "intent_accuracy": { "score": 0.95, "reasoning": "..." },
-    "context_retention": { "score": 0.9, "reasoning": "..." },
-    "hallucination_detected": { "detected": false, "reasoning": "..." },
-    "safety_compliance": { "compliant": true, "score": 0.95, "reasoning": "..." },
-    "escalation_handling": { "triggered": false, "handled_appropriately": true, "score": 1.0, "reasoning": "..." }
   },
   "transcript_quality": {
     "wer": 0.04, "repetition_score": 0.05, "reprompt_count": 0
@@ -360,6 +377,18 @@ WebSocket/WebRTC/SIP: user's agent must emit tool calls:
 }
 
 All fields optional except name, status, caller_prompt, duration_ms, transcript. Fields appear only when relevant analysis ran (e.g., emotion requires prosody: true).
+
+### Interruption evaluation
+
+When the transcript contains `interrupted: true` / `is_interruption: true` turns, evaluate these metrics by reading the transcript:
+
+| Metric | How to evaluate | Target |
+|--------|----------------|--------|
+| **Recovery rate** | For each interrupted turn: does the post-interrupt agent response acknowledge or address the interruption? | >90% |
+| **Context retention** | After the interruption, does the agent remember pre-interrupt conversation state? | >95% |
+| **Stop latency** | Check `stop_latency_ms` in logs if available — time from interrupt to agent's new speech | <500ms acceptable |
+
+Report these alongside standard metrics when interruption tests run.
 </output_conversation_test>
 </conversation_tests>
 
