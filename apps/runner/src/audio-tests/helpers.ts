@@ -34,8 +34,10 @@ export async function collectUntilEndOfTurn(
     silenceThresholdMs?: number;
     /** Pre-initialized VAD instance — reused across turns to avoid WASM reload. */
     vad?: VoiceActivityDetector;
+    /** Abort signal — resolves collection early, returning audio collected so far. */
+    signal?: AbortSignal;
   } = {}
-): Promise<{ audio: Buffer; timedOut: boolean; stats: CollectionStats }> {
+): Promise<{ audio: Buffer; timedOut: boolean; aborted: boolean; stats: CollectionStats }> {
   const timeoutMs = opts.timeoutMs ?? 15000;
   const silenceThresholdMs = opts.silenceThresholdMs ?? 800;
 
@@ -46,6 +48,7 @@ export async function collectUntilEndOfTurn(
 
   const chunks: Buffer[] = [];
   let timedOut = false;
+  let aborted = false;
 
   // State transition tracking for adaptive thresholds
   let prevState: VADState = "silence";
@@ -147,11 +150,22 @@ export async function collectUntilEndOfTurn(
         channel.off("audio", onAudio);
         channel.off("error", onError);
         channel.off("platformEndOfTurn", onPlatformEOT);
+        if (opts.signal) opts.signal.removeEventListener("abort", onAbort);
       }
+
+      const onAbort = () => {
+        aborted = true;
+        cleanup();
+        resolve();
+      };
 
       channel.on("audio", onAudio);
       channel.on("error", onError);
       channel.on("platformEndOfTurn", onPlatformEOT);
+      if (opts.signal) {
+        if (opts.signal.aborted) { aborted = true; resolve(); return; }
+        opts.signal.addEventListener("abort", onAbort);
+      }
     });
   } finally {
     // Account for speech that was still ongoing at end
@@ -164,6 +178,7 @@ export async function collectUntilEndOfTurn(
   return {
     audio: concatPcm(chunks),
     timedOut,
+    aborted,
     stats: { speechSegments, maxInternalSilenceMs, totalSpeechMs, firstChunkAt, speechOnsetAt },
   };
 }

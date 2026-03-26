@@ -101,7 +101,7 @@ async function executeInterrupt(
 
   // Send interrupt
   const interruptTime = Date.now();
-  await ctx.channel.sendAudio(interruptAudio);
+  await ctx.channel.sendAudio(interruptAudio, { raw: true });
 
   // Collect post-interrupt response
   ctx.transcriber.resetForNextTurn();
@@ -228,8 +228,8 @@ async function executeInjectNoise(
     : generateBabbleNoise;
   const noise = noiseGenerator(noiseDurationMs);
 
-  // Send noise while agent is speaking
-  await ctx.channel.sendAudio(noise);
+  // Send noise while agent is speaking (raw: skip anti-echo measures)
+  await ctx.channel.sendAudio(noise, { raw: true });
 
   // Collect rest of agent response
   ctx.transcriber.resetForNextTurn();
@@ -379,7 +379,7 @@ async function executeNoiseOnCaller(
 /**
  * Helper: collect audio for a fixed duration without VAD.
  */
-async function collectForDurationSafe(channel: AudioChannel, durationMs: number): Promise<Buffer> {
+export async function collectForDurationSafe(channel: AudioChannel, durationMs: number): Promise<Buffer> {
   const chunks: Buffer[] = [];
 
   await new Promise<void>((resolve) => {
