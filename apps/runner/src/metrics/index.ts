@@ -22,14 +22,14 @@ export interface ComputedMetrics {
 
 /**
  * Compute all non-LLM metrics from conversation turns.
- * These are pure, instant computations with no external calls.
  */
-export function computeAllMetrics(
+export async function computeAllMetrics(
   turns: ConversationTurn[],
   turnAudioData?: TurnAudioData[],
   connectLatencyMs?: number,
-): ComputedMetrics {
-  const transcript = computeTranscriptMetrics(turns);
+  fullPlatformCallerText?: string,
+): Promise<ComputedMetrics> {
+  const transcript = await computeTranscriptMetrics(turns, fullPlatformCallerText);
   const latency = computeLatencyMetrics(turns, connectLatencyMs);
   const harness_overhead = computeHarnessOverhead(turns);
 

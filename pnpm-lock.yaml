@@ -154,6 +154,9 @@ importers:
       '@anthropic-ai/sdk':
         specifier: ^0.78.0
         version: 0.78.0(zod@3.25.76)
+      '@shelf/text-normalizer':
+        specifier: ^2.1.1
+        version: 2.1.1
       '@vent/adapters':
         specifier: workspace:*
         version: link:../../packages/adapters
@@ -1775,6 +1778,10 @@ packages:
       '@types/react':
         optional: true
 
+  '@shelf/text-normalizer@2.1.1':
+    resolution: {integrity: sha512-yTkwhfnkBNa7xWcAPpO4QKyHvwk0deQ3j0zQ2yBAR8yTd714ILDFx7H3V1HjV6OW+zEAiotarY0/1MNQfH/OdQ==}
+    engines: {node: '>=20'}
+
   '@smithy/abort-controller@4.2.8':
     resolution: {integrity: sha512-peuVfkYHAmS5ybKxWcfraK7WBBP0J+rkfUcbHJJKQ4ir3UAUNQI+Y4Vt/PqSzGqgloJ5O1dk7+WzNL8wcCSXbw==}
     engines: {node: '>=18.0.0'}
@@ -2839,6 +2846,10 @@ packages:
 
   mnemonist@0.40.0:
     resolution: {integrity: sha512-kdd8AFNig2AD5Rkih7EPCXhu/iMvwevQFX/uEiGhZyPZi7fHqOoF4V4kHLpCfysxXMgQ4B52kdPMCwARshKvEg==}
+
+  modern-diacritics@2.3.1:
+    resolution: {integrity: sha512-jOI0qtelWfGZ4HTB/7pKTOzAA5miXgfbMl0RYirYA5CRuNY4JYTXER+BUiH9JCxqX1gIHs6GaVTwFhvUV8MPWg==}
+    engines: {node: ^14 || >=16}
 
   motion-dom@12.38.0:
     resolution: {integrity: sha512-pdkHLD8QYRp8VfiNLb8xIBJis1byQ9gPT3Jnh2jqfFtAsWUA3dEepDlsWe/xMpO8McV+VdpKVcp+E+TGJEtOoA==}
@@ -5060,6 +5071,11 @@ snapshots:
     optionalDependencies:
       '@types/react': 19.2.14
 
+  '@shelf/text-normalizer@2.1.1':
+    dependencies:
+      fraction.js: 5.3.4
+      modern-diacritics: 2.3.1
+
   '@smithy/abort-controller@4.2.8':
     dependencies:
       '@smithy/types': 4.12.0
@@ -6260,6 +6276,8 @@ snapshots:
   mnemonist@0.40.0:
     dependencies:
       obliterator: 2.0.5
+
+  modern-diacritics@2.3.1: {}
 
   motion-dom@12.38.0:
     dependencies:
