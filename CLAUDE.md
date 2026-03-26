@@ -77,6 +77,17 @@ Use `type: small description` format for commits.
 - Each commit should represent one coherent change (e.g., separate "refactor: extract helper" from "feat: add new endpoint").
 - Commit as you go during implementation, not all at once at the end.
 
+## Bisect Commits
+Always bisect commits. Every commit should be a single logical change. When you've made multiple changes (e.g., a rename + a rewrite + new tests), split them into separate commits before pushing. Each commit should be independently understandable and revertable.
+
+Examples of good bisection:
+- Rename/move separate from behavior changes
+- Test infrastructure (touchfiles, helpers) separate from test implementations
+- Template changes separate from generated file regeneration
+- Mechanical refactors separate from new features
+
+When the user says "bisect commit" or "bisect and push," split staged/unstaged changes into logical commits and push.
+
 ## Design Context
 
 ### Users
