@@ -48,10 +48,21 @@ function buildVapiOverrides(p: VapiPlatformConfig): Record<string, unknown> | un
 
   if (p.first_message != null) overrides.firstMessage = p.first_message;
   if (p.first_message_mode != null) overrides.firstMessageMode = p.first_message_mode;
+  if (p.first_message_interruptions_enabled != null) overrides.firstMessageInterruptionsEnabled = p.first_message_interruptions_enabled;
   if (p.voice != null) overrides.voice = p.voice;
   if (p.end_call_message != null) overrides.endCallMessage = p.end_call_message;
   if (p.end_call_phrases != null) overrides.endCallPhrases = p.end_call_phrases;
-  if (p.stop_speaking_plan != null) overrides.stopSpeakingPlan = p.stop_speaking_plan;
+  if (p.stop_speaking_plan != null) {
+    // Map snake_case config fields to Vapi's camelCase API format
+    const ssp = p.stop_speaking_plan;
+    overrides.stopSpeakingPlan = {
+      ...(ssp.num_words != null && { numWords: ssp.num_words }),
+      ...(ssp.voice_seconds != null && { voiceSeconds: ssp.voice_seconds }),
+      ...(ssp.backoff_seconds != null && { backoffSeconds: ssp.backoff_seconds }),
+      ...(ssp.acknowledgement_phrases != null && { acknowledgementPhrases: ssp.acknowledgement_phrases }),
+      ...(ssp.interruption_phrases != null && { interruptionPhrases: ssp.interruption_phrases }),
+    };
+  }
   if (p.start_speaking_plan != null) overrides.startSpeakingPlan = p.start_speaking_plan;
   if (p.silence_timeout_seconds != null) overrides.silenceTimeoutSeconds = p.silence_timeout_seconds;
   if (p.max_duration_seconds != null) overrides.maxDurationSeconds = p.max_duration_seconds;

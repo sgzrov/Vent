@@ -198,14 +198,27 @@ export interface VapiPlatformConfig extends BasePlatformConfig {
   first_message?: string;
   /** Controls who speaks first: "assistant-speaks-first" | "assistant-waits-for-user" | "assistant-speaks-first-with-model-generated-message" */
   first_message_mode?: string;
+  /** Allow user to interrupt the first/greeting message (default: depends on Vapi config) */
+  first_message_interruptions_enabled?: boolean;
   /** TTS voice override: { provider, voiceId, ... } */
   voice?: Record<string, unknown>;
   /** Message spoken before ending call */
   end_call_message?: string;
   /** Phrases that trigger automatic hangup (case-insensitive) */
   end_call_phrases?: string[];
-  /** Controls when assistant stops speaking on interruption: { numWords, voiceSeconds, backoffSeconds } */
-  stop_speaking_plan?: Record<string, unknown>;
+  /** Controls when assistant stops speaking on interruption */
+  stop_speaking_plan?: {
+    /** Words of interruption before assistant stops speaking (0-10, default: 0 = immediate) */
+    num_words?: number;
+    /** Seconds of voice activity needed to trigger interruption (0-0.5, default: 0.2) */
+    voice_seconds?: number;
+    /** Seconds to pause before resuming after interruption (0-10, default: 1.0) */
+    backoff_seconds?: number;
+    /** Phrases to ignore as interruptions (e.g. "yeah", "uh-huh", "ok") */
+    acknowledgement_phrases?: string[];
+    /** Phrases that instantly clear the pipeline (e.g. "stop", "hold on") */
+    interruption_phrases?: string[];
+  };
   /** Controls when assistant starts responding: { waitSeconds, smartEndpointingEnabled, ... } */
   start_speaking_plan?: Record<string, unknown>;
   /** Seconds of silence before ending call (default: 30) */
