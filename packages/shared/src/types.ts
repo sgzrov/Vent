@@ -194,6 +194,40 @@ export interface LiveKitPlatformConfig extends BasePlatformConfig {
 
 export interface VapiPlatformConfig extends BasePlatformConfig {
   provider: "vapi";
+  /** Override greeting text */
+  first_message?: string;
+  /** Controls who speaks first: "assistant-speaks-first" | "assistant-waits-for-user" | "assistant-speaks-first-with-model-generated-message" */
+  first_message_mode?: string;
+  /** TTS voice override: { provider, voiceId, ... } */
+  voice?: Record<string, unknown>;
+  /** Message spoken before ending call */
+  end_call_message?: string;
+  /** Phrases that trigger automatic hangup (case-insensitive) */
+  end_call_phrases?: string[];
+  /** Controls when assistant stops speaking on interruption: { numWords, voiceSeconds, backoffSeconds } */
+  stop_speaking_plan?: Record<string, unknown>;
+  /** Controls when assistant starts responding: { waitSeconds, smartEndpointingEnabled, ... } */
+  start_speaking_plan?: Record<string, unknown>;
+  /** Seconds of silence before ending call (default: 30) */
+  silence_timeout_seconds?: number;
+  /** Max call duration in seconds (default: 600) */
+  max_duration_seconds?: number;
+  /** Background sound: "off", "office", or custom audio URL */
+  background_sound?: string;
+  /** Filter noise/background speech from caller audio */
+  background_denoising?: boolean;
+  /** LLM override: { provider, model, temperature, systemPrompt, ... } */
+  model?: Record<string, unknown>;
+  /** STT transcriber override: { provider, model, language, ... } */
+  transcriber?: Record<string, unknown>;
+  /** LiquidJS template variables accessible in assistant prompts */
+  variable_values?: Record<string, unknown>;
+  /** Custom JSON metadata attached to the call */
+  metadata?: Record<string, unknown>;
+  /** Enable HIPAA compliance mode (disables logs/recordings/transcriptions) */
+  hipaa_enabled?: boolean;
+  /** Raw passthrough for any Vapi assistantOverrides field not explicitly listed above */
+  assistant_overrides?: Record<string, unknown>;
 }
 
 export interface RetellPlatformConfig extends BasePlatformConfig {

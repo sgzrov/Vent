@@ -182,6 +182,27 @@ const LiveKitPlatformSchema = BasePlatformSchema.extend({
 
 const VapiPlatformSchema = BasePlatformSchema.extend({
   provider: z.literal("vapi"),
+  first_message: z.string().optional(),
+  first_message_mode: z.enum([
+    "assistant-speaks-first",
+    "assistant-waits-for-user",
+    "assistant-speaks-first-with-model-generated-message",
+  ]).optional(),
+  voice: z.record(z.unknown()).optional(),
+  end_call_message: z.string().optional(),
+  end_call_phrases: z.array(z.string()).optional(),
+  stop_speaking_plan: z.record(z.unknown()).optional(),
+  start_speaking_plan: z.record(z.unknown()).optional(),
+  silence_timeout_seconds: z.number().optional(),
+  max_duration_seconds: z.number().optional(),
+  background_sound: z.string().optional(),
+  background_denoising: z.boolean().optional(),
+  model: z.record(z.unknown()).optional(),
+  transcriber: z.record(z.unknown()).optional(),
+  variable_values: z.record(z.unknown()).optional(),
+  metadata: z.record(z.unknown()).optional(),
+  hipaa_enabled: z.boolean().optional(),
+  assistant_overrides: z.record(z.unknown()).optional(),
 });
 
 const RetellPlatformSchema = BasePlatformSchema.extend({
