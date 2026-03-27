@@ -1,4 +1,4 @@
-import type { AdapterType, PlatformConfig, BlandPlatformConfig, LiveKitPlatformConfig } from "@vent/shared";
+import type { AdapterType, PlatformConfig, BlandPlatformConfig, LiveKitPlatformConfig, VapiPlatformConfig } from "@vent/shared";
 import { RUNNER_CALLBACK_HEADER } from "@vent/shared";
 import type { AudioChannel } from "./audio-channel.js";
 import { WsAudioChannel } from "./ws-audio-channel.js";
@@ -40,6 +40,35 @@ function resolveAgentId(platform: PlatformConfig | undefined, defaultEnv: string
   return platform?.agent_id
     || process.env[platform?.agent_id_env as string ?? defaultEnv]
     || "";
+}
+
+/** Build Vapi assistantOverrides from platform config fields */
+function buildVapiOverrides(p: VapiPlatformConfig): Record<string, unknown> | undefined {
+  const overrides: Record<string, unknown> = {};
+
+  if (p.first_message != null) overrides.firstMessage = p.first_message;
+  if (p.first_message_mode != null) overrides.firstMessageMode = p.first_message_mode;
+  if (p.voice != null) overrides.voice = p.voice;
+  if (p.end_call_message != null) overrides.endCallMessage = p.end_call_message;
+  if (p.end_call_phrases != null) overrides.endCallPhrases = p.end_call_phrases;
+  if (p.stop_speaking_plan != null) overrides.stopSpeakingPlan = p.stop_speaking_plan;
+  if (p.start_speaking_plan != null) overrides.startSpeakingPlan = p.start_speaking_plan;
+  if (p.silence_timeout_seconds != null) overrides.silenceTimeoutSeconds = p.silence_timeout_seconds;
+  if (p.max_duration_seconds != null) overrides.maxDurationSeconds = p.max_duration_seconds;
+  if (p.background_sound != null) overrides.backgroundSound = p.background_sound;
+  if (p.background_denoising != null) overrides.backgroundDenoisingEnabled = p.background_denoising;
+  if (p.model != null) overrides.model = p.model;
+  if (p.transcriber != null) overrides.transcriber = p.transcriber;
+  if (p.variable_values != null) overrides.variableValues = p.variable_values;
+  if (p.metadata != null) overrides.metadata = p.metadata;
+  if (p.hipaa_enabled != null) overrides.compliancePlan = { hipaaEnabled: p.hipaa_enabled };
+
+  // Merge raw passthrough overrides (explicit fields take precedence)
+  if (p.assistant_overrides != null) {
+    return { ...p.assistant_overrides, ...overrides };
+  }
+
+  return Object.keys(overrides).length > 0 ? overrides : undefined;
 }
 
 export function createAudioChannel(config: AudioChannelConfig): AudioChannel {
@@ -109,12 +138,17 @@ export function createAudioChannel(config: AudioChannelConfig): AudioChannel {
     }
 
     case "vapi": {
-      const apiKey = config.platform?.api_key || process.env[config.platform?.api_key_env ?? "VAPI_API_KEY"] || "";
-      const assistantId = resolveAgentId(config.platform, "VAPI_ASSISTANT_ID");
+      const p = config.platform as VapiPlatformConfig | undefined;
+      const apiKey = p?.api_key || process.env[p?.api_key_env ?? "VAPI_API_KEY"] || "";
+      const assistantId = resolveAgentId(p, "VAPI_ASSISTANT_ID");
       if (!apiKey) throw new Error("Vapi adapter requires API key (set VAPI_API_KEY or platform.api_key_env)");
       if (!assistantId) throw new Error("Vapi adapter requires VAPI_ASSISTANT_ID env or platform.agent_id");
 
-      return new VapiAudioChannel({ apiKey, assistantId });
+      return new VapiAudioChannel({
+        apiKey,
+        assistantId,
+        assistantOverrides: p ? buildVapiOverrides(p) : undefined,
+      });
     }
 
     case "retell": {
