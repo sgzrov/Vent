@@ -198,13 +198,13 @@ async function runSingleCall(
   const transcriber = new StreamingTranscriber(language ? { language } : undefined);
 
   // Generate first utterance while initializing VAD + STT
-  const [, , firstUtterance] = await Promise.all([
+  const [, , firstDecision] = await Promise.all([
     vad.init(),
     transcriber.connect(),
     caller.nextUtterance(null, []),
   ]);
 
-  if (!firstUtterance) {
+  if (!firstDecision || firstDecision.mode === "end_now" || firstDecision.mode === "wait") {
     vad.destroy();
     transcriber.close();
     return {
@@ -215,7 +215,7 @@ async function runSingleCall(
       connectMs: 0,
       durationMs: Date.now() - start,
       transcript: [],
-      error: "CallerLLM returned no utterance",
+      error: "CallerLLM did not produce an opening utterance",
     };
   }
 
@@ -232,8 +232,9 @@ async function runSingleCall(
   await ttsSession.connect();
 
   // Pre-synthesize first turn audio
-  let callerText: string | null = firstUtterance;
-  let callerAudio = await ttsSession.synthesize(firstUtterance);
+  let callerText: string | null = firstDecision.text;
+  let shouldStopAfterAgentReply = firstDecision.mode === "closing";
+  let callerAudio = await ttsSession.synthesize(firstDecision.text);
   if (callerAudioEffects) callerAudio = applyEffects(callerAudio, callerAudioEffects);
 
   // Connect channel
@@ -263,8 +264,10 @@ async function runSingleCall(
     for (let turn = 0; turn < maxTurns; turn++) {
       // On turn > 0, generate next utterance from CallerLLM
       if (turn > 0) {
-        callerText = await caller.nextUtterance(agentText, transcript);
-        if (callerText === null) break; // CallerLLM ended conversation
+        const callerDecision = await caller.nextUtterance(agentText, transcript);
+        if (!callerDecision || callerDecision.mode === "end_now" || callerDecision.mode === "wait") break;
+        callerText = callerDecision.text;
+        shouldStopAfterAgentReply = callerDecision.mode === "closing";
         callerAudio = await ttsSession.synthesize(callerText);
         if (callerAudioEffects) callerAudio = applyEffects(callerAudio, callerAudioEffects);
       }
@@ -314,6 +317,8 @@ async function runSingleCall(
         ttfb_ms: turnTtfb,
         ttfw_ms: turnTtfw,
       });
+
+      if (shouldStopAfterAgentReply) break;
     }
 
     vad.destroy();

@@ -18,6 +18,12 @@ export interface AudioChannelEvents {
   disconnected: () => void;
   /** Platform signals that the agent finished speaking (e.g. LiveKit agent state → "listening"). */
   platformEndOfTurn: () => void;
+  /** Platform signals that the agent started/resumed speaking. */
+  platformSpeechStart: () => void;
+  /** Platform signals that a tool call started (true) or completed (false).
+   *  When active, collectUntilEndOfTurn suspends VAD end-of-turn to avoid
+   *  cutting off the agent's post-tool-call response. */
+  toolCallActive: (active: boolean) => void;
 }
 
 export interface SendAudioOptions {
@@ -30,12 +36,9 @@ export interface AudioChannel {
   connect(): Promise<void>;
   /** Send raw PCM audio to the agent (16-bit 24kHz mono) */
   sendAudio(pcm: Buffer, opts?: SendAudioOptions): void | Promise<void>;
-  /** Stream PCM audio chunks to the agent as they arrive (16-bit 24kHz mono).
-   *  Returns immediately after the last chunk is sent — does not wait for playback. */
-  sendAudioStream?(stream: AsyncIterable<Buffer>, opts?: SendAudioOptions): Promise<void>;
   /** Start sending low-level comfort noise to keep the line active during processing. */
   startComfortNoise?(): void;
-  /** Stop comfort noise (called automatically by sendAudioStream). */
+  /** Stop comfort noise. */
   stopComfortNoise?(): void;
   disconnect(): Promise<void>;
   readonly connected: boolean;
@@ -53,6 +56,31 @@ export interface AudioChannel {
   getFullCallerTranscript?(): string;
   /** Consume accumulated real-time agent transcript text (resets buffer). Used as STT fallback. */
   consumeAgentText?(): string;
+  /** Whether this adapter emits platformEndOfTurn events.
+   *  When true, collectUntilEndOfTurn can defer to the platform signal over VAD. */
+  hasPlatformEndOfTurn?: boolean;
+  /** Optional quiet window after platformEndOfTurn before Vent starts the next turn.
+   *  Some platforms signal end-of-turn slightly before playback has fully drained. */
+  platformEndOfTurnDrainMs?: number;
+  /** Optional continuation window after a tool call completes.
+   *  Some platforms briefly speak filler, wait for the tool result, then continue
+   *  the same assistant turn after a short pause. */
+  postToolCallContinuationMs?: number;
+  /** Optional short continuation window after VAD says end-of-turn.
+   *  Useful on platforms that sometimes pause briefly mid-thought before resuming. */
+  postVadContinuationMs?: number;
+  /** Which side should speak first when the call starts. If omitted, executor defaults to agent-first. */
+  getOpeningSpeaker?(): Promise<"agent" | "caller" | null>;
+  /** Expected assistant opening message, if the platform has a configured assistant-first greeting. */
+  getExpectedOpeningMessage?(): Promise<string | null>;
+  /** Hard platform call limit, if the platform exposes one in its runtime config. */
+  getMaxCallDurationSeconds?(): Promise<number | null>;
+  /** Optional adapter-specific normalization for caller speech before TTS/send.
+   *  Useful when a transport is sensitive to pause-heavy sentence punctuation
+   *  inside a single caller turn. */
+  normalizeCallerTextForSpeech?(text: string): string;
+  /** Adapter-preferred initial silence threshold for turn collection. */
+  preferredSilenceThresholdMs?: number;
   /** Platform-reported concurrency limit (e.g. Vapi returns this on call creation). */
   platformConcurrencyLimit?: number | null;
 

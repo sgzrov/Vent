@@ -207,27 +207,28 @@ async function executeRemoteRun(db: Database, job: RunJob): Promise<void> {
           completedTests++;
           const testName = result.name ?? testType;
 
-          void fetch(`${apiUrl}/internal/test-progress`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              [RUNNER_CALLBACK_HEADER]: callbackSecret,
-            },
-            body: JSON.stringify({
-              run_id: job.run_id,
-              completed: completedTests,
-              total: totalTests,
-              test_type: testType,
-              test_name: testName,
-              status: result.status,
-              duration_ms: result.duration_ms,
-              result: formatConversationResult(result),
-            }),
-          }).then((res) => {
+          try {
+            const res = await fetch(`${apiUrl}/internal/test-progress`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                [RUNNER_CALLBACK_HEADER]: callbackSecret,
+              },
+              body: JSON.stringify({
+                run_id: job.run_id,
+                completed: completedTests,
+                total: totalTests,
+                test_type: testType,
+                test_name: testName,
+                status: result.status,
+                duration_ms: result.duration_ms,
+                result: formatConversationResult(result),
+              }),
+            });
             if (!res.ok) console.warn(`test-progress POST failed (${res.status}) for ${testName}`);
-          }).catch((err) => {
-            console.warn(`test-progress POST error for ${testName}:`, err.message);
-          });
+          } catch (err) {
+            console.warn(`test-progress POST error for ${testName}:`, (err as Error).message);
+          }
         },
       });
 
@@ -348,24 +349,25 @@ async function executeRelayRun(db: Database, job: RunJob, relayMachineId?: strin
           completedTests++;
           const testName = result.name ?? testType;
 
-          void fetch(`${apiUrl}/internal/test-progress`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json", [RUNNER_CALLBACK_HEADER]: callbackSecret },
-            body: JSON.stringify({
-              run_id: job.run_id,
-              completed: completedTests,
-              total: totalTests,
-              test_type: testType,
-              test_name: testName,
-              status: result.status,
-              duration_ms: result.duration_ms,
-              result: formatConversationResult(result),
-            }),
-          }).then((res) => {
+          try {
+            const res = await fetch(`${apiUrl}/internal/test-progress`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json", [RUNNER_CALLBACK_HEADER]: callbackSecret },
+              body: JSON.stringify({
+                run_id: job.run_id,
+                completed: completedTests,
+                total: totalTests,
+                test_type: testType,
+                test_name: testName,
+                status: result.status,
+                duration_ms: result.duration_ms,
+                result: formatConversationResult(result),
+              }),
+            });
             if (!res.ok) console.warn(`test-progress POST failed (${res.status}) for ${testName}`);
-          }).catch((err) => {
-            console.warn(`test-progress POST error for ${testName}:`, err.message);
-          });
+          } catch (err) {
+            console.warn(`test-progress POST error for ${testName}:`, (err as Error).message);
+          }
         },
       });
 
@@ -486,8 +488,7 @@ export async function executeRun(job: RunJob): Promise<void> {
     job.adapter === "retell" ||
     job.adapter === "elevenlabs" ||
     job.adapter === "bland" ||
-    job.adapter === "livekit" ||
-    job.adapter === "webrtc";
+    job.adapter === "livekit";
   const isRemote =
     isPlatformAdapter ||
     job.adapter === "sip" ||

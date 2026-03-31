@@ -188,8 +188,8 @@ export async function computeTranscriptMetrics(turns: ConversationTurn[], fullPl
   let wer: number | undefined;
   if (refStr.length > 0 && hypStr.length > 0) {
     const normalizer = await getWerNormalizer();
-    const normRef = normalizer.normalize(refStr);
-    const normHyp = normalizer.normalize(hypStr);
+    const normRef = normalizeNumbers(normalizer.normalize(refStr));
+    const normHyp = normalizeNumbers(normalizer.normalize(hypStr));
     wer = normRef.length > 0 && normHyp.length > 0
       ? computeWER(normRef, normHyp)
       : undefined;
@@ -203,6 +203,73 @@ export async function computeTranscriptMetrics(turns: ConversationTurn[], fullPl
     words_per_minute: totalAgentAudioMs > 0 ? computeWordsPerMinute(agentTexts, totalAgentAudioMs) : undefined,
     vocabulary_diversity: computeVocabularyDiversity(agentTexts),
   };
+}
+
+const WORD_TO_DIGIT: Record<string, string> = {
+  zero: "0", oh: "0", one: "1", two: "2", three: "3", four: "4",
+  five: "5", six: "6", seven: "7", eight: "8", nine: "9",
+  ten: "10", eleven: "11", twelve: "12", thirteen: "13", fourteen: "14",
+  fifteen: "15", sixteen: "16", seventeen: "17", eighteen: "18", nineteen: "19",
+  twenty: "20", thirty: "30", forty: "40", fifty: "50",
+  sixty: "60", seventy: "70", eighty: "80", ninety: "90",
+};
+
+/**
+ * Normalize number words to digits so WER isn't inflated by
+ * "five five five" vs "555" mismatches.
+ *
+ * Handles: single digits, teens, tens, tens+units compounds ("twenty one" → "21"),
+ * "oh" → "0", "double X" → "X X".
+ */
+function normalizeNumbers(text: string): string {
+  const words = text.split(/\s+/);
+  const out: string[] = [];
+
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i]!.toLowerCase();
+
+    // "double five" → "5 5"
+    if (w === "double" && i + 1 < words.length) {
+      const next = words[i + 1]!.toLowerCase();
+      const digit = WORD_TO_DIGIT[next];
+      if (digit) {
+        out.push(digit, digit);
+        i++;
+        continue;
+      }
+    }
+
+    // "triple five" → "5 5 5"
+    if (w === "triple" && i + 1 < words.length) {
+      const next = words[i + 1]!.toLowerCase();
+      const digit = WORD_TO_DIGIT[next];
+      if (digit) {
+        out.push(digit, digit, digit);
+        i++;
+        continue;
+      }
+    }
+
+    const val = WORD_TO_DIGIT[w];
+    if (val != null) {
+      const numVal = Number(val);
+      // Tens + units compound: "twenty one" → "21"
+      if (numVal >= 20 && numVal % 10 === 0 && i + 1 < words.length) {
+        const next = words[i + 1]!.toLowerCase();
+        const unitVal = WORD_TO_DIGIT[next];
+        if (unitVal != null && Number(unitVal) >= 1 && Number(unitVal) <= 9) {
+          out.push(String(numVal + Number(unitVal)));
+          i++;
+          continue;
+        }
+      }
+      out.push(val);
+    } else {
+      out.push(words[i]!);
+    }
+  }
+
+  return out.join(" ");
 }
 
 function tokenize(text: string): string[] {

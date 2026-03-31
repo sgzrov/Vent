@@ -80,6 +80,9 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
   private static readonly TRANSCRIPTION_TOPIC = "lk.transcription";
   private static readonly AGENT_STATE_ATTR = "lk.agent.state";
 
+  /** LiveKit emits platformEndOfTurn via agent state transitions. */
+  hasPlatformEndOfTurn = true;
+
   private config: WebRtcAudioChannelConfig;
   private room: Room | null = null;
   private audioSource: AudioSource | null = null;
@@ -95,6 +98,9 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
   private disconnectTimestamp = 0;
   private agentIdentity: string | null = null;
   private disconnectReasonStr: string | null = null;
+
+  // Agent transcript accumulator for consumeAgentText()
+  private agentTextBuffer = "";
 
   // Segment-to-turn anchoring: lock each STT segment to the turn that was
   // active when the segment was first observed (interim or final).
@@ -258,15 +264,21 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
             }
           }
         } else {
-          // Agent transcription — capture first chunk timestamp for LLM latency
+          // Agent transcription — capture first chunk timestamp for LLM latency + accumulate text
           let firstChunkCaptured = false;
-          for await (const _chunk of reader) {
+          const chunks: string[] = [];
+          for await (const chunk of reader) {
+            chunks.push(chunk);
             if (!firstChunkCaptured && turn) {
               if (!turn.firstAgentTextAt) {
                 turn.firstAgentTextAt = Date.now();
               }
               firstChunkCaptured = true;
             }
+          }
+          const text = chunks.join("");
+          if (text) {
+            this.agentTextBuffer += (this.agentTextBuffer ? " " : "") + text;
           }
         }
       }
@@ -474,53 +486,6 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
     })();
   }
 
-  /**
-   * Stream PCM audio chunks to LiveKit as they arrive from TTS.
-   * Each chunk is resampled to 48kHz and sent via captureFrame.
-   */
-  async sendAudioStream(stream: AsyncIterable<Buffer>): Promise<void> {
-    if (!this.audioSource || !this.collecting) return;
-
-    if (this.comfortNoiseActive) this.stopComfortNoise();
-
-    this.currentTurnIndex++;
-    this.turnTimings[this.currentTurnIndex] = { audioSentAt: Date.now() };
-
-    const sampleRate = this.livekitSampleRate;
-    const chunkSamples = Math.floor(sampleRate * 0.02); // 20ms
-
-    for await (const pcmChunk of stream) {
-      if (!this.collecting || !this.audioSource) return;
-
-      this._stats.bytesSent += pcmChunk.length;
-      const resampled = resample(pcmChunk, 24000, sampleRate);
-      const samples = new Int16Array(
-        resampled.buffer, resampled.byteOffset, resampled.length / 2,
-      );
-
-      for (let offset = 0; offset < samples.length; offset += chunkSamples) {
-        if (!this.collecting || !this.audioSource) return;
-        const end = Math.min(offset + chunkSamples, samples.length);
-        const chunk = new Int16Array(samples.subarray(offset, end));
-        const frame = new AudioFrame(chunk, sampleRate, 1, chunk.length);
-        await this.audioSource.captureFrame(frame);
-      }
-    }
-
-    // Send 500ms silence so agent VAD detects end-of-turn
-    if (this.collecting && this.audioSource) {
-      const silenceSamples = Math.floor(sampleRate * 0.5);
-      const silence = new Int16Array(silenceSamples);
-      const silenceFrame = new AudioFrame(silence, sampleRate, 1, silenceSamples);
-      await this.audioSource.captureFrame(silenceFrame);
-    }
-
-    // Resume comfort noise
-    if (this.collecting && this.audioSource) {
-      this.startComfortNoise();
-    }
-  }
-
   async disconnect(): Promise<void> {
     this.collecting = false;
     this.stopComfortNoise();
@@ -606,6 +571,21 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
       }
     }
     return transcripts;
+  }
+
+  /** Consume accumulated real-time agent transcript text (resets buffer). */
+  consumeAgentText(): string {
+    const text = this.agentTextBuffer;
+    this.agentTextBuffer = "";
+    return text;
+  }
+
+  /** Full caller transcript for WER computation (avoids turn alignment issues). */
+  getFullCallerTranscript(): string {
+    return this.turnTimings
+      .filter(t => t.userTranscript)
+      .map(t => t.userTranscript!)
+      .join(" ");
   }
 
   // ── Private helpers ─────────────────────────────────────────

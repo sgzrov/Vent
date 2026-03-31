@@ -272,64 +272,6 @@ export class BlandAudioChannel extends BaseAudioChannel {
   }
 
   /**
-   * Stream PCM audio chunks to Twilio SIP as they arrive from TTS.
-   * Each chunk is resampled, encoded to mulaw, and sent immediately.
-   * Returns after the last chunk is sent — does NOT wait for playback.
-   */
-  async sendAudioStream(stream: AsyncIterable<Buffer>): Promise<void> {
-    if (!this.ws || !this.streamSid) {
-      throw new Error("Bland SIP channel not connected");
-    }
-
-    // Clear stale audio from previous turn
-    this.ws.send(JSON.stringify({ event: "clear", streamSid: this.streamSid }));
-
-    const CHUNK_SIZE = 160; // 20ms at 8kHz mulaw
-
-    for await (const pcmChunk of stream) {
-      // Stop comfort noise on first real chunk
-      if (this.comfortNoiseInterval) this.stopComfortNoise();
-
-      this._stats.bytesSent += pcmChunk.length;
-      const pcm8k = resample(pcmChunk, 24000, 8000);
-      const mulaw = pcmToMulaw(pcm8k);
-
-      for (let offset = 0; offset < mulaw.length; offset += CHUNK_SIZE) {
-        const chunk = mulaw.subarray(offset, Math.min(offset + CHUNK_SIZE, mulaw.length));
-        this.ws!.send(
-          JSON.stringify({
-            event: "media",
-            streamSid: this.streamSid,
-            media: { payload: chunk.toString("base64") },
-          }),
-        );
-      }
-    }
-
-    // Mark await: wait for Twilio to confirm all streamed audio finished playing.
-    // Without this, the tail of our audio bleeds into the agent's response window,
-    // and Bland treats it as a barge-in interruption.
-    const markName = `vent-stream-eot-${++this.markCounter}`;
-    console.log(`[bland] Sending stream mark: ${markName}`);
-    await new Promise<void>((resolve) => {
-      this.pendingMarks.set(markName, resolve);
-      this.ws!.send(
-        JSON.stringify({
-          event: "mark",
-          streamSid: this.streamSid,
-          mark: { name: markName },
-        }),
-      );
-      setTimeout(() => {
-        if (this.pendingMarks.delete(markName)) {
-          console.warn(`[bland] Stream mark timeout: ${markName} not confirmed after 5s (pending: ${[...this.pendingMarks.keys()].join(", ")})`);
-          resolve();
-        }
-      }, 5_000);
-    });
-  }
-
-  /**
    * Send low-amplitude noise to keep Bland's silence detector from triggering
    * while our pipeline processes (LLM + TTS). Called after agent end-of-turn.
    */
@@ -488,6 +430,17 @@ export class BlandAudioChannel extends BaseAudioChannel {
     return transcripts;
   }
 
+  /** Consume accumulated agent transcript text. For Bland, this returns all agent text from post-call data. */
+  consumeAgentText(): string {
+    const data = this.cachedCallResponse;
+    if (!data?.transcripts) return "";
+    const text = data.transcripts
+      .filter((e) => e.user === "assistant" || e.user === "robot")
+      .map((e) => stripBlandAnnotations(e.text))
+      .join(" ");
+    return text;
+  }
+
   getFullCallerTranscript(): string {
     if (this.cachedCorrectedTranscripts?.length) {
       return this.cachedCorrectedTranscripts
@@ -575,11 +528,7 @@ export class BlandAudioChannel extends BaseAudioChannel {
     if (opts?.start_node_id) body.start_node_id = opts.start_node_id;
     if (opts?.pathway_version != null) body.pathway_version = opts.pathway_version;
 
-    // Pass run/scenario metadata for call correlation
-    body.metadata = {
-      ...((opts as Record<string, unknown>)?.metadata as Record<string, unknown> ?? {}),
-      vent_channel_id: this.channelId,
-    };
+    body.metadata = { vent_channel_id: this.channelId };
 
     return body;
   }

@@ -15,9 +15,9 @@
 import type { CollectionStats } from "../audio-tests/helpers.js";
 
 export interface AdaptiveThresholdConfig {
-  /** Starting/base threshold in ms. Default: 800 */
+  /** Starting/base threshold in ms. Default: 400 */
   baseMs: number;
-  /** Minimum threshold — never go below this. Default: 500 */
+  /** Minimum threshold — never go below this. Default: 200 */
   minMs?: number;
   /** Maximum threshold — never go above this. Default: 3000 */
   maxMs?: number;
@@ -31,7 +31,7 @@ export class AdaptiveThreshold {
 
   constructor(config: AdaptiveThresholdConfig) {
     this.baseMs = config.baseMs;
-    this.minMs = config.minMs ?? 500;
+    this.minMs = config.minMs ?? 200;
     this.maxMs = config.maxMs ?? 3000;
     this.currentMs = config.baseMs;
   }

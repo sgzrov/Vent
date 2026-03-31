@@ -7,6 +7,7 @@ primary_region = "iad"
 [env]
   NODE_ENV = "production"
   RUNNER_LISTEN_PORT = "8443"
+  RUNNER_PUBLIC_HOST = "vent-worker.fly.dev"
 
 # Expose HTTP port for inbound SIP callbacks (Twilio/Bland webhooks)
 [http_service]
