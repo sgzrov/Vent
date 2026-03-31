@@ -295,15 +295,35 @@ export class VapiAudioChannel extends BaseAudioChannel {
       return;
     }
 
-    const sendAt = Date.now();
-    this.turnTimings[this.currentTurnIndex]!.outboundFrameCount = 1;
-    this.turnTimings[this.currentTurnIndex]!.outboundFirstFrameAt = sendAt;
-    this.turnTimings[this.currentTurnIndex]!.outboundLastFrameAt = sendAt;
+    // Pace audio at real-time speed: 20ms frames at 16kHz (640 bytes each).
+    // Without pacing, Vapi receives seconds of audio instantly and its STT
+    // treats it as one continuous utterance, breaking turn-taking.
+    const totalFrames = Math.ceil(normalizedResampled.length / VAPI_FRAME_BYTES);
+    const turnIdx = this.currentTurnIndex;
+    const timing = this.turnTimings[turnIdx]!;
+    timing.outboundFrameCount = totalFrames;
+    timing.outboundFirstFrameAt = Date.now();
+
+    const audioDurationMs = Math.round((normalizedResampled.length / 2 / 16000) * 1000);
     console.log(
-      `    [vapi-send] turn=${this.currentTurnIndex} oneshot_send t=${this.relativeNowMs()}ms ` +
-      `pcm16kBytes=${normalizedResampled.length}`
+      `    [vapi-send] turn=${turnIdx} paced_start t=${this.relativeNowMs()}ms ` +
+      `pcm16kBytes=${normalizedResampled.length} frames=${totalFrames} audioDuration=${audioDurationMs}ms`
     );
-    this.ws.send(normalizedResampled);
+
+    for (let i = 0; i < normalizedResampled.length; i += VAPI_FRAME_BYTES) {
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) break;
+      const end = Math.min(i + VAPI_FRAME_BYTES, normalizedResampled.length);
+      this.ws.send(normalizedResampled.subarray(i, end));
+      if (i + VAPI_FRAME_BYTES < normalizedResampled.length) {
+        await sleep(COMFORT_NOISE_INTERVAL_MS);
+      }
+    }
+
+    timing.outboundLastFrameAt = Date.now();
+    console.log(
+      `    [vapi-send] turn=${turnIdx} paced_done t=${this.relativeNowMs()}ms ` +
+      `elapsed=${timing.outboundLastFrameAt - timing.outboundFirstFrameAt}ms`
+    );
   }
 
   startComfortNoise(): void {

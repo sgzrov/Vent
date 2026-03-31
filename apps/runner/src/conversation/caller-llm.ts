@@ -14,47 +14,44 @@ import type { ConversationTurn, CallerPersona } from "@vent/shared";
 import { LANGUAGE_NAMES } from "@vent/voice";
 
 const MODEL = "claude-haiku-4-5-20251001";
-const MAX_TOKENS = 80;
+const MAX_TOKENS = 48;
 
-const SYSTEM_PROMPT = `You are a simulated phone caller. Your persona and goals are defined in the user's first message.
+const SYSTEM_PROMPT = `You are a simulated phone caller on a live voice call. You will be called once per turn to produce your SINGLE next spoken line.
 
-Rules:
-- Priority order:
-  1. If the agent asks a direct question, gives a yes/no choice, or explicitly requests information, do not use "wait". Answer briefly right away.
-  2. If the agent has already resolved the request, is wrapping up, or promises a later follow-up or callback, do not use "wait". Use "closing" with a brief natural close.
-  3. Only use "wait" when the agent is still working, checking, apologizing, transferring, or continuing their thought and no real answer is needed from you yet.
-- Return JSON only.
-- Use one of these shapes:
-  {"mode":"continue","text":"your next spoken line"}
+## How this works
+
+You do NOT control the whole conversation. You say ONE line, then the system sends it as audio to the agent, waits for the agent to respond, transcribes the agent's reply, and calls you again with that reply. This repeats turn by turn. You must NEVER skip ahead — you can only react to what the agent has actually said so far.
+
+## Response format
+
+Return exactly one JSON object. No other text.
+
+Shapes:
+  {"mode":"continue","text":"your one spoken line"}
   {"mode":"wait"}
-  {"mode":"closing","text":"your final spoken line before the call ends"}
+  {"mode":"closing","text":"your brief goodbye"}
   {"mode":"end_now"}
-- The text field must contain ONLY the exact spoken line — no stage directions, no quotes, no labels.
-- Stay in character. Be natural and conversational.
-- The agent's last turn may contain duplicates, stutters, filler, partial repeated clauses, or mixed thoughts due to voice-call segmentation. Infer the clearest intended meaning before deciding how to respond.
-- If the agent turn contains one clear actionable question/request plus extra filler, repeated text, or courtesy chatter, respond only to the actionable part.
-- If the agent turn is incomplete, self-contradictory, or still sounds like the agent is continuing the same thought, prefer "wait" unless a real answer is clearly required now.
-- Answer the agent's question OR ask a new one — never both in the same turn.
-- Keep each turn to one conversational act only.
-- Keep spoken turns short: one sentence only, and usually under 14 words.
-- Never answer future questions before the agent asks them.
-- Never pack multiple future steps into one turn.
-- Do not decide on booking, scheduling, rescheduling, confirmation, cancellation, or closing until the agent has actually asked about that specific step.
-- On the first turn, only introduce yourself and state the reason for the call. Do not jump ahead to confirmations, decisions, or closing.
-- Do not restate the whole scenario. If the agent misunderstood, correct only the mistaken fact and then stop.
-- If you ask for something, ask for only one thing in that turn.
-- Do not stack thanks + correction + request in the same turn.
-- Avoid stacked mini-phrases like "Hi. Yes." or "Perfect. Thank you. I appreciate it." in a single turn.
-- If the agent asks you to repeat or clarify, do so naturally.
-- Do not volunteer major new facts or details unless the agent asked for them or they are necessary to answer the agent's latest turn.
-- If the agent is still checking, looking something up, or continuing their thought, do not add extra details just because you know them.
-- If the agent is only narrating that they are checking, taking a moment, looking something up, or otherwise continuing the same thought, prefer "wait".
-- Do not reassure or encourage filler/process narration with replies like "okay", "sure", "take your time", or "that's fine" unless the agent explicitly asked for confirmation.
-- Use "wait" sparingly. Keep it only when the agent is clearly still mid-task and more agent speech is genuinely expected.
-- If the agent gives a closing statement or farewell and there is no real open question left, use "closing".
-- Use "closing" when the caller's goal is complete and the caller is wrapping up naturally.
-- Use "end_now" only when the caller should hang up without saying another line.
-- When the agent says goodbye, confirms a later callback, or the conversation reaches a natural end, prefer "closing" with a brief, natural farewell instead of silence.`;
+
+## Turn-taking rules (most important)
+
+1. Say ONE sentence per turn. Maximum 15 words. No exceptions.
+2. Only respond to what the agent ALREADY said. Never anticipate future responses.
+3. Never combine greeting + question + thanks in one turn. Pick one.
+4. First turn: introduce yourself and state why you are calling. Nothing else.
+5. Do not thank the agent for information they have not given you yet.
+6. Do not confirm, schedule, cancel, or close until the agent explicitly offers or asks.
+7. Do not pack your entire goal into one message. Let the conversation unfold naturally.
+
+## When to use each mode
+
+- "continue": You need to say something — answer a question, introduce yourself, ask something.
+- "wait": The agent is still talking, checking, or processing. No response needed from you yet.
+- "closing": The agent resolved your request and the conversation is wrapping up. Say a brief goodbye.
+- "end_now": Hang up immediately without speaking.
+
+## Handling messy agent speech
+
+The agent's turn may have stutters, filler, repeats, or fragmented sentences (normal for voice calls). Ignore the noise and respond to the clearest intended meaning. If the agent seems mid-thought, use "wait".`;
 
 const INTERRUPT_SYSTEM_PROMPT = `You are a simulated phone caller. Your persona and goals are defined in the user's first message.
 
@@ -197,18 +194,14 @@ export class CallerLLM {
     transcript: ConversationTurn[]
   ): Promise<CallerDecision | null> {
     const prompt = this.buildNextPrompt(agentResponse);
-    const messages = prompt
-      ? [...this.history, { role: "user" as const, content: prompt }]
-      : [...this.history];
+    const messages = [...this.history, { role: "user" as const, content: prompt }];
 
     return this.generateCallerDecision(messages);
   }
 
   commitDecision(agentResponse: string | null, decision: CallerDecision): void {
     const prompt = this.buildNextPrompt(agentResponse);
-    if (prompt) {
-      this.history.push({ role: "user", content: prompt });
-    }
+    this.history.push({ role: "user", content: prompt });
     if (decision.mode === "wait") {
       this.history.push({
         role: "assistant",
@@ -269,7 +262,7 @@ export class CallerLLM {
     return decision;
   }
 
-  private buildNextPrompt(agentResponse: string | null): string | null {
+  private buildNextPrompt(agentResponse: string | null): string {
     const isFirstTurn = this.history.length === 0;
     if (isFirstTurn) {
       return agentResponse
@@ -279,7 +272,7 @@ export class CallerLLM {
     if (agentResponse) {
       return agentResponse;
     }
-    return null;
+    return "[The agent has not spoken yet. Use \"wait\".]";
   }
 
   private async generateCallerDecision(
@@ -288,7 +281,7 @@ export class CallerLLM {
     const response = await this.client.messages.create({
       model: MODEL,
       max_tokens: MAX_TOKENS,
-      temperature: 0.7,
+      temperature: 0.4,
       system: this.systemPrompt,
       messages,
     });
@@ -298,7 +291,17 @@ export class CallerLLM {
         ? response.content[0].text.trim()
         : "";
 
-    return parseCallerDecision(text);
+    const lastUserMsg = messages[messages.length - 1]?.content ?? "(none)";
+    const preview = typeof lastUserMsg === "string" ? lastUserMsg.slice(0, 120) : "(structured)";
+    console.log(`[caller-llm] prompt="${preview}" raw_response="${text.slice(0, 200)}" history_len=${this.history.length}`);
+
+    const decision = parseCallerDecision(text);
+    if (decision && "text" in decision) {
+      console.log(`[caller-llm] parsed mode=${decision.mode} text="${decision.text}"`);
+    } else {
+      console.log(`[caller-llm] parsed mode=${decision?.mode ?? "null"}`);
+    }
+    return decision;
   }
 }
 
@@ -332,7 +335,16 @@ function parseCallerDecision(raw: string): CallerDecision | null {
   const parsed = parseCallerDecisionJson(text);
   if (parsed) return parsed;
 
-  return { mode: "continue", text };
+  return { mode: "continue", text: truncateToFirstSentence(text) };
+}
+
+/**
+ * Truncate to the first sentence to prevent multi-sentence monologues.
+ * Splits on sentence-ending punctuation followed by a space or end-of-string.
+ */
+function truncateToFirstSentence(text: string): string {
+  const match = text.match(/^(.+?[.!?])(?:\s|$)/);
+  return match ? match[1] : text;
 }
 
 function parseCallerDecisionJson(text: string): CallerDecision | null {
@@ -351,7 +363,7 @@ function parseCallerDecisionJson(text: string): CallerDecision | null {
       return { mode: "wait" };
     }
     if ((mode === "continue" || mode === "closing") && spoken) {
-      return { mode, text: spoken };
+      return { mode, text: truncateToFirstSentence(spoken) };
     }
   } catch {
     return null;
