@@ -113,11 +113,13 @@ export async function executeTests(opts: ExecuteTestsOpts): Promise<ExecuteTests
   const isRedTeam = (testSpec.red_team_tests?.length ?? 0) > 0;
   const testType: TestType = isRedTeam ? "red_team" : "conversation";
   const testSpecs = isRedTeam ? testSpec.red_team_tests! : (testSpec.conversation_tests ?? []);
-  const notifyTestComplete = (result: ConversationTestResult) => {
+  const notifyTestComplete = async (result: ConversationTestResult) => {
     if (!onTestComplete) return;
-    void Promise.resolve(onTestComplete(result, testType)).catch((err) => {
+    try {
+      await onTestComplete(result, testType);
+    } catch (err) {
       console.warn(`onTestComplete failed: ${(err as Error).message}`);
-    });
+    }
   };
 
   // Expand tests by repeat count for statistical confidence
@@ -168,7 +170,7 @@ export async function executeTests(opts: ExecuteTestsOpts): Promise<ExecuteTests
         metrics: { mean_ttfb_ms: 0 },
         error: `Agent unreachable: ${errorMsg}`,
       };
-      notifyTestComplete(failResult);
+      await notifyTestComplete(failResult);
       const aggregateKey = isRedTeam ? "red_team_tests" : "conversation_tests";
       return {
         status: "fail" as const,
@@ -228,7 +230,7 @@ export async function executeTests(opts: ExecuteTestsOpts): Promise<ExecuteTests
         status: result.status, duration_ms: result.duration_ms,
         channel: { bytes_sent: channel.stats.bytesSent, bytes_received: channel.stats.bytesReceived, errors: channel.stats.errorEvents },
       }));
-      notifyTestComplete(result);
+      await notifyTestComplete(result);
       return result;
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
@@ -260,7 +262,7 @@ export async function executeTests(opts: ExecuteTestsOpts): Promise<ExecuteTests
         event: "test_complete", test_name: testName, test_type: testType,
         status: "error", duration_ms: result.duration_ms, error: errorMsg,
       }));
-      notifyTestComplete(result);
+      await notifyTestComplete(result);
       return result;
     } finally {
       await channel.disconnect().catch(() => {});
