@@ -263,6 +263,9 @@ export class VapiAudioChannel extends BaseAudioChannel {
     // Connect to WebSocket for audio exchange.
     await this.connectWebSocket(wsUrl);
     this._stats.connectLatencyMs = Date.now() - connectStart;
+
+    // Start comfort noise to keep the WebSocket active while waiting for agent greeting
+    this.startComfortNoise();
   }
 
   async sendAudio(pcm: Buffer, opts?: SendAudioOptions): Promise<void> {
@@ -324,6 +327,9 @@ export class VapiAudioChannel extends BaseAudioChannel {
       `    [vapi-send] turn=${turnIdx} paced_done t=${this.relativeNowMs()}ms ` +
       `elapsed=${timing.outboundLastFrameAt - timing.outboundFirstFrameAt}ms`
     );
+
+    // Resume comfort noise after speech — keeps WebSocket alive while agent processes
+    this.startComfortNoise();
   }
 
   startComfortNoise(): void {
