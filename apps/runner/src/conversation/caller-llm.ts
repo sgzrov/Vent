@@ -14,7 +14,7 @@ import type { ConversationTurn, CallerPersona } from "@vent/shared";
 import { LANGUAGE_NAMES } from "@vent/voice";
 
 const MODEL = "claude-haiku-4-5-20251001";
-const MAX_TOKENS = 48;
+const MAX_TOKENS = 1024;
 
 const SYSTEM_PROMPT = `You are a simulated phone caller on a live voice call. You will be called once per turn to produce your SINGLE next spoken line.
 
