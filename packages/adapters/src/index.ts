@@ -115,26 +115,8 @@ export function createAudioChannel(config: AudioChannelConfig): AudioChannel {
       const agentId = p?.retell_agent_id || process.env["RETELL_AGENT_ID"] || "";
       if (!apiKey) throw new Error("Retell adapter requires retell_api_key or RETELL_API_KEY env");
       if (!agentId) throw new Error("Retell adapter requires retell_agent_id or RETELL_AGENT_ID env");
-      if (!config.targetPhoneNumber) throw new Error("Retell adapter requires targetPhoneNumber (the agent's phone number)");
 
-      const retellAccountSid = process.env["TWILIO_ACCOUNT_SID"] ?? "";
-      const retellAuthToken = process.env["TWILIO_AUTH_TOKEN"] ?? "";
-      const retellFromNumber = process.env["TWILIO_FROM_NUMBER"] ?? "";
-      const retellPublicHost = process.env["RUNNER_PUBLIC_HOST"] ?? "localhost";
-      if (!retellFromNumber) throw new Error("Retell adapter requires TWILIO_FROM_NUMBER env var");
-
-      return new RetellAudioChannel({
-        apiKey,
-        agentId,
-        sip: {
-          phoneNumber: config.targetPhoneNumber,
-          fromNumber: retellFromNumber,
-          accountSid: retellAccountSid,
-          authToken: retellAuthToken,
-          publicHost: retellPublicHost,
-          ...sipPortConfig(),
-        },
-      });
+      return new RetellAudioChannel({ apiKey, agentId });
     }
 
     case "elevenlabs": {
