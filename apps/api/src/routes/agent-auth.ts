@@ -80,7 +80,7 @@ export async function agentAuthRoutes(app: FastifyInstance) {
     // Verify token against GitHub API (server-side)
     let ghUser: { id: number; login: string };
     try {
-      const { Octokit } = await import("octokit");
+      const { Octokit } = await import("@octokit/rest");
       const octokit = new Octokit({ auth: github_token });
       const { data } = await octokit.rest.users.getAuthenticated();
       ghUser = { id: data.id, login: data.login };
