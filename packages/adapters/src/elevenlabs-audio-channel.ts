@@ -1,17 +1,39 @@
 /**
- * ElevenLabs Conversational AI Audio Channel
+ * ElevenLabs Conversational AI Audio Channel (WebRTC)
  *
- * Connects to ElevenLabs' Conversational AI via WebSocket, exchanges
- * base64-encoded audio, and pulls tool call data after via their SDK.
+ * Connects directly to ElevenLabs' LiveKit Cloud via @livekit/rtc-node for
+ * bidirectional audio. ElevenLabs uses LiveKit under the hood — we get a
+ * LiveKit JWT from their token API and connect to wss://livekit.rtc.elevenlabs.io.
  *
- * ElevenLabs uses 16kHz PCM audio encoded as base64 in JSON messages.
- * We convert between 24kHz (our standard) and 16kHz (ElevenLabs' format).
+ * Flow:
+ *   1. connect()  — GET /v1/convai/conversation/token → LiveKit room.connect
+ *   2. sendAudio() / on("audio") — bidirectional PCM 24kHz over WebRTC (48kHz internal)
+ *   3. disconnect() — leaves room, ElevenLabs manages cleanup
+ *   4. getCallData() — fetches tool calls via SDK conversations.get()
+ *   5. getCallMetadata() — cost, duration, analysis
+ *   6. getComponentTimings() — LLM TTFB from transcript turn metrics
+ *   7. getTranscripts() — platform STT transcripts for cross-referencing
  *
  * Post-call data (tool calls, metadata, latency) fetched via SDK
  * client.conversationalAi.conversations.get().
  */
 
-import WebSocket from "ws";
+import {
+  Room,
+  RoomEvent,
+  AudioSource,
+  AudioStream,
+  AudioFrame,
+  LocalAudioTrack,
+  TrackKind,
+  TrackPublishOptions,
+  TrackSource,
+  IceTransportType,
+  ContinualGatheringPolicy,
+  type RemoteTrack,
+  type RemoteTrackPublication,
+  type RemoteParticipant,
+} from "@livekit/rtc-node";
 import { ElevenLabsClient } from "@elevenlabs/elevenlabs-js";
 import type { ObservedToolCall, CallMetadata, ComponentLatency, CostBreakdown } from "@vent/shared";
 import { resample } from "@vent/voice";
@@ -22,23 +44,34 @@ export interface ElevenLabsAudioChannelConfig {
   agentId: string;
 }
 
-interface ElevenLabsServerMessage {
-  type: string;
-  conversation_id?: string;
-  audio?: {
-    chunk?: string; // base64
-    sample_rate?: number;
-  };
-  agent_output_audio_format?: string;
-  user_input_audio_format?: string;
-}
-
 export class ElevenLabsAudioChannel extends BaseAudioChannel {
+  private static readonly ELEVENLABS_LIVEKIT_URL = "wss://livekit.rtc.elevenlabs.io";
+  private static readonly ELEVENLABS_API_ORIGIN = "https://api.elevenlabs.io";
+  private static readonly AGENT_IDENTITY_PREFIX = "agent";
+  private static readonly LIVEKIT_SAMPLE_RATE = 48000;
+  private static readonly AGENT_READY_TIMEOUT = 30_000;
+
+  /** ElevenLabs signals agent speech via DataChannel events. */
+  hasPlatformEndOfTurn = true;
+
   private config: ElevenLabsAudioChannelConfig;
   private client: ElevenLabsClient;
-  private ws: WebSocket | null = null;
+
+  // LiveKit room state
+  private room: Room | null = null;
+  private audioSource: AudioSource | null = null;
+  private localTrack: LocalAudioTrack | null = null;
+  private collecting = false;
+  private comfortNoiseActive = false;
+
+  // Call state
   private conversationId: string | null = null;
   private cachedConversation: Record<string, unknown> | null = null;
+  private connectTimestamp = 0;
+  private disconnectTimestamp = 0;
+
+  // Real-time agent text from DataChannel events
+  private agentTextBuffer = "";
 
   constructor(config: ElevenLabsAudioChannelConfig) {
     super();
@@ -47,92 +80,253 @@ export class ElevenLabsAudioChannel extends BaseAudioChannel {
   }
 
   get connected(): boolean {
-    return this.ws?.readyState === WebSocket.OPEN;
+    return this.room !== null && this.collecting;
   }
 
   async connect(): Promise<void> {
     const connectStart = Date.now();
-    const wsUrl = `wss://api.elevenlabs.io/v1/convai/conversation?agent_id=${this.config.agentId}`;
 
-    return new Promise((resolve, reject) => {
-      const ws = new WebSocket(wsUrl, {
-        headers: {
-          "xi-api-key": this.config.apiKey,
-        },
-      });
-
-      const timeout = setTimeout(() => {
-        ws.close();
-        reject(new Error("ElevenLabs WebSocket connection timed out"));
-      }, 30_000);
-
-      ws.on("open", () => {
-        this.ws = ws;
-
-        // Send conversation initiation
-        ws.send(JSON.stringify({
-          type: "conversation_initiation_client_data",
-          conversation_config_override: {},
-        }));
-
-        ws.on("message", (data: WebSocket.RawData) => {
-          const text = data.toString();
-          try {
-            const msg = JSON.parse(text) as ElevenLabsServerMessage;
-            this.handleServerMessage(msg);
-
-            // Resolve once we get the conversation metadata
-            if (msg.type === "conversation_initiation_metadata" && msg.conversation_id) {
-              this.conversationId = msg.conversation_id;
-              this._stats.connectLatencyMs = Date.now() - connectStart;
-              clearTimeout(timeout);
-              resolve();
-            }
-          } catch {
-            // Ignore malformed messages
-          }
-        });
-
-        ws.on("error", (err) => {
-          clearTimeout(timeout);
-          this._stats.errorEvents.push(err.message);
-          this.emit("error", err);
-        });
-
-        ws.on("close", () => {
-          this.ws = null;
-          this.emit("disconnected");
-        });
-      });
-
-      ws.on("error", (err) => {
-        clearTimeout(timeout);
-        reject(new Error(`ElevenLabs WebSocket connection failed: ${err.message}`));
-      });
+    // Get LiveKit JWT from ElevenLabs token API
+    const tokenUrl = `${ElevenLabsAudioChannel.ELEVENLABS_API_ORIGIN}/v1/convai/conversation/token?agent_id=${this.config.agentId}`;
+    const tokenRes = await fetch(tokenUrl, {
+      headers: { "xi-api-key": this.config.apiKey },
     });
+    if (!tokenRes.ok) {
+      throw new Error(
+        `ElevenLabs token API returned ${tokenRes.status}: ${await tokenRes.text()}`
+      );
+    }
+    const { token } = (await tokenRes.json()) as { token: string };
+    if (!token) {
+      throw new Error("ElevenLabs token API returned no token");
+    }
+
+    // Connect to ElevenLabs' LiveKit Cloud
+    this.room = new Room();
+
+    // On Fly.io, force TURN relay (same as Retell/LiveKit adapters)
+    const isFlyIo = !!process.env["FLY_MACHINE_ID"];
+    const rtcConfig = isFlyIo
+      ? {
+          iceTransportType: IceTransportType.TRANSPORT_RELAY,
+          continualGatheringPolicy: ContinualGatheringPolicy.GATHER_CONTINUALLY,
+          iceServers: [],
+        }
+      : undefined;
+
+    await this.room.connect(ElevenLabsAudioChannel.ELEVENLABS_LIVEKIT_URL, token, {
+      autoSubscribe: true,
+      dynacast: true,
+      rtcConfig,
+    });
+    this.collecting = true;
+    this.connectTimestamp = Date.now();
+
+    // Extract conversationId from room name (e.g. "conv_abc123...")
+    if (this.room.name) {
+      this.conversationId = this.room.name.match(/(conv_[a-zA-Z0-9]+)/)?.[0] ?? this.room.name;
+    }
+
+    // ── DataChannel listener for ElevenLabs JSON events ──────────
+    this.room.on(
+      RoomEvent.DataReceived,
+      (payload: Uint8Array, participant?: RemoteParticipant) => {
+        if (participant && !participant.identity.startsWith(ElevenLabsAudioChannel.AGENT_IDENTITY_PREFIX)) return;
+        this.handleDataEvent(payload);
+      }
+    );
+
+    // ── Disconnect detection ─────────────────────────────────────
+    this.room.once(RoomEvent.Disconnected, () => {
+      this.emit("disconnected");
+    });
+
+    // ── Publish audio track (48kHz, microphone source) ───────────
+    this.audioSource = new AudioSource(ElevenLabsAudioChannel.LIVEKIT_SAMPLE_RATE, 1);
+    this.localTrack = LocalAudioTrack.createAudioTrack("vent-tester", this.audioSource);
+    const publishOptions = new TrackPublishOptions();
+    publishOptions.source = TrackSource.SOURCE_MICROPHONE;
+    await this.room.localParticipant!.publishTrack(this.localTrack, publishOptions);
+
+    // ── Comfort noise — keep Opus codec warm ─────────────────────
+    this.startComfortNoise();
+
+    // ── Send conversation initiation via DataChannel ─────────────
+    const initMsg = JSON.stringify({
+      type: "conversation_initiation_client_data",
+      conversation_config_override: {},
+    });
+    await this.room.localParticipant!.publishData(
+      Buffer.from(initMsg),
+      { reliable: true }
+    );
+
+    // ── Subscribe to agent audio tracks ──────────────────────────
+    for (const participant of this.room.remoteParticipants.values()) {
+      if (participant.identity.startsWith(ElevenLabsAudioChannel.AGENT_IDENTITY_PREFIX)) {
+        for (const pub of participant.trackPublications.values()) {
+          if (pub.track && pub.kind === TrackKind.KIND_AUDIO) {
+            this.startReadingTrack(pub.track as RemoteTrack);
+          }
+        }
+      }
+    }
+
+    this.room.on(
+      RoomEvent.TrackSubscribed,
+      (track: RemoteTrack, pub: RemoteTrackPublication, participant: RemoteParticipant) => {
+        if (participant.identity.startsWith(ElevenLabsAudioChannel.AGENT_IDENTITY_PREFIX) && pub.kind === TrackKind.KIND_AUDIO) {
+          this.startReadingTrack(track);
+        }
+      }
+    );
+
+    // ── Wait for agent audio track ───────────────────────────────
+    const agentReady = await new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => resolve(false), ElevenLabsAudioChannel.AGENT_READY_TIMEOUT);
+
+      // Check if already subscribed
+      for (const p of this.room!.remoteParticipants.values()) {
+        if (p.identity.startsWith(ElevenLabsAudioChannel.AGENT_IDENTITY_PREFIX)) {
+          for (const pub of p.trackPublications.values()) {
+            if (pub.track && pub.kind === TrackKind.KIND_AUDIO) {
+              clearTimeout(timer);
+              resolve(true);
+              return;
+            }
+          }
+        }
+      }
+
+      // Wait for subscription
+      const onTrackSubscribed = (_t: RemoteTrack, pub: RemoteTrackPublication, participant: RemoteParticipant) => {
+        if (participant.identity.startsWith(ElevenLabsAudioChannel.AGENT_IDENTITY_PREFIX) && pub.kind === TrackKind.KIND_AUDIO) {
+          clearTimeout(timer);
+          this.room?.off(RoomEvent.TrackSubscribed, onTrackSubscribed);
+          resolve(true);
+        }
+      };
+      this.room!.on(RoomEvent.TrackSubscribed, onTrackSubscribed);
+    });
+
+    if (!agentReady) {
+      throw new Error(
+        `ElevenLabs agent did not publish audio within ${ElevenLabsAudioChannel.AGENT_READY_TIMEOUT / 1000}s. ` +
+        `Ensure the agent (${this.config.agentId}) is configured correctly in ElevenLabs.`
+      );
+    }
+
+    this._stats.connectLatencyMs = Date.now() - connectStart;
   }
 
+  // ── Comfort noise ──────────────────────────────────────────────
+
+  /**
+   * Send low-level white noise to prevent Opus DTX mode.
+   * Without this, Opus ramps bitrate from 0 → 40kbps over 20s when
+   * real speech arrives after silence — the agent's VAD misses it.
+   */
+  startComfortNoise(): void {
+    this.comfortNoiseActive = true;
+    const sampleRate = ElevenLabsAudioChannel.LIVEKIT_SAMPLE_RATE;
+    const chunkSamples = Math.floor(sampleRate * 0.02); // 20ms
+    const AMPLITUDE = 400; // ~-30dBFS
+
+    const sendLoop = async () => {
+      while (this.comfortNoiseActive && this.audioSource) {
+        const samples = new Int16Array(chunkSamples);
+        for (let i = 0; i < chunkSamples; i++) {
+          samples[i] = Math.floor((Math.random() * 2 - 1) * AMPLITUDE);
+        }
+        const frame = new AudioFrame(samples, sampleRate, 1, chunkSamples);
+        try {
+          await this.audioSource.captureFrame(frame);
+        } catch {
+          break; // AudioSource closed
+        }
+      }
+    };
+    sendLoop();
+  }
+
+  stopComfortNoise(): void {
+    this.comfortNoiseActive = false;
+    if (this.audioSource) {
+      this.audioSource.clearQueue();
+    }
+  }
+
+  // ── Audio I/O ──────────────────────────────────────────────────
+
   sendAudio(pcm: Buffer): void {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      throw new Error("ElevenLabs WebSocket not connected");
+    if (!this.audioSource || !this.collecting) return;
+
+    if (this.comfortNoiseActive) {
+      this.stopComfortNoise();
     }
 
     this._stats.bytesSent += pcm.length;
-    // Resample 24kHz → 16kHz, then base64 encode
-    const pcm16k = resample(pcm, 24000, 16000);
-    const base64Audio = pcm16k.toString("base64");
 
-    this.ws.send(JSON.stringify({
-      user_audio_chunk: base64Audio,
-    }));
+    const sampleRate = ElevenLabsAudioChannel.LIVEKIT_SAMPLE_RATE;
+    const resampled = resample(pcm, 24000, sampleRate);
+    const samples = new Int16Array(
+      resampled.buffer,
+      resampled.byteOffset,
+      resampled.length / 2
+    );
+
+    const audioSource = this.audioSource;
+    const chunkSamples = Math.floor(sampleRate * 0.02); // 20ms = 960 samples at 48kHz
+
+    (async () => {
+      try {
+        for (let offset = 0; offset < samples.length; offset += chunkSamples) {
+          if (!this.collecting || !this.audioSource) return;
+          const end = Math.min(offset + chunkSamples, samples.length);
+          // CRITICAL: copy chunk into its own ArrayBuffer. AudioFrame.protoInfo()
+          // uses the ENTIRE underlying ArrayBuffer, not the subarray view.
+          const chunk = new Int16Array(samples.subarray(offset, end));
+          const frame = new AudioFrame(chunk, sampleRate, 1, chunk.length);
+          await audioSource.captureFrame(frame);
+        }
+
+        // 500ms trailing silence for agent VAD end-of-turn detection
+        if (!this.collecting || !this.audioSource) return;
+        const silenceSamples = Math.floor(sampleRate * 0.5);
+        const silence = new Int16Array(silenceSamples);
+        const silenceFrame = new AudioFrame(silence, sampleRate, 1, silenceSamples);
+        await audioSource.captureFrame(silenceFrame);
+
+        // Resume comfort noise between turns
+        if (this.collecting && this.audioSource) {
+          this.startComfortNoise();
+        }
+      } catch {
+        // AudioSource closed during send — safe to ignore
+      }
+    })();
   }
 
   async disconnect(): Promise<void> {
-    if (this.ws) {
-      this.ws.close();
-      this.ws = null;
+    this.collecting = false;
+    this.stopComfortNoise();
+    this.disconnectTimestamp = Date.now();
+    if (this.audioSource) {
+      await this.audioSource.close();
+      this.audioSource = null;
     }
+    if (this.localTrack) {
+      await this.localTrack.close();
+      this.localTrack = null;
+    }
+    if (this.room) {
+      await this.room.disconnect();
+      this.room = null;
+    }
+    // NOTE: Do NOT call dispose() — destroys global FFI runtime
   }
+
+  // ── Post-call data ─────────────────────────────────────────────
 
   async getCallData(): Promise<ObservedToolCall[]> {
     const data = await this.fetchConversation();
@@ -213,7 +407,68 @@ export class ElevenLabsAudioChannel extends BaseAudioChannel {
     return transcripts;
   }
 
-  // ── Private helpers ─────────────────────────────────────────
+  /** Consume accumulated real-time agent transcript text (resets buffer). */
+  consumeAgentText(): string {
+    const text = this.agentTextBuffer;
+    this.agentTextBuffer = "";
+    return text;
+  }
+
+  // ── Private helpers ────────────────────────────────────────────
+
+  private handleDataEvent(payload: Uint8Array): void {
+    try {
+      const text = new TextDecoder().decode(payload);
+      const event = JSON.parse(text) as { type: string; [key: string]: unknown };
+
+      switch (event.type) {
+        case "conversation_initiation_metadata": {
+          // Backup: extract conversationId if room.name parsing failed
+          const convId = event.conversation_id as string | undefined;
+          if (convId && !this.conversationId) {
+            this.conversationId = convId;
+          }
+          break;
+        }
+
+        case "agent_response": {
+          // Real-time agent text: { agent_response_event: { agent_response: "..." } }
+          const evt = event.agent_response_event as { agent_response?: string } | undefined;
+          if (evt?.agent_response) {
+            this.agentTextBuffer += (this.agentTextBuffer ? " " : "") + evt.agent_response;
+          }
+          // Agent speaking → emit speech start
+          this.emit("platformSpeechStart");
+          break;
+        }
+
+        case "interruption": {
+          // Agent was interrupted — signals end of agent turn
+          this.emit("platformEndOfTurn");
+          break;
+        }
+
+        case "ping": {
+          // Respond with pong to keep connection alive
+          const pingEvt = event.ping_event as { event_id?: number } | undefined;
+          if (pingEvt?.event_id != null && this.room?.localParticipant) {
+            const pong = JSON.stringify({ type: "pong", event_id: pingEvt.event_id });
+            this.room.localParticipant.publishData(
+              Buffer.from(pong),
+              { reliable: true }
+            ).catch(() => {/* ignore */});
+          }
+          break;
+        }
+
+        case "audio":
+          // Skip — audio flows through LiveKit audio tracks in WebRTC mode
+          break;
+      }
+    } catch {
+      // Ignore malformed data
+    }
+  }
 
   private async fetchConversation(): Promise<Record<string, unknown> | null> {
     if (this.cachedConversation) return this.cachedConversation;
@@ -236,16 +491,6 @@ export class ElevenLabsAudioChannel extends BaseAudioChannel {
       }
     }
     return null;
-  }
-
-  private handleServerMessage(msg: ElevenLabsServerMessage): void {
-    if (msg.type === "audio" && msg.audio?.chunk) {
-      // Decode base64 audio and resample 16kHz → 24kHz
-      const pcm16k = Buffer.from(msg.audio.chunk, "base64");
-      this._stats.bytesReceived += pcm16k.length;
-      const pcm24k = resample(pcm16k, 16000, 24000);
-      this.emit("audio", pcm24k);
-    }
   }
 
   private parseToolCalls(data: Record<string, unknown>): ObservedToolCall[] {
@@ -299,6 +544,37 @@ export class ElevenLabsAudioChannel extends BaseAudioChannel {
     }
 
     return toolCalls;
+  }
+
+  private startReadingTrack(track: RemoteTrack): void {
+    const sampleRate = ElevenLabsAudioChannel.LIVEKIT_SAMPLE_RATE;
+    const stream = new AudioStream(track, sampleRate, 1);
+    const reader = stream.getReader();
+
+    const readLoop = async () => {
+      try {
+        while (this.collecting) {
+          const { value: frame, done } = await reader.read();
+          if (done || !frame) break;
+
+          const frameBuffer = Buffer.from(
+            frame.data.buffer,
+            frame.data.byteOffset,
+            frame.data.byteLength
+          );
+          this._stats.bytesReceived += frameBuffer.length;
+          // Resample from LiveKit 48kHz → 24kHz for consumers
+          const pcm24k = resample(frameBuffer, sampleRate, 24000);
+          this.emit("audio", pcm24k);
+        }
+      } catch (err) {
+        if (err instanceof Error) {
+          this._stats.errorEvents.push(err.message);
+        }
+      }
+    };
+
+    readLoop();
   }
 }
 
