@@ -6,7 +6,7 @@
  * 2. TTS → send audio to agent via AudioChannel
  * 3. Collect agent audio (VAD for end-of-turn)
  * 4. STT → text back to caller LLM
- * 5. Repeat until max_turns or caller says [END]
+ * 5. Repeat until max_turns or the caller decides the conversation is over
  * 6. Compute metrics (latency, audio, tool calls, prosody)
  */
 
@@ -25,11 +25,28 @@ import type {
 import { synthesize, TTSSession, BatchVAD, VoiceActivityDetector, StreamingTranscriber, applyEffects, resolveAccentVoiceId, resolveLanguageVoiceId, analyzeAudioQuality, type AudioQualityMetrics } from "@vent/voice";
 import { CallerLLM } from "./caller-llm.js";
 import { executeAudioAction, mixCallerWithNoise, collectForDurationSafe } from "./audio-actions.js";
-import { collectUntilEndOfTurn, linearRegressionSlope, waitForSpeech } from "../audio-tests/helpers.js";
+import { collectUntilEndOfTurn, linearRegressionSlope } from "../audio-tests/helpers.js";
 import { computeAllMetrics } from "../metrics/index.js";
 import { analyzeProsody } from "../metrics/prosody.js";
 import { AdaptiveThreshold } from "./adaptive-threshold.js";
 import { gradeAudioAnalysisMetrics, type TurnAudioData } from "../metrics/audio-analysis.js";
+
+function summarizeDebugText(text: string | null | undefined, maxChars = 96): string {
+  if (!text) return "";
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (normalized.length <= maxChars) return normalized;
+  return `${normalized.slice(0, maxChars - 3)}...`;
+}
+
+function prepareCallerSpeechText(channel: AudioChannel, text: string): string {
+  return (channel.normalizeCallerTextForSpeech?.(text) ?? text)
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function sinceStartMs(startTime: number): number {
+  return Math.round(performance.now() - startTime);
+}
 
 export async function runConversationTest(
   spec: ConversationTestSpec,
@@ -43,19 +60,19 @@ export async function runConversationTest(
   const language = spec.language;
   const caller = new CallerLLM(spec.caller_prompt, spec.persona, language);
   const adaptiveThreshold = new AdaptiveThreshold({
-    baseMs: spec.silence_threshold_ms ?? 800,
+    baseMs: spec.silence_threshold_ms ?? channel.preferredSilenceThresholdMs ?? 400,
   });
 
-  // Initialize VAD, batch VAD, streaming STT, and pre-generate first turn in parallel
+  // Initialize VAD, batch VAD, and streaming STT up front.
+  // The caller's first turn is generated only after the real greeting turn is collected.
   const turnVAD = new VoiceActivityDetector({ silenceThresholdMs: adaptiveThreshold.thresholdMs });
   const batchVAD = new BatchVAD();
   const transcriber = new StreamingTranscriber(language ? { language } : undefined);
 
-  const [, , , firstUtterance] = await Promise.all([
+  await Promise.all([
     turnVAD.init(),
     batchVAD.init(),
     transcriber.connect(),
-    caller.nextUtterance(null, []),
   ]);
 
   // Resolve accent → TTS voice ID (accent takes priority over language default)
@@ -70,16 +87,32 @@ export async function runConversationTest(
   const ttsSession = new TTSSession(ttsOpts);
   await ttsSession.connect();
 
-  // Pre-synthesize first turn TTS
-  let prefetchedAudio: Buffer | null = null;
-  let prefetchedText: string | null = firstUtterance;
-  let prefetchedTtsMs = 0;
-  if (firstUtterance) {
-    const ttsStart = performance.now();
-    prefetchedAudio = await ttsSession.synthesize(firstUtterance);
-    if (spec.caller_audio) prefetchedAudio = applyEffects(prefetchedAudio, spec.caller_audio);
-    prefetchedTtsMs = Math.round(performance.now() - ttsStart);
-  }
+  const openingSpeaker = await channel.getOpeningSpeaker?.() ?? "agent";
+  const maxCallDurationSeconds = await channel.getMaxCallDurationSeconds?.() ?? null;
+  const callDeadlineMs = maxCallDurationSeconds != null
+    ? startTime + Math.max(0, maxCallDurationSeconds * 1000 - 1000)
+    : null;
+  const collectGreetingFirst = openingSpeaker !== "caller";
+  console.log(
+    `    [opening] speaker=${openingSpeaker}` +
+    (maxCallDurationSeconds != null ? ` maxDuration=${maxCallDurationSeconds}s` : "")
+  );
+
+  const remainingCallMs = (): number | null => {
+    if (callDeadlineMs == null) return null;
+    return Math.max(0, Math.floor(callDeadlineMs - performance.now()));
+  };
+
+  const resolveCollectionTimeoutMs = (defaultMs: number): number => {
+    const remainingMs = remainingCallMs();
+    if (remainingMs == null) return defaultMs;
+    return Math.max(250, Math.min(defaultMs, remainingMs));
+  };
+
+  const canStartAnotherTurn = (minimumMs = 1500): boolean => {
+    const remainingMs = remainingCallMs();
+    return remainingMs == null || remainingMs > minimumMs;
+  };
 
   const turnAudioData: TurnAudioData[] = [];
   const agentAudioBuffers: Buffer[] = [];
@@ -87,58 +120,102 @@ export async function runConversationTest(
   const audioActionResults: AudioActionResult[] = [];
   let agentText: string | null = null;
 
+  // Track channel disconnect — when the agent hangs up, the call ends naturally.
+  let channelDisconnected = false;
+  const safeDisconnect = async () => {
+    if (channelDisconnected || !channel.connected) return;
+    try {
+      await channel.disconnect();
+    } catch (err) {
+      console.log(`    [end] Non-fatal disconnect error: ${(err as Error).message}`);
+    } finally {
+      channelDisconnected = true;
+    }
+  };
+  channel.on("disconnected", () => {
+    channelDisconnected = true;
+    console.log(`    [end] Channel disconnected — agent ended the call`);
+  });
 
   try {
-    // ── Agent greeting capture ──────────────────────────────
-    // Voice agents always greet first. Wait for the agent to finish
-    // speaking, capture the greeting, and let CallerLLM respond naturally.
-    // Early audio buffered in BaseAudioChannel is flushed here.
-    {
-      const greetingVAD = new VoiceActivityDetector({ silenceThresholdMs: 1500 });
-      await greetingVAD.init();
-
-      const greetingVadStart = performance.now();
-      const greetingResult = await collectUntilEndOfTurn(channel, {
-        timeoutMs: 30000,
-        vad: greetingVAD,
-      });
-      const greetingVadMs = Math.round(performance.now() - greetingVadStart);
-      greetingVAD.destroy();
-
-      if (greetingResult.stats.speechOnsetAt !== null && greetingResult.audio.length > 4800) {
-        // Agent spoke a greeting — transcribe it and use as first agent turn
+    // For assistant-speaks-first platforms, turn -1 collects the agent greeting.
+    // For caller-speaks-first platforms, we start directly at turn 0.
+    for (let turn = collectGreetingFirst ? -1 : 0; turn < spec.max_turns; turn++) {
+      if (channelDisconnected) break;
+      if (turn >= 0 && !canStartAnotherTurn()) {
+        console.log(`    [call-limit] maxDurationSeconds reached — stopping before turn=${turn}`);
+        break;
+      }
+      // ── Greeting turn: just collect agent audio, no caller speech ──
+      if (turn === -1) {
+        const vadStart = performance.now();
         transcriber.resetForNextTurn();
-        transcriber.feedAudio(greetingResult.audio);
-        const greetingSttStart = performance.now();
-        const { text: greetingText } = await transcriber.finalize();
-        const greetingSttMs = Math.round(performance.now() - greetingSttStart);
+        const feedSTT = (chunk: Buffer) => transcriber.feedAudio(chunk);
+        channel.on("audio", feedSTT);
+        console.log(`    [opening] collect_start t=${sinceStartMs(startTime)}ms`);
+
+        turnVAD.silenceThresholdMs = adaptiveThreshold.thresholdMs;
+        const { audio: agentAudio, stats, timedOut } = await collectUntilEndOfTurn(
+          channel,
+          {
+            timeoutMs: resolveCollectionTimeoutMs(30000),
+            vad: turnVAD,
+            preferPlatformEOT: !!channel.hasPlatformEndOfTurn,
+            debugLabel: "opening",
+          }
+        );
+        channel.off("audio", feedSTT);
+        console.log(
+          `    [opening] collect_end t=${sinceStartMs(startTime)}ms bytes=${agentAudio.length} ` +
+          `timedOut=${timedOut} speechOnset=${stats.speechOnsetAt !== null}`
+        );
+
+        if (timedOut && stats.speechOnsetAt === null) {
+          throw new Error("Agent connected but did not speak within 30s");
+        }
+
+        let greetingText = "";
+        let greetingSttMs = 0;
+        if (stats.speechOnsetAt !== null && agentAudio.length > 4800) {
+          const sttStart = performance.now();
+          const { text } = await transcriber.finalize();
+          greetingSttMs = Math.round(performance.now() - sttStart);
+
+          if (!text && channel.consumeAgentText) {
+            const platformText = channel.consumeAgentText();
+            if (platformText) greetingText = platformText;
+          } else {
+            greetingText = text;
+            channel.consumeAgentText?.();
+          }
+        } else {
+          channel.consumeAgentText?.();
+        }
 
         if (greetingText) {
+          const vadMs = Math.round(performance.now() - vadStart);
           console.log(`    Agent greeting: "${greetingText.slice(0, 80)}..."`);
-          console.log(`[turn-timing] greeting vad_collect=${greetingVadMs}ms stt=${greetingSttMs}ms`);
+          console.log(`[turn-timing] greeting vad_collect=${vadMs}ms stt=${greetingSttMs}ms`);
+          console.log(`    [opening] resolved t=${sinceStartMs(startTime)}ms`);
           agentText = greetingText;
 
-          const greetingTimestamp = performance.now() - startTime;
-          const greetingDurationMs = Math.round((greetingResult.audio.length / 2 / 24000) * 1000);
-          turnAudioData.push({ role: "agent", audioDurationMs: greetingDurationMs });
+          const agentTimestamp = performance.now() - startTime;
+          const audioDurationMs = Math.round((agentAudio.length / 2 / 24000) * 1000);
+          const speechSegments = batchVAD.analyze(agentAudio);
+          turnSignalQualities.push(analyzeAudioQuality(agentAudio, speechSegments));
+          turnAudioData.push({ role: "agent", audioDurationMs, speechSegments });
           transcript.push({
             role: "agent",
             text: greetingText,
-            timestamp_ms: Math.round(greetingTimestamp),
-            audio_duration_ms: greetingDurationMs,
+            timestamp_ms: Math.round(agentTimestamp),
+            audio_duration_ms: audioDurationMs,
+            stt_ms: greetingSttMs,
           });
-
-          // Discard the pre-fetched first utterance — CallerLLM will now
-          // generate a response to the greeting instead of a cold open.
-          prefetchedText = null;
-          prefetchedAudio = null;
         }
-      } else if (greetingResult.timedOut) {
-        throw new Error("Agent connected but did not speak within 30s");
-      }
-    }
 
-    for (let turn = 0; turn < spec.max_turns; turn++) {
+        adaptiveThreshold.update(stats);
+        continue;
+      }
       // Check for audio action at this turn (silence, split_sentence skip CallerLLM)
       const audioAction = spec.audio_actions?.find((a) => a.at_turn === turn);
 
@@ -175,18 +252,10 @@ export async function runConversationTest(
         continue;
       }
 
-      // Step 1: Caller LLM generates next utterance (skip on turn 0 — pre-generated)
+      // Step 1: Caller LLM generates the next full utterance.
       let callerText: string | null;
-      let ttsMs: number;
+      let ttsMs = 0;
       const turnPipelineStart = performance.now();
-
-      // Determine if we can use the streaming path:
-      // - Not turn 0 with prefetched audio (already buffered)
-      // - No noise_on_caller (needs full buffer to mix)
-      // - Channel supports streaming
-      const needsBuffered = (turn === 0 && prefetchedAudio !== null)
-        || audioAction?.action === "noise_on_caller";
-      const canStream = !needsBuffered && channel.sendAudioStream != null;
 
       // Update VAD silence threshold for this turn (adaptive)
       turnVAD.silenceThresholdMs = adaptiveThreshold.thresholdMs;
@@ -198,90 +267,184 @@ export async function runConversationTest(
 
       let sendTime: number;
 
-      if (canStream) {
-        // === STREAMING PATH: TTS chunks → wire as they arrive ===
-        const llmStart = performance.now();
-        callerText = await caller.nextUtterance(agentText, transcript);
-        const llmMs = Math.round(performance.now() - llmStart);
-        if (callerText === null) { channel.off("audio", feedSTT); break; }
+      let callerAudio: Buffer | null = null;
+      let callerDecision: Awaited<ReturnType<CallerLLM["nextUtterance"]>>;
+      let llmMs: number;
+      let spokenCallerText: string | null = null;
+      const llmStart = performance.now();
+      callerDecision = await caller.nextUtterance(agentText, transcript);
+      llmMs = Math.round(performance.now() - llmStart);
 
-        const ttsStart = performance.now();
-        const audioStream = ttsSession.synthesizeStream(callerText);
+      const shouldStopAfterAgentReply = callerDecision?.mode === "closing";
 
-        // Track bytes for duration calculation
-        let totalBytes = 0;
-        const countingStream = async function* () {
-          for await (const chunk of audioStream) {
-            const processed = spec.caller_audio ? applyEffects(chunk, spec.caller_audio) : chunk;
-            totalBytes += processed.length;
-            yield processed;
+      if (!callerDecision || callerDecision.mode === "end_now") {
+        channel.off("audio", feedSTT);
+        break;
+      }
+
+      if (callerDecision.mode === "wait") {
+        console.log(`[turn-decision] turn=${turn} caller=wait caller_llm=${llmMs}ms`);
+
+        const vadStart = performance.now();
+        const { audio: agentAudio, stats, timedOut } = await collectUntilEndOfTurn(
+          channel,
+          {
+            timeoutMs: resolveCollectionTimeoutMs(30000),
+            vad: turnVAD,
+            preferPlatformEOT: !!channel.hasPlatformEndOfTurn,
+            debugLabel: `turn-${turn}-wait`,
           }
-        };
+        );
+        const vadMs = Math.round(performance.now() - vadStart);
+        console.log(
+          `[turn-collect] turn=${turn} caller=wait bytes=${agentAudio.length} timedOut=${timedOut} ` +
+          `firstChunk=${stats.firstChunkAt !== null} speechOnset=${stats.speechOnsetAt !== null} ` +
+          `speechSegments=${stats.speechSegments} totalSpeechMs=${stats.totalSpeechMs}`
+        );
 
-        sendTime = Date.now();
-        await channel.sendAudioStream!(countingStream());
-        ttsMs = Math.round(performance.now() - ttsStart);
+        channel.off("audio", feedSTT);
 
-        const audioDurationMs = Math.round((totalBytes / 2 / 24000) * 1000);
-        console.log(`[turn-timing] turn=${turn} caller_llm=${llmMs}ms tts=${ttsMs}ms (streamed)`);
-
-        const callerTimestamp = performance.now() - startTime;
-        transcript.push({
-          role: "caller",
-          text: callerText,
-          timestamp_ms: Math.round(callerTimestamp),
-          audio_duration_ms: audioDurationMs,
-          tts_ms: ttsMs,
-        });
-        turnAudioData.push({ role: "caller", audioDurationMs });
-      } else {
-        // === BUFFERED PATH: prefetched audio, noise_on_caller, or no streaming support ===
-        let callerAudio: Buffer;
-
-        if (turn === 0 && prefetchedText !== null && prefetchedAudio !== null) {
-          callerText = prefetchedText;
-          callerAudio = prefetchedAudio;
-          ttsMs = prefetchedTtsMs;
-          prefetchedText = null;
-          prefetchedAudio = null;
-        } else {
-          const llmStart = performance.now();
-          callerText = await caller.nextUtterance(agentText, transcript);
-          const llmMs = Math.round(performance.now() - llmStart);
-          if (callerText === null) { channel.off("audio", feedSTT); break; }
-
-          const ttsStart = performance.now();
-          callerAudio = await ttsSession.synthesize(callerText);
-          if (spec.caller_audio) callerAudio = applyEffects(callerAudio, spec.caller_audio);
-          ttsMs = Math.round(performance.now() - ttsStart);
-
-          console.log(`[turn-timing] turn=${turn} caller_llm=${llmMs}ms tts=${ttsMs}ms`);
-        }
-
-        const callerTimestamp = performance.now() - startTime;
-        const audioDurationMs = Math.round((callerAudio.length / 2 / 24000) * 1000);
-
-        transcript.push({
-          role: "caller",
-          text: callerText,
-          timestamp_ms: Math.round(callerTimestamp),
-          audio_duration_ms: audioDurationMs,
-          tts_ms: ttsMs,
-        });
-        turnAudioData.push({ role: "caller", audioDurationMs });
-
-        // Handle noise_on_caller: mix noise into caller audio before sending
-        if (audioAction?.action === "noise_on_caller") {
-          callerAudio = mixCallerWithNoise(
-            callerAudio,
-            audioAction.noise_type ?? "babble",
-            audioAction.snr_db ?? 10,
+        if (timedOut && stats.speechOnsetAt === null) {
+          throw new Error(
+            `Agent stopped responding — no speech detected for 30s after turn ${turn + 1}. ` +
+            `This may indicate the agent's backend (STT/LLM/TTS) is overwhelmed or rate-limited.`
           );
         }
 
-        sendTime = Date.now();
-        await channel.sendAudio(callerAudio);
+        adaptiveThreshold.update(stats);
+
+        const agentTimestamp = performance.now() - startTime;
+
+        if (agentAudio.length > 0) {
+          const sttStart = performance.now();
+          let { text, confidence } = await transcriber.finalize();
+          const sttMs = Math.round(performance.now() - sttStart);
+          let textSource = text ? "stt" : "empty";
+
+          if (!text && channel.consumeAgentText) {
+            const platformText = channel.consumeAgentText();
+            if (platformText) {
+              text = platformText;
+              confidence = 1;
+              textSource = "platform";
+            }
+          } else {
+            channel.consumeAgentText?.();
+          }
+
+          agentText = text;
+
+          const totalPipelineMs = Math.round(performance.now() - turnPipelineStart);
+          console.log(`[turn-timing] turn=${turn} caller=wait vad_collect=${vadMs}ms stt=${sttMs}ms total_pipeline=${totalPipelineMs}ms threshold=${adaptiveThreshold.thresholdMs}ms`);
+          console.log(
+            `[turn-text] turn=${turn} caller=wait source=${textSource} chars=${text?.length ?? 0} ` +
+            `text="${summarizeDebugText(agentText)}"`
+          );
+
+          const agentAudioDurationMs = Math.round(
+            (agentAudio.length / 2 / 24000) * 1000
+          );
+          const speechSegments = batchVAD.analyze(agentAudio);
+          if (spec.prosody) agentAudioBuffers.push(Buffer.from(agentAudio));
+          turnSignalQualities.push(analyzeAudioQuality(agentAudio, speechSegments));
+          turnAudioData.push({
+            role: "agent",
+            audioDurationMs: agentAudioDurationMs,
+            speechSegments,
+          });
+
+          transcript.push({
+            role: "agent",
+            text: agentText,
+            timestamp_ms: Math.round(agentTimestamp),
+            caller_decision_mode: "wait",
+            audio_duration_ms: agentAudioDurationMs,
+            stt_confidence: confidence,
+            stt_ms: sttMs,
+          });
+          if (shouldStopAfterAgentReply) break;
+        } else {
+          agentText = "";
+          console.log(
+            `[turn-text] turn=${turn} caller=wait source=empty-audio chars=0 timedOut=${timedOut} ` +
+            `firstChunk=${stats.firstChunkAt !== null} speechOnset=${stats.speechOnsetAt !== null}`
+          );
+          turnAudioData.push({ role: "agent", audioDurationMs: 0 });
+          transcript.push({
+            role: "agent",
+            text: "",
+            timestamp_ms: Math.round(agentTimestamp),
+            caller_decision_mode: "wait",
+          });
+          if (shouldStopAfterAgentReply) break;
+        }
+        continue;
       }
+
+      callerText = callerDecision.text;
+      spokenCallerText = prepareCallerSpeechText(channel, callerText);
+      const emittedCallerText = spokenCallerText ?? callerText;
+      if (spokenCallerText !== callerText) {
+        console.log(
+          `[caller-tts] turn=${turn} normalized original="${summarizeDebugText(callerText)}" ` +
+          `spoken="${summarizeDebugText(spokenCallerText)}"`
+        );
+      }
+      console.log(
+        `    [caller] turn=${turn} decision=${callerDecision.mode} t=${sinceStartMs(startTime)}ms ` +
+        `text="${summarizeDebugText(emittedCallerText)}"`
+      );
+
+      const ttsStart = performance.now();
+      callerAudio = await ttsSession.synthesize(emittedCallerText);
+      if (spec.caller_audio) callerAudio = applyEffects(callerAudio, spec.caller_audio);
+      ttsMs = Math.round(performance.now() - ttsStart);
+
+      if (!callerAudio) {
+        channel.off("audio", feedSTT);
+        throw new Error(`Caller audio was not prepared for turn ${turn}`);
+      }
+
+      console.log(`[turn-timing] turn=${turn} caller_llm=${llmMs}ms tts=${ttsMs}ms`);
+
+      if (channelDisconnected || !channel.connected) {
+        if (turn === 0 && collectGreetingFirst) {
+          console.log(
+            `    [opening-error] caller turn skipped because the channel disconnected before turn 0 send`
+          );
+        }
+        break;
+      }
+
+      const callerTimestamp = performance.now() - startTime;
+      const audioDurationMs = Math.round((callerAudio.length / 2 / 24000) * 1000);
+
+      transcript.push({
+        role: "caller",
+        text: emittedCallerText,
+        timestamp_ms: Math.round(callerTimestamp),
+        caller_decision_mode: callerDecision.mode,
+        audio_duration_ms: audioDurationMs,
+        tts_ms: ttsMs,
+      });
+      turnAudioData.push({ role: "caller", audioDurationMs });
+
+      // Handle noise_on_caller: mix noise into caller audio before sending
+      if (audioAction?.action === "noise_on_caller") {
+        callerAudio = mixCallerWithNoise(
+          callerAudio,
+          audioAction.noise_type ?? "babble",
+          audioAction.snr_db ?? 10,
+        );
+      }
+
+      sendTime = Date.now();
+      console.log(
+        `    [caller-send] turn=${turn} send_start t=${sinceStartMs(startTime)}ms ` +
+        `audioDuration=${audioDurationMs}ms bytes=${callerAudio.length}`
+      );
+      await channel.sendAudio(callerAudio);
+      console.log(`    [caller-send] turn=${turn} send_return t=${sinceStartMs(startTime)}ms`);
 
       // Handle interrupt action: wait for agent speech, then send interrupt
       if (audioAction?.action === "interrupt") {
@@ -330,7 +493,8 @@ export async function runConversationTest(
       // low: ~3/10 turns checked, high: every turn checked
       const interruptionStyle = spec.persona?.interruption_style;
       const interruptGateProb = interruptionStyle === "high" ? 1.0 : 0.5;
-      const interruptEligible = interruptionStyle
+      const interruptEligible = !shouldStopAfterAgentReply
+        && interruptionStyle
         && turn >= 2
         && Math.random() < interruptGateProb;
 
@@ -361,7 +525,7 @@ export async function runConversationTest(
         turnVAD.silenceThresholdMs = adaptiveThreshold.thresholdMs;
         const peekResult = await collectUntilEndOfTurn(
           channel,
-          { timeoutMs: 30000, vad: turnVAD, signal: abortCtrl.signal }
+          { timeoutMs: resolveCollectionTimeoutMs(30000), vad: turnVAD, signal: abortCtrl.signal, preferPlatformEOT: !!channel.hasPlatformEndOfTurn }
         );
         channel.off("audio", onSpeechCheck);
 
@@ -393,6 +557,7 @@ export async function runConversationTest(
             ttfb_ms: peekResult.stats.firstChunkAt ? Math.max(0, peekResult.stats.firstChunkAt - sendTime) : undefined,
             ttfw_ms: peekResult.stats.speechOnsetAt ? Math.max(0, peekResult.stats.speechOnsetAt - sendTime) : undefined,
           });
+          if (shouldStopAfterAgentReply) break;
           continue;
         }
 
@@ -402,9 +567,9 @@ export async function runConversationTest(
         console.log(`    [interrupt-check] turn=${turn} asking LLM: "${partialAgentText.slice(0, 60)}..."`);
 
         // Ask CallerLLM: interrupt or listen?
-        const interruptText = await caller.decideInterrupt(partialAgentText, transcript);
+        const interruptDecision = await caller.decideInterrupt(partialAgentText, transcript);
 
-        if (interruptText === null) {
+        if (interruptDecision.mode === "listen") {
           // LLM decided to listen — continue collecting the rest of the agent response
           console.log(`    [interrupt-check] turn=${turn} LLM decided: LISTEN`);
           transcriber.resetForNextTurn();
@@ -413,7 +578,7 @@ export async function runConversationTest(
 
           const { audio: restAudio, stats: restStats } = await collectUntilEndOfTurn(
             channel,
-            { timeoutMs: 30000, vad: turnVAD }
+            { timeoutMs: resolveCollectionTimeoutMs(30000), vad: turnVAD, preferPlatformEOT: !!channel.hasPlatformEndOfTurn }
           );
           channel.off("audio", feedContinueSTT);
 
@@ -445,10 +610,12 @@ export async function runConversationTest(
             ttfb_ms: peekResult.stats.firstChunkAt ? Math.max(0, peekResult.stats.firstChunkAt - sendTime) : undefined,
             ttfw_ms: peekResult.stats.speechOnsetAt ? Math.max(0, peekResult.stats.speechOnsetAt - sendTime) : undefined,
           });
+          if (shouldStopAfterAgentReply) break;
           continue;
         }
 
         // LLM decided to interrupt!
+        const interruptText = interruptDecision.text;
         console.log(`    [interrupt] turn=${turn} LLM decided: INTERRUPT with "${interruptText.slice(0, 60)}"`);
         channel.off("audio", feedSTT);
 
@@ -480,6 +647,7 @@ export async function runConversationTest(
           role: "caller",
           text: interruptText,
           timestamp_ms: Math.round(callerTimestamp),
+          caller_decision_mode: "continue",
           audio_duration_ms: interruptAudioDurationMs,
           is_interruption: true,
         });
@@ -492,7 +660,7 @@ export async function runConversationTest(
         turnVAD.silenceThresholdMs = adaptiveThreshold.thresholdMs;
         const { audio: postAudio, stats: postStats } = await collectUntilEndOfTurn(
           channel,
-          { timeoutMs: 30000, vad: turnVAD }
+          { timeoutMs: resolveCollectionTimeoutMs(30000), vad: turnVAD, preferPlatformEOT: !!channel.hasPlatformEndOfTurn }
         );
         channel.off("audio", feedPostSTT);
 
@@ -525,6 +693,7 @@ export async function runConversationTest(
           audio_duration_ms: postAudioDurationMs,
         });
 
+        if (shouldStopAfterAgentReply) break;
         continue;
       }
 
@@ -535,9 +704,19 @@ export async function runConversationTest(
       const vadStart = performance.now();
       const { audio: agentAudio, stats, timedOut } = await collectUntilEndOfTurn(
         channel,
-        { timeoutMs: 30000, vad: turnVAD }
+        {
+          timeoutMs: resolveCollectionTimeoutMs(30000),
+          vad: turnVAD,
+          preferPlatformEOT: !!channel.hasPlatformEndOfTurn,
+          debugLabel: `turn-${turn}`,
+        }
       );
       const vadMs = Math.round(performance.now() - vadStart);
+      console.log(
+        `[turn-collect] turn=${turn} bytes=${agentAudio.length} timedOut=${timedOut} ` +
+        `firstChunk=${stats.firstChunkAt !== null} speechOnset=${stats.speechOnsetAt !== null} ` +
+        `speechSegments=${stats.speechSegments} totalSpeechMs=${stats.totalSpeechMs}`
+      );
 
       channel.off("audio", feedSTT);
 
@@ -584,6 +763,7 @@ export async function runConversationTest(
         const sttStart = performance.now();
         let { text, confidence } = await transcriber.finalize();
         const sttMs = Math.round(performance.now() - sttStart);
+        let textSource = text ? "stt" : "empty";
 
         // Fallback: use real-time platform transcript when STT finds nothing
         // (e.g. Bland sends agent text via control messages but binary audio is sparse)
@@ -592,6 +772,7 @@ export async function runConversationTest(
           if (platformText) {
             text = platformText;
             confidence = 1;
+            textSource = "platform";
           }
         } else {
           // Consume and discard — keep buffer from growing across turns
@@ -602,6 +783,10 @@ export async function runConversationTest(
 
         const totalPipelineMs = Math.round(performance.now() - turnPipelineStart);
         console.log(`[turn-timing] turn=${turn} vad_collect=${vadMs}ms stt=${sttMs}ms total_pipeline=${totalPipelineMs}ms threshold=${adaptiveThreshold.thresholdMs}ms`);
+        console.log(
+          `[turn-text] turn=${turn} source=${textSource} chars=${text?.length ?? 0} ` +
+          `text="${summarizeDebugText(agentText)}"`
+        );
 
         // Update noise_on_caller action result with actual transcription
         if (audioAction?.action === "noise_on_caller") {
@@ -636,8 +821,13 @@ export async function runConversationTest(
           stt_confidence: confidence,
           stt_ms: sttMs,
         });
+        if (shouldStopAfterAgentReply) break;
       } else {
         agentText = "";
+        console.log(
+          `[turn-text] turn=${turn} source=empty-audio chars=0 timedOut=${timedOut} ` +
+          `firstChunk=${stats.firstChunkAt !== null} speechOnset=${stats.speechOnsetAt !== null}`
+        );
         turnAudioData.push({ role: "agent", audioDurationMs: 0 });
         transcript.push({
           role: "agent",
@@ -647,8 +837,12 @@ export async function runConversationTest(
           ttfw_ms: turnTtfw,
           silence_pad_ms: turnSilencePad,
         });
+        if (shouldStopAfterAgentReply) break;
       }
     }
+
+    // End the call cleanly so it doesn't hang until Vapi's silence timeout fires.
+    await safeDisconnect();
 
     // Step 6: Collect tool call data from the channel (if supported)
     const observedToolCalls: ObservedToolCall[] = await channel.getCallData?.() ?? [];
@@ -711,14 +905,15 @@ export async function runConversationTest(
     let componentLatencyMetrics: ComponentLatencyMetrics | undefined;
     if (rawComponentTimings.length > 0) {
       // Merge per-turn component latency into transcript turns
-      for (let i = 0; i < rawComponentTimings.length && i < transcript.length; i++) {
+      const agentTurnsForLatency = transcript
+        .map((entry, index) => ({ entry, index }))
+        .filter(({ entry }) => entry.role === "agent");
+      const responseAgentTurns = collectGreetingFirst ? agentTurnsForLatency.slice(1) : agentTurnsForLatency;
+
+      for (let i = 0; i < rawComponentTimings.length && i < responseAgentTurns.length; i++) {
         const timing = rawComponentTimings[i];
         if (timing && (timing.stt_ms != null || timing.llm_ms != null || timing.tts_ms != null)) {
-          // Find the corresponding agent turn (component latency maps to agent responses)
-          const agentTurnIdx = transcript.findIndex((t, idx) => idx > 0 && t.role === "agent" && Math.floor(idx / 2) === i);
-          if (agentTurnIdx >= 0) {
-            transcript[agentTurnIdx]!.component_latency = timing;
-          }
+          responseAgentTurns[i]!.entry.component_latency = timing;
         }
       }
 
@@ -838,6 +1033,7 @@ export async function runConversationTest(
       call_metadata: callMetadata ?? undefined,
     };
   } finally {
+    await safeDisconnect();
     await ttsSession.close();
     transcriber.close();
     turnVAD.destroy();

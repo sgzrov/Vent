@@ -88,50 +88,46 @@ export async function runCommand(args: RunArgs): Promise<number> {
     debug(`filtered to test: ${args.test}`);
   }
 
-  // 2c. Resolve platform API key from local env so the worker doesn't need it
-  const cfgPlatform = (config as { connection?: { platform?: Record<string, unknown> & { api_key_env?: string; api_key?: string; provider?: string } } });
-  if (cfgPlatform.connection?.platform?.api_key_env && !cfgPlatform.connection.platform.api_key) {
-    const envName = cfgPlatform.connection.platform.api_key_env;
-    const resolved = process.env[envName];
-    if (!resolved) {
-      printError(`Platform API key not found: environment variable ${envName} is not set.`);
-      return 2;
-    }
-    cfgPlatform.connection.platform.api_key = resolved;
-    debug(`resolved platform API key from ${envName}`);
-  }
-
-  // 2c2. Resolve LiveKit-specific env vars (URL, API key, API secret) from user's local env
+  // 2c. Resolve platform credentials from local env so the worker doesn't need them
+  const cfgPlatform = (config as { connection?: { platform?: Record<string, unknown> & { provider?: string } } });
   const connAdapter = (config as { connection?: { adapter?: string } }).connection?.adapter;
-  if ((connAdapter === "webrtc" || connAdapter === "livekit")) {
-    const plat = cfgPlatform.connection?.platform ?? {};
-    if (!plat.livekit_url) {
-      const url = process.env["LIVEKIT_URL"];
-      if (!url) { printError("LiveKit adapter requires LIVEKIT_URL environment variable."); return 2; }
-      plat.livekit_url = url;
+  const plat = cfgPlatform.connection?.platform;
+  if (plat) {
+    const provider = plat.provider ?? connAdapter;
+    // Map provider → { configField: envVar } for auto-resolution
+    const envMap: Record<string, Record<string, string>> = {
+      vapi: { vapi_api_key: "VAPI_API_KEY", vapi_assistant_id: "VAPI_ASSISTANT_ID" },
+      bland: { bland_api_key: "BLAND_API_KEY", bland_pathway_id: "BLAND_PATHWAY_ID" },
+      livekit: { livekit_api_key: "LIVEKIT_API_KEY", livekit_api_secret: "LIVEKIT_API_SECRET", livekit_url: "LIVEKIT_URL" },
+      retell: { retell_api_key: "RETELL_API_KEY", retell_agent_id: "RETELL_AGENT_ID" },
+      elevenlabs: { elevenlabs_api_key: "ELEVENLABS_API_KEY", elevenlabs_agent_id: "ELEVENLABS_AGENT_ID" },
+    };
+    const resolveProvider = provider;
+    const fields = resolveProvider ? envMap[resolveProvider] : undefined;
+    if (fields) {
+      for (const [field, envVar] of Object.entries(fields)) {
+        const current = plat[field];
+        // Resolve if empty, or if the value is the env var name itself (coding agent mistake),
+        // or if it looks like an env var reference (ALL_CAPS_WITH_UNDERSCORES)
+        const needsResolve = !current
+          || current === envVar
+          || (typeof current === "string" && /^[A-Z][A-Z0-9_]+$/.test(current));
+        if (needsResolve) {
+          const val = process.env[envVar];
+          if (val) {
+            plat[field] = val;
+            debug(`resolved ${field} from ${envVar}`);
+          }
+        }
+      }
     }
-    if (!plat.api_key) {
-      const key = process.env[plat.api_key_env ?? "LIVEKIT_API_KEY"];
-      if (!key) { printError("LiveKit adapter requires LIVEKIT_API_KEY environment variable."); return 2; }
-      plat.api_key = key;
-    }
-    if (!plat.api_secret) {
-      const secret = process.env["LIVEKIT_API_SECRET"];
-      if (!secret) { printError("LiveKit adapter requires LIVEKIT_API_SECRET environment variable."); return 2; }
-      plat.api_secret = secret;
-    }
-    // Ensure platform is set on connection
-    if (!cfgPlatform.connection!.platform) {
-      (cfgPlatform.connection as Record<string, unknown>).platform = { provider: "livekit", ...plat };
-    }
-    debug("resolved LiveKit credentials from local env");
   }
 
   // 2d. Enforce platform concurrency limits
   const adapterForLimit = (config as { connection?: { adapter?: string } }).connection?.adapter;
   const platformProvider = cfgPlatform.connection?.platform?.provider;
   const defaultLimits: Record<string, number> = { livekit: 5, vapi: 10, bland: 10, elevenlabs: 5, retell: 5 };
-  const providerKey = platformProvider ?? (adapterForLimit === "webrtc" ? "livekit" : adapterForLimit);
+  const providerKey = platformProvider ?? adapterForLimit;
   const concurrencyLimit = providerKey ? defaultLimits[providerKey] : undefined;
   if (concurrencyLimit) {
     const convTests = (config as { conversation_tests?: Array<{ repeat?: number }> }).conversation_tests ?? [];

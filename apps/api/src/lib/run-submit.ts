@@ -102,9 +102,12 @@ export function buildTestSpec(cfg: Record<string, unknown>) {
     });
   }
 
-  // Strip api_key from platform before persisting to DB (secrets stay in job queue only)
+  // Strip secrets from platform before persisting to DB (secrets stay in job queue only)
   const platformForDb = cfg.platform
-    ? { ...(cfg.platform as Record<string, unknown>), api_key: undefined }
+    ? Object.fromEntries(
+        Object.entries(cfg.platform as Record<string, unknown>)
+          .filter(([k]) => !k.endsWith("_api_key") && !k.endsWith("_api_secret"))
+      )
     : null;
 
   return {
@@ -126,7 +129,7 @@ export function buildTestSpec(cfg: Record<string, unknown>) {
     targetPhoneNumber,
     conversationTests: conversationTests ?? null,
     redTeamTests: redTeamTests ?? null,
-    isRemote: ["vapi", "retell", "elevenlabs", "bland", "livekit", "webrtc"].includes(adapter)
+    isRemote: ["vapi", "retell", "elevenlabs", "bland", "livekit"].includes(adapter)
       || adapter === "sip" || !!agentUrl,
   };
 }

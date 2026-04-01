@@ -13,7 +13,7 @@ export const AUDIO_TEST_NAMES = [
 
 export type AudioTestName = (typeof AUDIO_TEST_NAMES)[number];
 
-export type AdapterType = "websocket" | "sip" | "webrtc" | "livekit" | "vapi" | "retell" | "elevenlabs" | "bland";
+export type AdapterType = "websocket" | "sip" | "livekit" | "vapi" | "retell" | "elevenlabs" | "bland";
 
 export interface CallerPersona {
   pace?: "slow" | "normal" | "fast";
@@ -134,16 +134,16 @@ export interface ToolCallMetrics {
 
 /** Shared fields across all platform configs */
 interface BasePlatformConfig {
-  api_key_env?: string;
-  api_key?: string;
-  agent_id?: string;
-  agent_id_env?: string;
   /** Max concurrent test calls (platform-dependent) */
   max_concurrency?: number;
 }
 
 export interface BlandPlatformConfig extends BasePlatformConfig {
   provider: "bland";
+  /** Bland API key (falls back to BLAND_API_KEY env) */
+  bland_api_key?: string;
+  /** Bland pathway ID (falls back to BLAND_PATHWAY_ID env) */
+  bland_pathway_id?: string;
   /** Task prompt — used instead of pathway_id for simple agents */
   task?: string;
   /** Tool definitions (inline objects) or tool IDs (TL-xxx strings) */
@@ -184,24 +184,38 @@ export interface BlandPlatformConfig extends BasePlatformConfig {
 
 export interface LiveKitPlatformConfig extends BasePlatformConfig {
   provider: "livekit";
-  /** LiveKit server URL (e.g. wss://your-app.livekit.cloud) */
+  /** LiveKit API key (falls back to LIVEKIT_API_KEY env) */
+  livekit_api_key?: string;
+  /** LiveKit API secret (falls back to LIVEKIT_API_SECRET env) */
+  livekit_api_secret?: string;
+  /** LiveKit server URL, e.g. wss://your-app.livekit.cloud (falls back to LIVEKIT_URL env) */
   livekit_url?: string;
-  /** API secret for LiveKit authentication */
-  api_secret?: string;
   /** Explicit agent dispatch — agent_name from WorkerOptions. Omit for automatic dispatch. */
-  agent_name?: string;
+  livekit_agent_name?: string;
 }
 
 export interface VapiPlatformConfig extends BasePlatformConfig {
   provider: "vapi";
+  /** Vapi API key (falls back to VAPI_API_KEY env) */
+  vapi_api_key?: string;
+  /** Vapi assistant ID (falls back to VAPI_ASSISTANT_ID env) */
+  vapi_assistant_id?: string;
 }
 
 export interface RetellPlatformConfig extends BasePlatformConfig {
   provider: "retell";
+  /** Retell API key (falls back to RETELL_API_KEY env) */
+  retell_api_key?: string;
+  /** Retell agent ID (falls back to RETELL_AGENT_ID env) */
+  retell_agent_id?: string;
 }
 
 export interface ElevenLabsPlatformConfig extends BasePlatformConfig {
   provider: "elevenlabs";
+  /** ElevenLabs API key (falls back to ELEVENLABS_API_KEY env) */
+  elevenlabs_api_key?: string;
+  /** ElevenLabs agent ID (falls back to ELEVENLABS_AGENT_ID env) */
+  elevenlabs_agent_id?: string;
 }
 
 export type PlatformConfig =
@@ -340,6 +354,8 @@ export interface ConversationTurn {
   role: "caller" | "agent";
   text: string;
   timestamp_ms: number;
+  /** Caller decision mode that produced this turn, or the silent wait mode that led into an agent turn. */
+  caller_decision_mode?: "continue" | "wait" | "closing" | "end_now";
   audio_duration_ms?: number;
   ttfb_ms?: number;
   /** Time to first word — VAD-detected speech onset (ms from audio sent) */
@@ -505,6 +521,8 @@ export interface CallMetadata {
   call_successful?: boolean;
   /** Final pathway/agent variables at end of call (Bland: pathway state, Vapi: extracted data) */
   variables?: Record<string, unknown>;
+  /** Call transfers that occurred during the call */
+  transfers?: Array<{ type: string; destination?: string; timestamp_ms: number }>;
 }
 
 export interface ConversationMetrics {

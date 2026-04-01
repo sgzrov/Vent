@@ -32,14 +32,25 @@ export async function collectUntilEndOfTurn(
   opts: {
     timeoutMs?: number;
     silenceThresholdMs?: number;
+    /** Debug label for collector logs. */
+    debugLabel?: string;
     /** Pre-initialized VAD instance — reused across turns to avoid WASM reload. */
     vad?: VoiceActivityDetector;
     /** Abort signal — resolves collection early, returning audio collected so far. */
     signal?: AbortSignal;
+    /** When true, VAD end-of-turn waits for platformEndOfTurn confirmation (up to 3s).
+     *  Prevents cutting off the agent mid-sentence when VAD triggers on a pause. */
+    preferPlatformEOT?: boolean;
   } = {}
 ): Promise<{ audio: Buffer; timedOut: boolean; aborted: boolean; stats: CollectionStats }> {
   const timeoutMs = opts.timeoutMs ?? 15000;
   const silenceThresholdMs = opts.silenceThresholdMs ?? 800;
+  const debugLabel = opts.debugLabel ?? "collect";
+  const platformDrainMs = opts.preferPlatformEOT ? (channel.platformEndOfTurnDrainMs ?? 0) : 0;
+  const postToolCallContinuationMs = channel.postToolCallContinuationMs ?? 0;
+  const postVadContinuationMs = channel.postVadContinuationMs ?? 0;
+  const audibleDrainRmsThreshold = 150;
+  const continuationSettleMs = 150;
 
   const ownsVAD = !opts.vad;
   const vad = opts.vad ?? new VoiceActivityDetector({ silenceThresholdMs });
@@ -59,6 +70,8 @@ export async function collectUntilEndOfTurn(
   let speechStartedAt: number | null = null;
   let firstChunkAt: number | null = null;
   let speechOnsetAt: number | null = null;
+  let lastAudibleAudioAt: number | null = null;
+  let lastChunkAt: number | null = null;
 
   // Energy diagnostics: track RMS distribution to understand what audio the VAD sees
   const energyBuckets = { below100: 0, r100_250: 0, r250_500: 0, r500_1000: 0, r1000_3000: 0, above3000: 0 };
@@ -68,6 +81,90 @@ export async function collectUntilEndOfTurn(
 
   try {
     await new Promise<void>((resolve) => {
+      console.log(
+        `    [collect:${debugLabel}] start timeout=${timeoutMs}ms silenceThreshold=${silenceThresholdMs}ms ` +
+        `preferPlatformEOT=${!!opts.preferPlatformEOT} platformDrain=${platformDrainMs}ms ` +
+        `postToolContinuation=${postToolCallContinuationMs}ms postVadContinuation=${postVadContinuationMs}ms`
+      );
+      let platformEOTFired = false;
+      let vadEOTFired = false;
+      let platformEOTResolveTimer: ReturnType<typeof setTimeout> | null = null;
+      let vadDeferTimer: ReturnType<typeof setTimeout> | null = null;
+      let platformDrainTimer: ReturnType<typeof setTimeout> | null = null;
+      let platformDrainReason = "";
+      let toolCallInProgress = false;
+      let lastToolCallCompletedAt: number | null = null;
+      let platformSpeechStartedAt: number | null = null;
+
+      const clearDeferredEndOfTurn = () => {
+        if (!vadDeferTimer) return;
+        clearTimeout(vadDeferTimer);
+        vadDeferTimer = null;
+      };
+
+      const clearPlatformResolve = () => {
+        if (!platformEOTResolveTimer) return;
+        clearTimeout(platformEOTResolveTimer);
+        platformEOTResolveTimer = null;
+      };
+
+      const clearPlatformDrain = () => {
+        if (!platformDrainTimer) return;
+        clearTimeout(platformDrainTimer);
+        platformDrainTimer = null;
+      };
+
+      const schedulePlatformDrain = (reason: string, waitMs: number) => {
+        clearPlatformDrain();
+        platformDrainReason = reason;
+        platformDrainTimer = setTimeout(() => {
+          platformDrainTimer = null;
+          console.log(`    [vad] playback drain elapsed — resolving`);
+          cleanup();
+          resolve();
+        }, waitMs);
+      };
+
+      const resolveAfterPlatformDrain = (reason: string) => {
+        if (platformDrainMs <= 0) {
+          console.log(`    [vad] ${reason} — resolving immediately`);
+          cleanup();
+          resolve();
+          return;
+        }
+
+        // Treat platformEndOfTurnDrainMs as a real minimum hold after the
+        // platform says speech stopped. Some transports emit the stop signal
+        // slightly before the audible tail has fully drained, so "time since
+        // last audible chunk" is not a reliable substitute here.
+        console.log(`    [vad] ${reason} — waiting ${platformDrainMs}ms for playback drain`);
+        schedulePlatformDrain(reason, platformDrainMs);
+      };
+
+      const shouldWaitForPostToolContinuation = (now: number) => {
+        return (
+          postToolCallContinuationMs > 0 &&
+          !toolCallInProgress &&
+          lastToolCallCompletedAt !== null &&
+          now - lastToolCallCompletedAt <= postToolCallContinuationMs
+        );
+      };
+
+      const scheduleContinuationResolve = (reason: string) => {
+        clearDeferredEndOfTurn();
+        vadDeferTimer = setTimeout(() => {
+          vadDeferTimer = null;
+          if (platformSpeechStartedAt !== null && Date.now() - platformSpeechStartedAt <= continuationSettleMs) {
+            console.log(`    [vad] ${reason} but platform speech resumed — extending turn`);
+            vad.reset();
+            return;
+          }
+          console.log(`    [vad] ${reason} elapsed — resolving`);
+          cleanup();
+          resolve();
+        }, continuationSettleMs);
+      };
+
       const onAudio = (chunk: Buffer) => {
         chunks.push(chunk);
 
@@ -87,6 +184,26 @@ export async function collectUntilEndOfTurn(
         const state = vad.process(chunk);
         const now = Date.now();
         if (firstChunkAt === null) firstChunkAt = now;
+        if (lastChunkAt === null) {
+          console.log(`    [collect:${debugLabel}] first_audio_chunk`);
+        }
+        lastChunkAt = now;
+        if (rms > audibleDrainRmsThreshold) {
+          lastAudibleAudioAt = now;
+          if (vadDeferTimer) {
+            console.log(`    [vad] Audible audio arrived during continuation window — extending turn`);
+            clearDeferredEndOfTurn();
+            clearPlatformResolve();
+            clearPlatformDrain();
+            vadEOTFired = false;
+            platformEOTFired = false;
+            vad.reset();
+          }
+          if (platformDrainTimer) {
+            console.log(`    [vad] Audible audio arrived during drain window — extending turn`);
+            schedulePlatformDrain(platformDrainReason || "end_of_turn confirmed", platformDrainMs);
+          }
+        }
 
         if (state === "speech") {
           speechChunkRmsSum += rms;
@@ -106,20 +223,95 @@ export async function collectUntilEndOfTurn(
         if (state === "speech" && prevState !== "speech") {
           speechSegments++;
           if (speechOnsetAt === null) speechOnsetAt = now;
+          if (speechOnsetAt === now) {
+            console.log(`    [collect:${debugLabel}] speech_onset rms=${Math.round(rms)}`);
+          }
           speechStartedAt = now;
+          platformSpeechStartedAt = now;
           if (silenceStartedAt !== null) {
             const silenceDurationMs = now - silenceStartedAt;
             maxInternalSilenceMs = Math.max(maxInternalSilenceMs, silenceDurationMs);
             silenceStartedAt = null;
+          }
+
+          // VAD detected new speech after it already fired end_of_turn —
+          // the agent resumed speaking. Cancel the deferred resolve.
+          if (vadEOTFired || platformEOTFired) {
+            clearDeferredEndOfTurn();
+            clearPlatformResolve();
+            clearPlatformDrain();
+            vadEOTFired = false;
+            platformEOTFired = false;
+            vad.reset();
           }
         }
 
         prevState = state;
 
         if (state === "end_of_turn") {
-          cleanup();
-          resolve();
+          const now = Date.now();
+          if (toolCallInProgress) {
+            // Agent is executing a tool — don't end the turn.
+            // Reset VAD so it can detect the post-tool-call speech.
+            clearDeferredEndOfTurn();
+            clearPlatformResolve();
+            console.log(`    [vad] Suppressed end_of_turn — tool call in progress`);
+            vadEOTFired = false;
+            platformEOTFired = false;
+            vad.reset();
+          } else if (shouldWaitForPostToolContinuation(now)) {
+            if (!vadDeferTimer) {
+              vadEOTFired = true;
+              console.log(
+                `    [vad] end_of_turn detected shortly after tool completion — waiting ` +
+                `${postToolCallContinuationMs}ms for assistant continuation`
+              );
+              vadDeferTimer = setTimeout(() => {
+                scheduleContinuationResolve("post-tool continuation window");
+              }, postToolCallContinuationMs);
+            }
+          } else if (postVadContinuationMs > 0) {
+            if (!vadDeferTimer) {
+              vadEOTFired = true;
+              console.log(
+                `    [vad] end_of_turn detected — waiting ${postVadContinuationMs}ms ` +
+                `for assistant continuation`
+              );
+              vadDeferTimer = setTimeout(() => {
+                scheduleContinuationResolve("continuation window");
+              }, postVadContinuationMs);
+            }
+          } else if (opts.preferPlatformEOT && !platformEOTFired) {
+            // VAD says done, but platform hasn't confirmed — defer for up to 3s.
+            // If the agent resumes speaking, the speech detection above cancels this.
+            if (!vadDeferTimer) {
+              vadEOTFired = true;
+              console.log(`    [vad] end_of_turn detected — waiting up to 3000ms for platformEndOfTurn`);
+              vadDeferTimer = setTimeout(() => {
+                vadDeferTimer = null;
+                console.log(`    [vad] deferred end_of_turn elapsed — resolving without platformEndOfTurn`);
+                cleanup();
+                resolve();
+              }, 3000);
+            }
+          } else {
+            resolveAfterPlatformDrain("end_of_turn detected");
+          }
         }
+      };
+
+      const onPlatformSpeechStart = () => {
+        platformSpeechStartedAt = Date.now();
+        if (!vadDeferTimer && !platformDrainTimer && !platformEOTResolveTimer && !vadEOTFired && !platformEOTFired) {
+          return;
+        }
+        console.log(`    [vad] platform speech resumed during continuation window — extending turn`);
+        clearDeferredEndOfTurn();
+        clearPlatformResolve();
+        clearPlatformDrain();
+        vadEOTFired = false;
+        platformEOTFired = false;
+        vad.reset();
       };
 
       const onError = (err: Error) => {
@@ -128,28 +320,94 @@ export async function collectUntilEndOfTurn(
         resolve();
       };
 
+      const onToolCallActive = (active: boolean) => {
+        toolCallInProgress = active;
+        console.log(`    [vad] toolCallActive=${active} vadEOTFired=${vadEOTFired}`);
+        if (active) {
+          lastToolCallCompletedAt = null;
+          clearDeferredEndOfTurn();
+          clearPlatformResolve();
+          clearPlatformDrain();
+          vadEOTFired = false;
+          platformEOTFired = false;
+          vad.reset();
+          return;
+        }
+        lastToolCallCompletedAt = Date.now();
+        if (!active && vadEOTFired) {
+          // Tool call completed and VAD had already fired — agent may speak now.
+          // Reset VAD to detect the post-tool-call response.
+          clearDeferredEndOfTurn();
+          clearPlatformResolve();
+          clearPlatformDrain();
+          console.log(`    [vad] Tool call completed, resetting VAD for post-tool speech`);
+          vadEOTFired = false;
+          platformEOTFired = false;
+          vad.reset();
+        }
+      };
+
       // Platform-level end-of-turn signal (e.g. LiveKit agent state → "listening").
       // Fires when the platform knows the agent finished speaking — more reliable
       // than VAD for streaming TTS which produces audio in tiny bursts.
       const onPlatformEOT = () => {
-        cleanup();
-        resolve();
+        if (!opts.preferPlatformEOT) return;
+        platformEOTFired = true;
+        console.log(`    [vad] platformEndOfTurn fired vadEOTFired=${vadEOTFired} toolCallInProgress=${toolCallInProgress}`);
+        if (toolCallInProgress) {
+          console.log(`    [vad] platformEndOfTurn ignored while tool call is active`);
+          return;
+        }
+        if (vadEOTFired) {
+          // VAD already fired — platform confirmed, resolve once playback drains.
+          clearDeferredEndOfTurn();
+          clearPlatformResolve();
+          resolveAfterPlatformDrain("platformEndOfTurn confirmed end_of_turn");
+          return;
+        }
+        if (speechOnsetAt !== null && !platformEOTResolveTimer) {
+          // Platform confirmed the agent stopped before VAD declared end_of_turn.
+          // Give a short grace period for any trailing chunk/VAD update, then resolve.
+          console.log(`    [vad] platformEndOfTurn arrived before VAD end_of_turn — waiting briefly for trailing audio`);
+          platformEOTResolveTimer = setTimeout(() => {
+            platformEOTResolveTimer = null;
+            resolveAfterPlatformDrain("platformEndOfTurn after speech");
+          }, 500);
+        }
       };
 
       const timeout = setTimeout(() => {
         timedOut = true;
         const avgSpeechRms = speechChunkCount > 0 ? Math.round(speechChunkRmsSum / speechChunkCount) : 0;
+        console.log(
+          `    [collect:${debugLabel}] timeout firstChunk=${firstChunkAt !== null} speechOnset=${speechOnsetAt !== null} ` +
+          `lastChunkAge=${lastChunkAt != null ? Date.now() - lastChunkAt : "n/a"}ms ` +
+          `lastAudibleAge=${lastAudibleAudioAt != null ? Date.now() - lastAudibleAudioAt : "n/a"}ms`
+        );
         console.log(`    [vad-diag] collection timed out: chunks=${chunks.length} speechSegments=${speechSegments} speechOnset=${speechOnsetAt !== null}`);
         console.log(`    [vad-diag] energy: <100=${energyBuckets.below100} 100-250=${energyBuckets.r100_250} 250-500=${energyBuckets.r250_500} 500-1k=${energyBuckets.r500_1000} 1k-3k=${energyBuckets.r1000_3000} >3k=${energyBuckets.above3000} maxRms=${Math.round(maxRms)} avgSpeechRms=${avgSpeechRms}`);
         cleanup();
         resolve();
       }, timeoutMs);
 
+      const onDisconnected = () => {
+        console.log(`    [collect:${debugLabel}] channel_disconnected`);
+        console.log(`    [vad] Channel disconnected during collection — ending turn`);
+        cleanup();
+        resolve();
+      };
+
       function cleanup() {
         clearTimeout(timeout);
+        clearDeferredEndOfTurn();
+        clearPlatformResolve();
+        clearPlatformDrain();
         channel.off("audio", onAudio);
         channel.off("error", onError);
         channel.off("platformEndOfTurn", onPlatformEOT);
+        channel.off("platformSpeechStart", onPlatformSpeechStart);
+        channel.off("toolCallActive", onToolCallActive);
+        channel.off("disconnected", onDisconnected);
         if (opts.signal) opts.signal.removeEventListener("abort", onAbort);
       }
 
@@ -159,9 +417,20 @@ export async function collectUntilEndOfTurn(
         resolve();
       };
 
+      // If the channel already disconnected before we started collecting, resolve immediately.
+      if (!channel.connected) {
+        console.log(`    [collect:${debugLabel}] channel_already_disconnected`);
+        console.log(`    [vad] Channel already disconnected — skipping collection`);
+        resolve();
+        return;
+      }
+
       channel.on("audio", onAudio);
       channel.on("error", onError);
       channel.on("platformEndOfTurn", onPlatformEOT);
+      channel.on("platformSpeechStart", onPlatformSpeechStart);
+      channel.on("toolCallActive", onToolCallActive);
+      channel.on("disconnected", onDisconnected);
       if (opts.signal) {
         if (opts.signal.aborted) { aborted = true; resolve(); return; }
         opts.signal.addEventListener("abort", onAbort);
@@ -174,6 +443,12 @@ export async function collectUntilEndOfTurn(
     }
     if (ownsVAD) vad.destroy();
   }
+
+  console.log(
+    `    [collect:${debugLabel}] done bytes=${chunks.reduce((sum, chunk) => sum + chunk.length, 0)} timedOut=${timedOut} aborted=${aborted} ` +
+    `speechSegments=${speechSegments} totalSpeechMs=${totalSpeechMs} firstChunkAt=${firstChunkAt ?? "n/a"} ` +
+    `speechOnsetAt=${speechOnsetAt ?? "n/a"} lastChunkAt=${lastChunkAt ?? "n/a"} lastAudibleAt=${lastAudibleAudioAt ?? "n/a"}`
+  );
 
   return {
     audio: concatPcm(chunks),

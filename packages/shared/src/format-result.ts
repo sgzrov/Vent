@@ -31,6 +31,7 @@ import type {
 interface FormattedTranscriptTurn {
   role: "caller" | "agent";
   text: string;
+  caller_decision_mode?: "continue" | "wait" | "closing" | "end_now";
   ttfb_ms?: number;
   ttfw_ms?: number;
   stt_confidence?: number;
@@ -165,6 +166,7 @@ function formatTranscript(turns: ConversationTurn[] | undefined): FormattedTrans
       role: t.role,
       text: t.text,
     };
+    if (t.caller_decision_mode) turn.caller_decision_mode = t.caller_decision_mode;
     // Include timing/quality fields when present (strip tts_ms, stt_ms, timestamp_ms)
     if (t.ttfb_ms != null) turn.ttfb_ms = t.ttfb_ms;
     if (t.ttfw_ms != null) turn.ttfw_ms = t.ttfw_ms;

@@ -114,7 +114,7 @@ npx vent-hq run --config '{"connection":{"adapter":"websocket","start_command":"
 - **HARD CONCURRENCY LIMITS — NEVER EXCEED** — Each test is a real concurrent call. If you create more tests than the platform allows, excess tests hang forever (agents never connect). Before running, count: total_concurrent = number_of_tests × max(repeat, 1). If total_concurrent > platform limit, REDUCE tests or split into sequential runs.
   | Platform | Default limit (assume if unknown) | Ask user for tier |
   |----------|----------------------------------|-------------------|
-  | LiveKit (webrtc) | **5** | Build=5, Ship=20, Scale=50+ |
+  | LiveKit | **5** | Build=5, Ship=20, Scale=50+ |
   | Vapi | **10** | Starter=10, Growth=50, Enterprise=100+ |
   | Bland (sip) | **3** (SIP-based, 10s between calls) | Max 3 concurrent. Bland uses phone calls (SIP), not WebSocket/WebRTC. All calls route through one Twilio number — Bland drops calls when 4+ target the same number. Scaling beyond 3 requires a Twilio number pool (not yet implemented). |
   | ElevenLabs | **5** | Ask user |
@@ -143,15 +143,38 @@ OR
 <config_connection>
 {
   "connection": {
-    "adapter": "required — websocket | sip | webrtc | vapi | retell | elevenlabs | bland",
+    "adapter": "required -- websocket | sip | livekit | vapi | retell | elevenlabs | bland",
     "start_command": "shell command to start agent (relay only, required for local)",
     "health_endpoint": "health check path after start_command (default: /health, relay only, required for local)",
     "agent_url": "deployed agent URL (wss:// or https://). Required for deployed agents.",
     "agent_port": "local agent port (default: 3001, required for local)",
     "target_phone_number": "agent's phone number (required for sip, retell)",
-    "platform": "{"provider", "api_key_env", "agent_id"} — required for vapi, retell, elevenlabs, bland"
+    "platform": "see adapter-specific examples below -- each platform has its own named fields"
   }
 }
+
+<credential_resolution>
+IMPORTANT: How to handle platform credentials (API keys, secrets, agent IDs):
+
+1. The CLI auto-resolves credentials from the project's .env file. If .env already contains the right env vars, you can OMIT credential fields from the config JSON entirely -- the CLI will fill them in automatically.
+2. If you include credential fields in the config, put the ACTUAL VALUE (the real key/secret/ID), NOT the env var name. WRONG: "vapi_api_key": "VAPI_API_KEY". RIGHT: "vapi_api_key": "sk-abc123..." or just omit the field.
+3. To check: read the project's .env file. If it has the env var (e.g. VAPI_API_KEY=sk-abc123), you can omit that field. If not, ask the user for the value.
+
+Auto-resolved env vars per platform:
+| Platform | Config field | Env var (auto-resolved from .env) |
+|----------|-------------|-----------------------------------|
+| Vapi | vapi_api_key | VAPI_API_KEY |
+| Vapi | vapi_assistant_id | VAPI_ASSISTANT_ID |
+| Bland | bland_api_key | BLAND_API_KEY |
+| Bland | bland_pathway_id | BLAND_PATHWAY_ID |
+| LiveKit | livekit_api_key | LIVEKIT_API_KEY |
+| LiveKit | livekit_api_secret | LIVEKIT_API_SECRET |
+| LiveKit | livekit_url | LIVEKIT_URL |
+| Retell | retell_api_key | RETELL_API_KEY |
+| Retell | retell_agent_id | RETELL_AGENT_ID |
+| ElevenLabs | elevenlabs_api_key | ELEVENLABS_API_KEY |
+| ElevenLabs | elevenlabs_agent_id | ELEVENLABS_AGENT_ID |
+</credential_resolution>
 
 <config_adapter_rules>
 WebSocket (local agent via relay):
@@ -172,7 +195,7 @@ WebSocket (deployed agent):
   }
 }
 
-SIP (telephony — agent reachable by phone):
+SIP (telephony -- agent reachable by phone):
 {
   "connection": {
     "adapter": "sip",
@@ -185,76 +208,55 @@ Retell:
   "connection": {
     "adapter": "retell",
     "target_phone_number": "+14155551234",
-    "platform": { "provider": "retell", "api_key_env": "RETELL_API_KEY", "agent_id": "agent_abc123" }
+    "platform": { "provider": "retell" }
   }
 }
+Credentials auto-resolve from .env: RETELL_API_KEY, RETELL_AGENT_ID. Only add retell_api_key/retell_agent_id to the JSON if .env doesn't have them.
 
 Bland:
 {
   "connection": {
     "adapter": "bland",
-    "platform": {
-      "provider": "bland",
-      "api_key_env": "BLAND_API_KEY",
-      "agent_id": "pathway_uuid_here"
-    }
+    "platform": { "provider": "bland" }
   }
 }
-Note: Bland agent_id is a pathway_id (UUID). The env var is BLAND_PATHWAY_ID. Vent calls the agent via telephony (POST /v1/calls + SIP) — no additional config needed. Rate limiting (10s between calls) and concurrency (max 3) are handled automatically server-side. Unlike Vapi/LiveKit/ElevenLabs (which use WebSocket/WebRTC for unlimited parallel calls), Bland routes through a single Twilio phone number — so concurrent calls are limited by telephony constraints.
-
-Bland-specific platform options (all optional):
-- `background_track` — Background audio: `"office"`, `"cafe"`, `"restaurant"`, `"none"`, or omit for default phone static. Use `"none"` for cleaner test audio.
-- `keywords` — Boost Bland's transcription accuracy for domain terms. Array of strings, supports `"word:boost_factor"` format. Example: `["SafetySpec:2", "HVAC:1.5"]`
-- `request_data` — Key-value pairs accessible as `{{variable}}` in agent prompts/pathways. Example: `{ "customer_tier": "enterprise" }`
-- `pronunciation_guide` — Override pronunciation for specific words. Array of `{ "word": "HVAC", "pronunciation": "H-V-A-C" }`.
-- `start_node_id` — Start pathway from a specific node (for testing specific branches).
-- `pathway_version` — Test a specific pathway version instead of production.
-- `block_interruptions` — When `true`, agent ignores interruptions. Only set if needed.
-- `noise_cancellation` — Enable Bland's noise filtering on caller audio.
-- `interruption_threshold` — Ms before agent responds after silence (default: 500).
-- `max_duration` — Max call duration in minutes (default: 30).
-- `temperature` — LLM temperature 0-1 (default: 0.7).
-- `language` — Language code e.g. `"babel-en"`, `"babel-es"`.
+Credentials auto-resolve from .env: BLAND_API_KEY, BLAND_PATHWAY_ID. Only add bland_api_key/bland_pathway_id to the JSON if .env doesn't have them.
+Note: Bland routes through a single Twilio phone number -- concurrent calls are limited by telephony constraints. All agent config (voice, model, tools, etc.) is set on the pathway itself, not in Vent config.
 
 Vapi:
 {
   "connection": {
     "adapter": "vapi",
-    "platform": { "provider": "vapi", "api_key_env": "VAPI_API_KEY", "agent_id": "asst_abc123", "max_concurrency": 10 }
+    "platform": { "provider": "vapi" }
   }
 }
+Credentials auto-resolve from .env: VAPI_API_KEY, VAPI_ASSISTANT_ID. Only add vapi_api_key/vapi_assistant_id to the JSON if .env doesn't have them.
 max_concurrency for Vapi: Starter=10, Growth=50, Enterprise=100+. Ask the user which tier they're on. If unknown, default to 10.
+All assistant config (voice, model, transcriber, interruption settings, etc.) is set on the Vapi assistant itself, not in Vent config.
 
 ElevenLabs:
 {
   "connection": {
     "adapter": "elevenlabs",
-    "platform": { "provider": "elevenlabs", "api_key_env": "ELEVENLABS_API_KEY", "agent_id": "agent_abc123" }
+    "platform": { "provider": "elevenlabs" }
   }
 }
+Credentials auto-resolve from .env: ELEVENLABS_API_KEY, ELEVENLABS_AGENT_ID. Only add elevenlabs_api_key/elevenlabs_agent_id to the JSON if .env doesn't have them.
 
-WebRTC / LiveKit:
+LiveKit:
 {
   "connection": {
-    "adapter": "webrtc",
+    "adapter": "livekit",
     "platform": {
       "provider": "livekit",
-      "agent_name": "my-agent",
+      "livekit_agent_name": "my-agent",
       "max_concurrency": 5
     }
   }
 }
-LiveKit-specific platform options (all optional):
-- `livekit_url` — LiveKit server URL (e.g. `wss://my-project.livekit.cloud`). Can also be set via `LIVEKIT_URL` env var.
-- `api_secret` — API secret. Can also be set via `LIVEKIT_API_SECRET` env var.
-- `agent_name` — Explicit agent dispatch name from WorkerOptions. Omit for automatic dispatch.
-IMPORTANT — LiveKit requires these variables in the project's .env file:
-  - LIVEKIT_URL=wss://my-project-xxxx.livekit.cloud
-  - LIVEKIT_API_KEY=your_key
-  - LIVEKIT_API_SECRET=your_secret
-The CLI loads .env automatically — no need to export them in the shell. If .env already has these vars, just run the test. Only ask the user if .env doesn't contain them.
-agent_name is optional — only needed if the LiveKit agent registers with an explicit agent_name in WorkerOptions. If omitted, Vent relies on automatic dispatch (agent auto-joins when a participant connects). Check the agent's WorkerOptions for an agent_name field.
-max_concurrency controls how many tests run in parallel. Set based on the user's LiveKit Cloud tier: Free/Build=5, Ship=20, Scale=50+. Ask the user which tier they're on. If unknown, default to 5.
+Credentials auto-resolve from .env: LIVEKIT_API_KEY, LIVEKIT_API_SECRET, LIVEKIT_URL. Only add these to the JSON if .env doesn't have them.
+livekit_agent_name is optional -- only needed if the agent registers with an explicit agent_name in WorkerOptions. Omit for automatic dispatch.
+max_concurrency: Free/Build=5, Ship=20, Scale=50+. Ask the user which tier they're on. If unknown, default to 5.
 </config_adapter_rules>
 </config_connection>
 

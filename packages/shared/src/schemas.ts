@@ -115,7 +115,7 @@ export const TestSpecSchema = z
     { message: "Only one of conversation_tests, red_team_tests, or load_test can be used per run" }
   );
 
-export const AdapterTypeSchema = z.enum(["websocket", "sip", "webrtc", "livekit", "vapi", "retell", "elevenlabs", "bland"]);
+export const AdapterTypeSchema = z.enum(["websocket", "sip", "livekit", "vapi", "retell", "elevenlabs", "bland"]);
 
 // ============================================================
 // Tool call schemas
@@ -140,14 +140,13 @@ export const ToolCallMetricsSchema = z.object({
 });
 
 const BasePlatformSchema = z.object({
-  api_key_env: z.string().optional(),
-  api_key: z.string().optional(),
-  agent_id: z.string().optional(),
-  agent_id_env: z.string().optional(),
+  max_concurrency: z.number().int().min(1).optional(),
 });
 
 const BlandPlatformSchema = BasePlatformSchema.extend({
   provider: z.literal("bland"),
+  bland_api_key: z.string().optional(),
+  bland_pathway_id: z.string().optional(),
   task: z.string().optional(),
   tools: z.array(z.unknown()).optional(),
   voice: z.string().optional(),
@@ -175,21 +174,28 @@ const BlandPlatformSchema = BasePlatformSchema.extend({
 
 const LiveKitPlatformSchema = BasePlatformSchema.extend({
   provider: z.literal("livekit"),
+  livekit_api_key: z.string().optional(),
+  livekit_api_secret: z.string().optional(),
   livekit_url: z.string().optional(),
-  api_secret: z.string().optional(),
-  agent_name: z.string().optional(),
+  livekit_agent_name: z.string().optional(),
 });
 
 const VapiPlatformSchema = BasePlatformSchema.extend({
   provider: z.literal("vapi"),
+  vapi_api_key: z.string().optional(),
+  vapi_assistant_id: z.string().optional(),
 });
 
 const RetellPlatformSchema = BasePlatformSchema.extend({
   provider: z.literal("retell"),
+  retell_api_key: z.string().optional(),
+  retell_agent_id: z.string().optional(),
 });
 
 const ElevenLabsPlatformSchema = BasePlatformSchema.extend({
   provider: z.literal("elevenlabs"),
+  elevenlabs_api_key: z.string().optional(),
+  elevenlabs_agent_id: z.string().optional(),
 });
 
 export const PlatformConfigSchema = z.discriminatedUnion("provider", [
@@ -237,6 +243,7 @@ export const ConversationTurnSchema = z.object({
   role: z.enum(["caller", "agent"]),
   text: z.string(),
   timestamp_ms: z.number(),
+  caller_decision_mode: z.enum(["continue", "wait", "closing", "end_now"]).optional(),
   audio_duration_ms: z.number().optional(),
   ttfb_ms: z.number().optional(),
   ttfw_ms: z.number().optional(),

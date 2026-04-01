@@ -24,7 +24,7 @@ export interface ExecuteTestsOpts {
   channelConfig: AudioChannelConfig;
   concurrencyLimit?: number;
   onTestStart?: (info: TestStartInfo) => void;
-  onTestComplete?: (result: ConversationTestResult, testType: TestType) => void;
+  onTestComplete?: (result: ConversationTestResult, testType: TestType) => void | Promise<void>;
 }
 
 export interface ExecuteTestsResult {
@@ -113,6 +113,14 @@ export async function executeTests(opts: ExecuteTestsOpts): Promise<ExecuteTests
   const isRedTeam = (testSpec.red_team_tests?.length ?? 0) > 0;
   const testType: TestType = isRedTeam ? "red_team" : "conversation";
   const testSpecs = isRedTeam ? testSpec.red_team_tests! : (testSpec.conversation_tests ?? []);
+  const notifyTestComplete = async (result: ConversationTestResult) => {
+    if (!onTestComplete) return;
+    try {
+      await onTestComplete(result, testType);
+    } catch (err) {
+      console.warn(`onTestComplete failed: ${(err as Error).message}`);
+    }
+  };
 
   // Expand tests by repeat count for statistical confidence
   const allTests = testSpecs.flatMap((spec) => {
@@ -124,7 +132,7 @@ export async function executeTests(opts: ExecuteTestsOpts): Promise<ExecuteTests
   // Platform adapters (vapi, retell, elevenlabs, bland) don't need this —
   // it would waste a real API call + credits just to verify connectivity.
   // The first real test will fail with a clear error if config is wrong.
-  const isPlatformAdapter = ["vapi", "retell", "elevenlabs", "bland", "livekit", "webrtc"].includes(channelConfig.adapter);
+  const isPlatformAdapter = ["vapi", "retell", "elevenlabs", "bland", "livekit"].includes(channelConfig.adapter);
   if (allTests.length > 0 && !isPlatformAdapter) {
     const probeChannel = createAudioChannel(channelConfig);
     try {
@@ -162,7 +170,7 @@ export async function executeTests(opts: ExecuteTestsOpts): Promise<ExecuteTests
         metrics: { mean_ttfb_ms: 0 },
         error: `Agent unreachable: ${errorMsg}`,
       };
-      onTestComplete?.(failResult, testType);
+      await notifyTestComplete(failResult);
       const aggregateKey = isRedTeam ? "red_team_tests" : "conversation_tests";
       return {
         status: "fail" as const,
@@ -222,7 +230,7 @@ export async function executeTests(opts: ExecuteTestsOpts): Promise<ExecuteTests
         status: result.status, duration_ms: result.duration_ms,
         channel: { bytes_sent: channel.stats.bytesSent, bytes_received: channel.stats.bytesReceived, errors: channel.stats.errorEvents },
       }));
-      onTestComplete?.(result, testType);
+      await notifyTestComplete(result);
       return result;
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
@@ -254,7 +262,7 @@ export async function executeTests(opts: ExecuteTestsOpts): Promise<ExecuteTests
         event: "test_complete", test_name: testName, test_type: testType,
         status: "error", duration_ms: result.duration_ms, error: errorMsg,
       }));
-      onTestComplete?.(result, testType);
+      await notifyTestComplete(result);
       return result;
     } finally {
       await channel.disconnect().catch(() => {});

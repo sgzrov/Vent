@@ -1,4 +1,4 @@
-import type { AdapterType, PlatformConfig, BlandPlatformConfig, LiveKitPlatformConfig } from "@vent/shared";
+import type { AdapterType, PlatformConfig, BlandPlatformConfig, LiveKitPlatformConfig, VapiPlatformConfig, RetellPlatformConfig, ElevenLabsPlatformConfig } from "@vent/shared";
 import { RUNNER_CALLBACK_HEADER } from "@vent/shared";
 import type { AudioChannel } from "./audio-channel.js";
 import { WsAudioChannel } from "./ws-audio-channel.js";
@@ -15,7 +15,6 @@ export { WsAudioChannel } from "./ws-audio-channel.js";
 export { WebRtcAudioChannel } from "./webrtc-audio-channel.js";
 export { SipAudioChannel } from "./sip-audio-channel.js";
 export { VapiAudioChannel } from "./vapi-audio-channel.js";
-export type { VapiAssistantConfig } from "./vapi-audio-channel.js";
 export { RetellAudioChannel } from "./retell-audio-channel.js";
 export { ElevenLabsAudioChannel } from "./elevenlabs-audio-channel.js";
 export { BlandAudioChannel } from "./bland-audio-channel.js";
@@ -33,13 +32,6 @@ export interface AudioChannelConfig {
 function sipPortConfig(): { port?: number; publicPort?: number | null } {
   const listenPort = parseInt(process.env["RUNNER_LISTEN_PORT"] ?? "0", 10) || undefined;
   return listenPort ? { port: listenPort, publicPort: null } : {};
-}
-
-/** Resolve agent_id: direct value → custom env var → default env var for provider */
-function resolveAgentId(platform: PlatformConfig | undefined, defaultEnv: string): string {
-  return platform?.agent_id
-    || process.env[platform?.agent_id_env as string ?? defaultEnv]
-    || "";
 }
 
 export function createAudioChannel(config: AudioChannelConfig): AudioChannel {
@@ -63,17 +55,16 @@ export function createAudioChannel(config: AudioChannelConfig): AudioChannel {
       return new WsAudioChannel({ wsUrl, headers });
     }
 
-    case "webrtc":
     case "livekit": {
       const p = config.platform as LiveKitPlatformConfig | undefined;
-      const apiKey = p?.api_key || process.env[p?.api_key_env ?? "LIVEKIT_API_KEY"] || "";
-      const apiSecret = p?.api_secret || process.env["LIVEKIT_API_SECRET"] || "";
+      const apiKey = p?.livekit_api_key || process.env["LIVEKIT_API_KEY"] || "";
+      const apiSecret = p?.livekit_api_secret || process.env["LIVEKIT_API_SECRET"] || "";
       const livekitUrl = p?.livekit_url || process.env["LIVEKIT_URL"] || "";
-      const agentName = p?.agent_name;
+      const agentName = p?.livekit_agent_name;
 
       if (!livekitUrl) throw new Error("LiveKit adapter requires LIVEKIT_URL env or platform.livekit_url");
-      if (!apiKey) throw new Error("LiveKit adapter requires API key (set LIVEKIT_API_KEY or platform.api_key_env)");
-      if (!apiSecret) throw new Error("LiveKit adapter requires LIVEKIT_API_SECRET env or platform.api_secret");
+      if (!apiKey) throw new Error("LiveKit adapter requires LIVEKIT_API_KEY env or platform.livekit_api_key");
+      if (!apiSecret) throw new Error("LiveKit adapter requires LIVEKIT_API_SECRET env or platform.livekit_api_secret");
 
       const roomName = `vent-${crypto.randomUUID().replace(/-/g, "").slice(0, 8)}`;
       return new WebRtcAudioChannel({
@@ -109,19 +100,21 @@ export function createAudioChannel(config: AudioChannelConfig): AudioChannel {
     }
 
     case "vapi": {
-      const apiKey = config.platform?.api_key || process.env[config.platform?.api_key_env ?? "VAPI_API_KEY"] || "";
-      const assistantId = resolveAgentId(config.platform, "VAPI_ASSISTANT_ID");
-      if (!apiKey) throw new Error("Vapi adapter requires API key (set VAPI_API_KEY or platform.api_key_env)");
-      if (!assistantId) throw new Error("Vapi adapter requires VAPI_ASSISTANT_ID env or platform.agent_id");
+      const p = config.platform as VapiPlatformConfig | undefined;
+      const apiKey = p?.vapi_api_key || process.env["VAPI_API_KEY"] || "";
+      const assistantId = p?.vapi_assistant_id || process.env["VAPI_ASSISTANT_ID"] || "";
+      if (!apiKey) throw new Error("Vapi adapter requires vapi_api_key or VAPI_API_KEY env");
+      if (!assistantId) throw new Error("Vapi adapter requires vapi_assistant_id or VAPI_ASSISTANT_ID env");
 
       return new VapiAudioChannel({ apiKey, assistantId });
     }
 
     case "retell": {
-      const apiKey = config.platform?.api_key || process.env[config.platform?.api_key_env ?? "RETELL_API_KEY"] || "";
-      const agentId = resolveAgentId(config.platform, "RETELL_AGENT_ID");
-      if (!apiKey) throw new Error("Retell adapter requires API key (set RETELL_API_KEY or platform.api_key_env)");
-      if (!agentId) throw new Error("Retell adapter requires RETELL_AGENT_ID env or platform.agent_id");
+      const p = config.platform as RetellPlatformConfig | undefined;
+      const apiKey = p?.retell_api_key || process.env["RETELL_API_KEY"] || "";
+      const agentId = p?.retell_agent_id || process.env["RETELL_AGENT_ID"] || "";
+      if (!apiKey) throw new Error("Retell adapter requires retell_api_key or RETELL_API_KEY env");
+      if (!agentId) throw new Error("Retell adapter requires retell_agent_id or RETELL_AGENT_ID env");
       if (!config.targetPhoneNumber) throw new Error("Retell adapter requires targetPhoneNumber (the agent's phone number)");
 
       const retellAccountSid = process.env["TWILIO_ACCOUNT_SID"] ?? "";
@@ -145,20 +138,23 @@ export function createAudioChannel(config: AudioChannelConfig): AudioChannel {
     }
 
     case "elevenlabs": {
-      const apiKey = config.platform?.api_key || process.env[config.platform?.api_key_env ?? "ELEVENLABS_API_KEY"] || "";
-      const agentId = resolveAgentId(config.platform, "ELEVENLABS_AGENT_ID");
-      if (!apiKey) throw new Error("ElevenLabs adapter requires API key (set ELEVENLABS_API_KEY or platform.api_key_env)");
-      if (!agentId) throw new Error("ElevenLabs adapter requires ELEVENLABS_AGENT_ID env or platform.agent_id");
+      const p = config.platform as ElevenLabsPlatformConfig | undefined;
+      const apiKey = p?.elevenlabs_api_key || process.env["ELEVENLABS_API_KEY"] || "";
+      const agentId = p?.elevenlabs_agent_id || process.env["ELEVENLABS_AGENT_ID"] || "";
+      if (!apiKey) throw new Error("ElevenLabs adapter requires elevenlabs_api_key or ELEVENLABS_API_KEY env");
+      if (!agentId) throw new Error("ElevenLabs adapter requires elevenlabs_agent_id or ELEVENLABS_AGENT_ID env");
 
       return new ElevenLabsAudioChannel({ apiKey, agentId });
     }
 
     case "bland": {
       const p = config.platform as BlandPlatformConfig | undefined;
-      const apiKey = p?.api_key || process.env[p?.api_key_env ?? "BLAND_API_KEY"] || "";
-      const agentId = resolveAgentId(p, "BLAND_PATHWAY_ID") || undefined;
-      if (!apiKey) throw new Error("Bland adapter requires API key (set BLAND_API_KEY or platform.api_key_env)");
-      if (!agentId && !p?.task) throw new Error("Bland adapter requires BLAND_PATHWAY_ID env, platform.agent_id, or platform.task (prompt)");
+      const apiKey = p?.bland_api_key || process.env["BLAND_API_KEY"] || "";
+      const pathwayId = p?.bland_pathway_id || process.env["BLAND_PATHWAY_ID"] || "";
+      if (!apiKey) throw new Error("Bland adapter requires bland_api_key or BLAND_API_KEY env");
+      if (!pathwayId && !p?.task) {
+        throw new Error("Bland adapter requires bland_pathway_id or BLAND_PATHWAY_ID env, or platform.task");
+      }
 
       const blandFromNumber = process.env["TWILIO_FROM_NUMBER"] ?? "";
       const blandAccountSid = process.env["TWILIO_ACCOUNT_SID"] ?? "";
@@ -170,7 +166,7 @@ export function createAudioChannel(config: AudioChannelConfig): AudioChannel {
 
       return new BlandAudioChannel({
         apiKey,
-        agentId,
+        agentId: pathwayId || undefined,
         server: {
           accountSid: blandAccountSid,
           authToken: blandAuthToken,

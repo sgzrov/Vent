@@ -53,8 +53,10 @@ export async function runLatencyTest(
       let agentText: string | null = null;
 
       for (let turn = 0; turn < turns; turn++) {
-        const callerText = await caller.nextUtterance(agentText, []);
-        if (callerText === null) break;
+        const callerDecision = await caller.nextUtterance(agentText, []);
+        if (!callerDecision || callerDecision.mode === "end_now" || callerDecision.mode === "wait") break;
+        const callerText = callerDecision.text;
+        const shouldStopAfterAgentReply = callerDecision.mode === "closing";
 
         const callerAudio = await synthesize(callerText);
 
@@ -93,6 +95,8 @@ export async function runLatencyTest(
           agentText = "";
           transcriptions.push("");
         }
+
+        if (shouldStopAfterAgentReply) break;
       }
     } else {
       // Single-turn mode with provided prompt (repeated for turns)

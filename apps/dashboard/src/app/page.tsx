@@ -4,7 +4,7 @@ import {
   withAuth,
   getSignUpUrl,
 } from "@workos-inc/authkit-nextjs";
-import { CopyCommandButton } from "@/components/copy-command-button";
+import { InstallTabs } from "@/components/install-tabs";
 import { HandDrawnUnderline } from "@/components/hand-drawn-underline";
 import { FallingPattern } from "@/components/ui/falling-pattern";
 import { AgentCarousel } from "@/components/agent-carousel";
@@ -84,7 +84,7 @@ export default async function LandingPage() {
             }
             cta={
               <>
-                <CopyCommandButton command="npx vent-hq@latest init" />
+                <InstallTabs />
                 <AgentCarousel />
               </>
             }

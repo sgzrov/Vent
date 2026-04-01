@@ -1,5 +1,11 @@
 # vent-hq
 
+## 0.8.29
+
+### Patch Changes
+
+- Update the CLI package version.
+
 ## 0.8.0
 
 ### Minor Changes
