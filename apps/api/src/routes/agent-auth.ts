@@ -61,4 +61,69 @@ export async function agentAuthRoutes(app: FastifyInstance) {
       run_limit: runLimit,
     });
   });
+
+  // GitHub identity — zero-interaction account creation with verified identity
+  app.post("/auth/github", async (request, reply) => {
+    const ip = request.ip;
+
+    if (!checkRate(ip)) {
+      return reply.status(429).send({
+        error: "Too many accounts created. Try again later.",
+      });
+    }
+
+    const { github_token } = request.body as { github_token?: string };
+    if (!github_token) {
+      return reply.status(400).send({ error: "github_token is required." });
+    }
+
+    // Verify token against GitHub API (server-side)
+    let ghUser: { id: number; login: string };
+    try {
+      const ghRes = await fetch("https://api.github.com/user", {
+        headers: {
+          Authorization: `Bearer ${github_token}`,
+          Accept: "application/vnd.github+json",
+          "User-Agent": "vent-api",
+        },
+      });
+
+      if (!ghRes.ok) {
+        return reply
+          .status(401)
+          .send({ error: "GitHub token verification failed." });
+      }
+
+      ghUser = (await ghRes.json()) as { id: number; login: string };
+    } catch {
+      return reply
+        .status(502)
+        .send({ error: "Could not verify GitHub token. Try again." });
+    }
+
+    if (!ghUser.id || !ghUser.login) {
+      return reply
+        .status(401)
+        .send({ error: "GitHub token verification failed." });
+    }
+
+    const userId = `gh_${ghUser.id}`;
+    const rawKey = `vent_${randomBytes(24).toString("hex")}`;
+    const keyHash = createHash("sha256").update(rawKey).digest("hex");
+    const prefix = rawKey.slice(0, 12);
+
+    await app.db.insert(schema.apiKeys).values({
+      user_id: userId,
+      key_hash: keyHash,
+      name: `GitHub (${ghUser.login})`,
+      prefix,
+      is_anonymous: false,
+      run_limit: null,
+    });
+
+    return reply.status(201).send({
+      api_key: rawKey,
+      username: ghUser.login,
+    });
+  });
 }
