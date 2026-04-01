@@ -1,4 +1,5 @@
 import { loadApiKey, saveApiKey, validateApiKeyFormat, API_BASE } from "../lib/config.js";
+import { detectGitHubToken } from "../lib/github.js";
 import { printError, printSuccess } from "../lib/output.js";
 import { installSkillsAndScaffold } from "../lib/setup.js";
 
@@ -22,30 +23,60 @@ export async function initCommand(args: InitArgs): Promise<number> {
   } else if (key) {
     printSuccess("Authenticated.", { force: true });
   } else {
-    // No key — anonymous bootstrap (zero interaction)
-    let res: Response;
-    try {
-      res = await fetch(`${API_BASE}/auth/bootstrap`, { method: "POST" });
-    } catch (err) {
-      printError(`Failed to reach API: ${(err as Error).message}`);
-      return 1;
+    // No key — try GitHub identity first, then anonymous bootstrap
+    let authenticated = false;
+    const ghToken = detectGitHubToken();
+
+    if (ghToken) {
+      try {
+        const res = await fetch(`${API_BASE}/auth/github`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ github_token: ghToken }),
+        });
+
+        if (res.ok) {
+          const { api_key, username } = (await res.json()) as {
+            api_key: string;
+            username: string;
+          };
+          await saveApiKey(api_key);
+          printSuccess(`Authenticated as @${username} (via GitHub).`, {
+            force: true,
+          });
+          authenticated = true;
+        }
+      } catch {
+        // GitHub verification failed — fall through to bootstrap
+      }
     }
 
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({}));
-      printError((body as any).error ?? `Bootstrap failed (${res.status}).`);
-      return 1;
-    }
+    if (!authenticated) {
+      // Anonymous bootstrap (zero interaction, limited runs)
+      let res: Response;
+      try {
+        res = await fetch(`${API_BASE}/auth/bootstrap`, { method: "POST" });
+      } catch (err) {
+        printError(`Failed to reach API: ${(err as Error).message}`);
+        return 1;
+      }
 
-    const { api_key, run_limit } = (await res.json()) as {
-      api_key: string;
-      run_limit: number;
-    };
-    await saveApiKey(api_key);
-    printSuccess(
-      `Account created (${run_limit} free runs). Run \`npx vent-hq login\` for unlimited.`,
-      { force: true },
-    );
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        printError((body as any).error ?? `Bootstrap failed (${res.status}).`);
+        return 1;
+      }
+
+      const { api_key, run_limit } = (await res.json()) as {
+        api_key: string;
+        run_limit: number;
+      };
+      await saveApiKey(api_key);
+      printSuccess(
+        `Account created (${run_limit} free runs). Run \`npx vent-hq login\` for unlimited.`,
+        { force: true },
+      );
+    }
   }
 
   // 2. Detect editors, install skills, scaffold suite
