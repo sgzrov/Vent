@@ -13,7 +13,7 @@
     "@fastify/cookie": "^11.0.2",
     "@fastify/cors": "^10.0.0",
     "@fastify/websocket": "^11.0.0",
-"@vent/adapters": "workspace:*",
+    "@vent/adapters": "workspace:*",
     "@vent/db": "workspace:*",
     "@vent/runner": "workspace:*",
     "@vent/shared": "workspace:*",
@@ -23,6 +23,7 @@
     "fastify": "^5.2.0",
     "fastify-plugin": "^5.0.0",
     "ioredis": "^5.4.0",
+    "octokit": "^5.0.5",
     "zod": "^3.24.0"
   },
   "devDependencies": {

@@ -80,28 +80,11 @@ export async function agentAuthRoutes(app: FastifyInstance) {
     // Verify token against GitHub API (server-side)
     let ghUser: { id: number; login: string };
     try {
-      const ghRes = await fetch("https://api.github.com/user", {
-        headers: {
-          Authorization: `Bearer ${github_token}`,
-          Accept: "application/vnd.github+json",
-          "User-Agent": "vent-api",
-        },
-      });
-
-      if (!ghRes.ok) {
-        return reply
-          .status(401)
-          .send({ error: "GitHub token verification failed." });
-      }
-
-      ghUser = (await ghRes.json()) as { id: number; login: string };
+      const { Octokit } = await import("octokit");
+      const octokit = new Octokit({ auth: github_token });
+      const { data } = await octokit.rest.users.getAuthenticated();
+      ghUser = { id: data.id, login: data.login };
     } catch {
-      return reply
-        .status(502)
-        .send({ error: "Could not verify GitHub token. Try again." });
-    }
-
-    if (!ghUser.id || !ghUser.login) {
       return reply
         .status(401)
         .send({ error: "GitHub token verification failed." });
