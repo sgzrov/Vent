@@ -1,14 +1,14 @@
 /**
- * Retell Audio Channel
+ * Retell Audio Channel (WebRTC)
  *
- * Composes a SipAudioChannel (inbound mode) for bidirectional audio
- * with Retell's SDK for call creation and post-call data extraction.
+ * Connects directly to Retell's LiveKit Cloud via @livekit/rtc-node for
+ * bidirectional audio. Uses Retell SDK for call creation and post-call data.
+ * No Twilio or SIP dependency — pure WebRTC.
  *
  * Flow:
- *   1. connect()  — sets up Twilio inbound, then asks Retell to call us
- *      via SDK createPhoneCall → call_id known immediately
- *   2. sendAudio() / on("audio") — bidirectional PCM 24kHz over SIP
- *   3. disconnect() — hangs up the SIP call
+ *   1. connect()  — createWebCall → LiveKit room.connect with access_token
+ *   2. sendAudio() / on("audio") — bidirectional PCM 24kHz over WebRTC (48kHz internal)
+ *   3. disconnect() — leaves room, Retell manages cleanup
  *   4. getCallData() — fetches tool calls from SDK call.retrieve()
  *   5. getCallMetadata() — cost, latency, recording, analysis
  *   6. getComponentTimings() — STT/LLM/TTS latency with full percentiles
@@ -17,22 +17,59 @@
 
 import Retell from "retell-sdk";
 import type { CallResponse } from "retell-sdk/resources/call.js";
+import {
+  Room,
+  RoomEvent,
+  AudioSource,
+  AudioStream,
+  AudioFrame,
+  LocalAudioTrack,
+  TrackKind,
+  TrackPublishOptions,
+  TrackSource,
+  IceTransportType,
+  ContinualGatheringPolicy,
+  type RemoteTrack,
+  type RemoteTrackPublication,
+  type RemoteParticipant,
+} from "@livekit/rtc-node";
+import { resample } from "@vent/voice";
 import type { ObservedToolCall, CallMetadata, ComponentLatency, CostBreakdown } from "@vent/shared";
 import { BaseAudioChannel } from "./audio-channel.js";
-import { SipAudioChannel, type SipAudioChannelConfig } from "./sip-audio-channel.js";
 
 export interface RetellAudioChannelConfig {
   apiKey: string;
   agentId: string;
-  sip: SipAudioChannelConfig;
 }
 
 export class RetellAudioChannel extends BaseAudioChannel {
+  private static readonly RETELL_LIVEKIT_URL = "wss://retell-ai-4ihahnq7.livekit.cloud";
+  private static readonly SERVER_IDENTITY = "server";
+  private static readonly LIVEKIT_SAMPLE_RATE = 48000;
+  private static readonly AGENT_READY_TIMEOUT = 30_000;
+
+  /** Retell emits agent_stop_talking via DataChannel — reliable end-of-turn signal. */
+  hasPlatformEndOfTurn = true;
+
   private config: RetellAudioChannelConfig;
   private client: Retell;
-  private sipChannel: SipAudioChannel | null = null;
+
+  // LiveKit room state
+  private room: Room | null = null;
+  private audioSource: AudioSource | null = null;
+  private localTrack: LocalAudioTrack | null = null;
+  private collecting = false;
+  private comfortNoiseActive = false;
+
+  // Call state
   private callId: string | null = null;
   private cachedCallResponse: CallResponse | null = null;
+  private connectTimestamp = 0;
+  private disconnectTimestamp = 0;
+
+  // Real-time agent text from DataChannel "update" events
+  private agentTextBuffer = "";
+  private lastAgentContent = "";
 
   constructor(config: RetellAudioChannelConfig) {
     super();
@@ -41,51 +78,236 @@ export class RetellAudioChannel extends BaseAudioChannel {
   }
 
   get connected(): boolean {
-    return this.sipChannel?.connected ?? false;
+    return this.room !== null && this.collecting;
   }
 
   async connect(): Promise<void> {
     const connectStart = Date.now();
-    // Start SIP in inbound mode — Twilio app created, number configured, waiting
-    this.sipChannel = new SipAudioChannel({ ...this.config.sip, mode: "inbound" });
 
-    this.sipChannel.on("audio", (chunk) => {
-      this._stats.bytesReceived += chunk.length;
-      this.emit("audio", chunk);
+    // Create web call — access_token has 30s TTL, must connect immediately
+    const webCall = await this.client.call.createWebCall({
+      agent_id: this.config.agentId,
     });
-    this.sipChannel.on("error", (err) => {
-      this._stats.errorEvents.push(err.message);
-      this.emit("error", err);
+    this.callId = webCall.call_id;
+    const accessToken = webCall.access_token;
+
+    // Connect to Retell's LiveKit Cloud
+    this.room = new Room();
+
+    // On Fly.io, force TURN relay (same as LiveKit adapter)
+    const isFlyIo = !!process.env["FLY_MACHINE_ID"];
+    const rtcConfig = isFlyIo
+      ? {
+          iceTransportType: IceTransportType.TRANSPORT_RELAY,
+          continualGatheringPolicy: ContinualGatheringPolicy.GATHER_CONTINUALLY,
+          iceServers: [],
+        }
+      : undefined;
+
+    await this.room.connect(RetellAudioChannel.RETELL_LIVEKIT_URL, accessToken, {
+      autoSubscribe: true,
+      dynacast: true,
+      rtcConfig,
     });
-    this.sipChannel.on("disconnected", () => this.emit("disconnected"));
+    this.collecting = true;
+    this.connectTimestamp = Date.now();
 
-    // Start the SIP server and configure Twilio number for inbound
-    await this.sipChannel.connect();
+    // ── DataChannel listener for Retell JSON events ──────────────
+    this.room.on(
+      RoomEvent.DataReceived,
+      (payload: Uint8Array, participant?: RemoteParticipant, _kind?: unknown, _topic?: string) => {
+        if (participant?.identity !== RetellAudioChannel.SERVER_IDENTITY) return;
+        this.handleRetellDataEvent(payload);
+      }
+    );
 
-    // Ask Retell to call our Twilio number — call_id returned immediately
-    const call = await this.client.call.createPhoneCall({
-      from_number: this.config.sip.phoneNumber,
-      to_number: this.config.sip.fromNumber,
+    // ── Disconnect detection ─────────────────────────────────────
+    this.room.once(RoomEvent.Disconnected, () => {
+      this.emit("disconnected");
     });
 
-    this.callId = call.call_id;
+    // ── Publish audio track (48kHz, microphone source) ───────────
+    this.audioSource = new AudioSource(RetellAudioChannel.LIVEKIT_SAMPLE_RATE, 1);
+    this.localTrack = LocalAudioTrack.createAudioTrack("vent-tester", this.audioSource);
+    const publishOptions = new TrackPublishOptions();
+    publishOptions.source = TrackSource.SOURCE_MICROPHONE;
+    await this.room.localParticipant!.publishTrack(this.localTrack, publishOptions);
+
+    // ── Comfort noise — keep Opus codec warm ─────────────────────
+    this.startComfortNoise();
+
+    // ── Subscribe to agent audio tracks ──────────────────────────
+    for (const participant of this.room.remoteParticipants.values()) {
+      if (participant.identity === RetellAudioChannel.SERVER_IDENTITY) {
+        for (const pub of participant.trackPublications.values()) {
+          if (pub.track && pub.kind === TrackKind.KIND_AUDIO) {
+            this.startReadingTrack(pub.track as RemoteTrack);
+          }
+        }
+      }
+    }
+
+    this.room.on(
+      RoomEvent.TrackSubscribed,
+      (track: RemoteTrack, pub: RemoteTrackPublication, participant: RemoteParticipant) => {
+        if (participant.identity === RetellAudioChannel.SERVER_IDENTITY && pub.kind === TrackKind.KIND_AUDIO) {
+          this.startReadingTrack(track);
+        }
+      }
+    );
+
+    // ── Wait for agent audio track ───────────────────────────────
+    const agentReady = await new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => resolve(false), RetellAudioChannel.AGENT_READY_TIMEOUT);
+
+      // Check if already subscribed
+      for (const p of this.room!.remoteParticipants.values()) {
+        if (p.identity === RetellAudioChannel.SERVER_IDENTITY) {
+          for (const pub of p.trackPublications.values()) {
+            if (pub.track && pub.kind === TrackKind.KIND_AUDIO) {
+              clearTimeout(timer);
+              resolve(true);
+              return;
+            }
+          }
+        }
+      }
+
+      // Wait for subscription
+      const onTrackSubscribed = (_t: RemoteTrack, pub: RemoteTrackPublication, participant: RemoteParticipant) => {
+        if (participant.identity === RetellAudioChannel.SERVER_IDENTITY && pub.kind === TrackKind.KIND_AUDIO) {
+          clearTimeout(timer);
+          this.room?.off(RoomEvent.TrackSubscribed, onTrackSubscribed);
+          resolve(true);
+        }
+      };
+      this.room!.on(RoomEvent.TrackSubscribed, onTrackSubscribed);
+    });
+
+    if (!agentReady) {
+      throw new Error(
+        `Retell agent did not publish audio within ${RetellAudioChannel.AGENT_READY_TIMEOUT / 1000}s. ` +
+        `Ensure the agent (${this.config.agentId}) is configured correctly in Retell.`
+      );
+    }
+
     this._stats.connectLatencyMs = Date.now() - connectStart;
   }
 
-  sendAudio(pcm: Buffer): void {
-    if (!this.sipChannel) {
-      throw new Error("Retell channel not connected");
+  /** Retell agents always speak first. */
+  async getOpeningSpeaker(): Promise<"agent" | "caller" | null> {
+    return "agent";
+  }
+
+  // ── Comfort noise ──────────────────────────────────────────────
+
+  /**
+   * Send low-level white noise to prevent Opus DTX mode.
+   * Without this, Opus ramps bitrate from 0 → 40kbps over 20s when
+   * real speech arrives after silence — the agent's VAD misses it.
+   */
+  startComfortNoise(): void {
+    this.comfortNoiseActive = true;
+    const sampleRate = RetellAudioChannel.LIVEKIT_SAMPLE_RATE;
+    const chunkSamples = Math.floor(sampleRate * 0.02); // 20ms
+    const AMPLITUDE = 400; // ~-30dBFS
+
+    const sendLoop = async () => {
+      while (this.comfortNoiseActive && this.audioSource) {
+        const samples = new Int16Array(chunkSamples);
+        for (let i = 0; i < chunkSamples; i++) {
+          samples[i] = Math.floor((Math.random() * 2 - 1) * AMPLITUDE);
+        }
+        const frame = new AudioFrame(samples, sampleRate, 1, chunkSamples);
+        try {
+          await this.audioSource.captureFrame(frame);
+        } catch {
+          break; // AudioSource closed
+        }
+      }
+    };
+    sendLoop();
+  }
+
+  stopComfortNoise(): void {
+    this.comfortNoiseActive = false;
+    if (this.audioSource) {
+      this.audioSource.clearQueue();
     }
+  }
+
+  // ── Audio I/O ──────────────────────────────────────────────────
+
+  sendAudio(pcm: Buffer): void {
+    if (!this.audioSource || !this.collecting) return;
+
+    if (this.comfortNoiseActive) {
+      this.stopComfortNoise();
+    }
+
     this._stats.bytesSent += pcm.length;
-    this.sipChannel.sendAudio(pcm);
+
+    const sampleRate = RetellAudioChannel.LIVEKIT_SAMPLE_RATE;
+    const resampled = resample(pcm, 24000, sampleRate);
+    const samples = new Int16Array(
+      resampled.buffer,
+      resampled.byteOffset,
+      resampled.length / 2
+    );
+
+    const audioSource = this.audioSource;
+    const chunkSamples = Math.floor(sampleRate * 0.02); // 20ms = 960 samples at 48kHz
+
+    (async () => {
+      try {
+        for (let offset = 0; offset < samples.length; offset += chunkSamples) {
+          if (!this.collecting || !this.audioSource) return;
+          const end = Math.min(offset + chunkSamples, samples.length);
+          // CRITICAL: copy chunk into its own ArrayBuffer. AudioFrame.protoInfo()
+          // uses the ENTIRE underlying ArrayBuffer, not the subarray view.
+          const chunk = new Int16Array(samples.subarray(offset, end));
+          const frame = new AudioFrame(chunk, sampleRate, 1, chunk.length);
+          await audioSource.captureFrame(frame);
+        }
+
+        // 500ms trailing silence for agent VAD end-of-turn detection
+        if (!this.collecting || !this.audioSource) return;
+        const silenceSamples = Math.floor(sampleRate * 0.5);
+        const silence = new Int16Array(silenceSamples);
+        const silenceFrame = new AudioFrame(silence, sampleRate, 1, silenceSamples);
+        await audioSource.captureFrame(silenceFrame);
+
+        // Resume comfort noise between turns
+        if (this.collecting && this.audioSource) {
+          this.startComfortNoise();
+        }
+      } catch {
+        // AudioSource closed during send — safe to ignore
+      }
+    })();
   }
 
   async disconnect(): Promise<void> {
-    if (this.sipChannel) {
-      await this.sipChannel.disconnect();
-      this.sipChannel = null;
+    this.collecting = false;
+    this.stopComfortNoise();
+    this.disconnectTimestamp = Date.now();
+    if (this.audioSource) {
+      await this.audioSource.close();
+      this.audioSource = null;
     }
+    if (this.localTrack) {
+      await this.localTrack.close();
+      this.localTrack = null;
+    }
+    if (this.room) {
+      await this.room.disconnect();
+      this.room = null;
+    }
+    // NOTE: Do NOT call dispose() — destroys global FFI runtime
+    // NOTE: Do NOT delete room — Retell manages their LiveKit rooms
   }
+
+  // ── Post-call data ─────────────────────────────────────────────
 
   async getCallData(): Promise<ObservedToolCall[]> {
     const data = await this.fetchCallResponse();
@@ -164,7 +386,49 @@ export class RetellAudioChannel extends BaseAudioChannel {
     return transcripts;
   }
 
-  // ── Private helpers ─────────────────────────────────────────
+  /** Consume accumulated real-time agent transcript text (resets buffer). */
+  consumeAgentText(): string {
+    const text = this.agentTextBuffer;
+    this.agentTextBuffer = "";
+    return text;
+  }
+
+  // ── Private helpers ────────────────────────────────────────────
+
+  private handleRetellDataEvent(payload: Uint8Array): void {
+    try {
+      const text = new TextDecoder().decode(payload);
+      const event = JSON.parse(text) as {
+        event_type: string;
+        transcript?: Array<{ role: string; content: string }>;
+        [key: string]: unknown;
+      };
+
+      switch (event.event_type) {
+        case "agent_stop_talking":
+          this.emit("platformEndOfTurn");
+          break;
+
+        case "agent_start_talking":
+          this.emit("platformSpeechStart");
+          break;
+
+        case "update":
+          if (event.transcript) {
+            // Extract latest agent text — transcript is a sliding window of last ~5 sentences
+            for (const entry of event.transcript) {
+              if (entry.role === "agent" && entry.content !== this.lastAgentContent) {
+                this.agentTextBuffer += (this.agentTextBuffer ? " " : "") + entry.content;
+                this.lastAgentContent = entry.content;
+              }
+            }
+          }
+          break;
+      }
+    } catch {
+      // Ignore malformed data
+    }
+  }
 
   private async fetchCallResponse(): Promise<CallResponse | null> {
     if (this.cachedCallResponse) return this.cachedCallResponse;
@@ -229,6 +493,37 @@ export class RetellAudioChannel extends BaseAudioChannel {
     }
 
     return toolCalls;
+  }
+
+  private startReadingTrack(track: RemoteTrack): void {
+    const sampleRate = RetellAudioChannel.LIVEKIT_SAMPLE_RATE;
+    const stream = new AudioStream(track, sampleRate, 1);
+    const reader = stream.getReader();
+
+    const readLoop = async () => {
+      try {
+        while (this.collecting) {
+          const { value: frame, done } = await reader.read();
+          if (done || !frame) break;
+
+          const frameBuffer = Buffer.from(
+            frame.data.buffer,
+            frame.data.byteOffset,
+            frame.data.byteLength
+          );
+          this._stats.bytesReceived += frameBuffer.length;
+          // Resample from LiveKit 48kHz → 24kHz for consumers
+          const pcm24k = resample(frameBuffer, sampleRate, 24000);
+          this.emit("audio", pcm24k);
+        }
+      } catch (err) {
+        if (err instanceof Error) {
+          this._stats.errorEvents.push(err.message);
+        }
+      }
+    };
+
+    readLoop();
   }
 }
 
