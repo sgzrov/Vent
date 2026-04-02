@@ -1,3 +1,4 @@
+// CLI entry point — parses commands and dispatches to handlers
 import { parseArgs } from "node:util";
 import { runCommand } from "./commands/run.js";
 import { statusCommand } from "./commands/status.js";
