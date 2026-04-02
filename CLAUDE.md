@@ -73,13 +73,12 @@ Use `type: small description` format for commits.
 | `revert`   | Revert a prior commit                                    |
 
 ## Pull Requests
-- **Push and PR yourself**: When work is complete, push the branch and create a PR using `gh pr create`. Do not rely on external UI for pushing or merging. Always ask the user before pushing or creating a PR.
 - **Atomic commits**: Break changes into logical, self-contained commits. Don't lump all branch changes into a single commit with one message.
 - Each commit should represent one coherent change (e.g., separate "refactor: extract helper" from "feat: add new endpoint").
 - Commit as you go during implementation, not all at once at the end.
 
 ## Bisect Commits
-Always bisect commits. Every commit should be a single logical change. When committing changes — whether asked explicitly or before pushing — always split them into separate logical commits. Never lump all changes into a single commit with one message. Each commit should be independently understandable and revertable.
+Always bisect commits. Every commit should be a single logical change. When you've made multiple changes (e.g., a rename + a rewrite + new tests), split them into separate commits before pushing. Each commit should be independently understandable and revertable.
 
 Examples of good bisection:
 - Rename/move separate from behavior changes
