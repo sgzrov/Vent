@@ -2,16 +2,16 @@
   "name": "@vent/runner",
   "version": "0.0.1",
   "private": true,
-  "main": "dist/executor.js",
+  "main": "src/executor.ts",
   "exports": {
-    ".": "./dist/executor.js",
-    "./executor": "./dist/executor.js",
-    "./load-test": "./dist/load-test.js"
+    ".": "./src/executor.ts",
+    "./executor": "./src/executor.ts",
+    "./load-test": "./src/load-test.ts"
   },
   "scripts": {
-    "build": "tsc",
+    "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist",
-    "test": "pnpm build && node --test dist/audio-tests/helpers.test.js"
+    "test": "tsx --test src/audio-tests/helpers.test.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",
@@ -22,6 +22,7 @@
     "hume": "^0.15.15"
   },
   "devDependencies": {
+    "tsx": "^4.19.0",
     "typescript": "^5.7.0"
   }
 }
