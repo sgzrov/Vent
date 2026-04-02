@@ -61,4 +61,52 @@ export async function agentAuthRoutes(app: FastifyInstance) {
       run_limit: runLimit,
     });
   });
+
+  // GitHub identity — zero-interaction account creation with verified identity
+  app.post("/auth/github", async (request, reply) => {
+    const ip = request.ip;
+
+    if (!checkRate(ip)) {
+      return reply.status(429).send({
+        error: "Too many accounts created. Try again later.",
+      });
+    }
+
+    const { github_token } = request.body as { github_token?: string };
+    if (!github_token) {
+      return reply.status(400).send({ error: "github_token is required." });
+    }
+
+    // Verify token against GitHub API (server-side)
+    let ghUser: { id: number; login: string };
+    try {
+      const { Octokit } = await import("@octokit/rest");
+      const octokit = new Octokit({ auth: github_token });
+      const { data } = await octokit.rest.users.getAuthenticated();
+      ghUser = { id: data.id, login: data.login };
+    } catch {
+      return reply
+        .status(401)
+        .send({ error: "GitHub token verification failed." });
+    }
+
+    const userId = `gh_${ghUser.id}`;
+    const rawKey = `vent_${randomBytes(24).toString("hex")}`;
+    const keyHash = createHash("sha256").update(rawKey).digest("hex");
+    const prefix = rawKey.slice(0, 12);
+
+    await app.db.insert(schema.apiKeys).values({
+      user_id: userId,
+      key_hash: keyHash,
+      name: `GitHub (${ghUser.login})`,
+      prefix,
+      is_anonymous: false,
+      run_limit: null,
+    });
+
+    return reply.status(201).send({
+      api_key: rawKey,
+      username: ghUser.login,
+    });
+  });
 }

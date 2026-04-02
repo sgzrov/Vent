@@ -19,7 +19,7 @@ export class UsageLimitError extends Error {
 
   constructor(limit: number, used: number) {
     super(
-      `Free tier limit reached (${used}/${limit} runs). Run \`npx vent-hq login\` to upgrade.`,
+      `To prevent abuse, unverified accounts are limited to ${limit} runs. Sign in to verify your account for unlimited access.`,
     );
     this.name = "UsageLimitError";
     this.limit = limit;
