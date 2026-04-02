@@ -9,14 +9,14 @@ COPY packages/shared/package.json packages/shared/package.json
 COPY packages/db/package.json packages/db/package.json
 COPY packages/voice/package.json packages/voice/package.json
 COPY packages/adapters/package.json packages/adapters/package.json
-COPY apps/runner/package.json apps/runner/package.json
+COPY packages/runner/package.json packages/runner/package.json
 COPY apps/worker/package.json apps/worker/package.json
 RUN pnpm install --frozen-lockfile
 COPY packages/shared packages/shared
 COPY packages/db packages/db
 COPY packages/voice packages/voice
 COPY packages/adapters packages/adapters
-COPY apps/runner apps/runner
+COPY packages/runner packages/runner
 COPY apps/worker apps/worker
 COPY tsconfig.json tsconfig.json
 RUN pnpm --filter @vent/shared build

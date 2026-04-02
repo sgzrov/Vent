@@ -47,9 +47,6 @@ importers:
       '@vent/platform-connections':
         specifier: workspace:*
         version: link:../../packages/platform-connections
-      '@vent/runner':
-        specifier: workspace:*
-        version: link:../runner
       '@vent/shared':
         specifier: workspace:*
         version: link:../../packages/shared
@@ -155,31 +152,6 @@ importers:
         specifier: ^5.7.0
         version: 5.9.3
 
-  apps/runner:
-    dependencies:
-      '@anthropic-ai/sdk':
-        specifier: ^0.78.0
-        version: 0.78.0(zod@3.25.76)
-      '@shelf/text-normalizer':
-        specifier: ^2.1.1
-        version: 2.1.1
-      '@vent/adapters':
-        specifier: workspace:*
-        version: link:../../packages/adapters
-      '@vent/shared':
-        specifier: workspace:*
-        version: link:../../packages/shared
-      '@vent/voice':
-        specifier: workspace:*
-        version: link:../../packages/voice
-      hume:
-        specifier: ^0.15.15
-        version: 0.15.15
-    devDependencies:
-      typescript:
-        specifier: ^5.7.0
-        version: 5.9.3
-
   apps/worker:
     dependencies:
       '@vent/adapters':
@@ -193,7 +165,7 @@ importers:
         version: link:../../packages/platform-connections
       '@vent/runner':
         specifier: workspace:*
-        version: link:../runner
+        version: link:../../packages/runner
       '@vent/shared':
         specifier: workspace:*
         version: link:../../packages/shared
@@ -320,6 +292,31 @@ importers:
       esbuild:
         specifier: ^0.24.0
         version: 0.24.2
+
+  packages/runner:
+    dependencies:
+      '@anthropic-ai/sdk':
+        specifier: ^0.78.0
+        version: 0.78.0(zod@3.25.76)
+      '@shelf/text-normalizer':
+        specifier: ^2.1.1
+        version: 2.1.1
+      '@vent/adapters':
+        specifier: workspace:*
+        version: link:../adapters
+      '@vent/shared':
+        specifier: workspace:*
+        version: link:../shared
+      '@vent/voice':
+        specifier: workspace:*
+        version: link:../voice
+      hume:
+        specifier: ^0.15.15
+        version: 0.15.15
+    devDependencies:
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
 
   packages/shared:
     dependencies:
