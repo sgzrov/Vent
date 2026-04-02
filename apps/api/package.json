@@ -17,7 +17,6 @@
     "@vent/adapters": "workspace:*",
     "@vent/db": "workspace:*",
     "@vent/platform-connections": "workspace:*",
-    "@vent/runner": "workspace:*",
     "@vent/shared": "workspace:*",
     "@workos-inc/node": "^8.6.0",
     "bullmq": "^5.30.0",
