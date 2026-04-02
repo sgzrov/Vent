@@ -5,8 +5,7 @@
   "main": "src/executor.ts",
   "exports": {
     ".": "./src/executor.ts",
-    "./executor": "./src/executor.ts",
-    "./load-test": "./src/load-test.ts"
+    "./executor": "./src/executor.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

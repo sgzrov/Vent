@@ -2,7 +2,7 @@ import { apiFetch } from "../lib/api.js";
 import { streamRunEvents } from "../lib/sse.js";
 import { printEvent, printError, printInfo } from "../lib/output.js";
 import { loadAccessToken } from "../lib/config.js";
-import { formatConversationResult, formatLoadTestResult } from "@vent/shared";
+import { formatConversationResult } from "@vent/shared";
 
 interface StatusArgs {
   runId: string;

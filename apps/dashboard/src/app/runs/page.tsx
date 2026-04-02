@@ -22,8 +22,8 @@ function getDisplayStatus(run: RunRow): DisplayStatus {
 
   const agg = run.aggregate_json;
   if (agg) {
-    const totalFailed = (agg.conversation_tests?.failed ?? 0) + (agg.load_tests?.failed ?? 0);
-    const totalPassed = (agg.conversation_tests?.passed ?? 0) + (agg.load_tests?.passed ?? 0);
+    const totalFailed = agg.conversation_tests?.failed ?? 0;
+    const totalPassed = agg.conversation_tests?.passed ?? 0;
     if (totalFailed === 0) return "all-pass";
     if (totalPassed === 0) return "all-fail";
     return "partial";
@@ -70,8 +70,6 @@ function describeRun(run: RunRow): string {
       parts.push(
         `${spec.conversation_tests.length} conversation${spec.conversation_tests.length > 1 ? "s" : ""}`
       );
-    if (spec.load_test)
-      parts.push(`load test (${spec.load_test.target_concurrency} concurrent)`);
     if (parts.length > 0) return parts.join(", ");
   }
   if (run.aggregate_json) {
@@ -81,8 +79,6 @@ function describeRun(run: RunRow): string {
       parts.push(
         `${agg.conversation_tests.total} conversation${agg.conversation_tests.total > 1 ? "s" : ""}`
       );
-    if (agg.load_tests && agg.load_tests.total > 0)
-      parts.push(`${agg.load_tests.total} load test${agg.load_tests.total > 1 ? "s" : ""}`);
     if (parts.length > 0) return parts.join(", ");
   }
   return "Test run";
@@ -95,8 +91,6 @@ function getIssues(agg: RunAggregateV2 | null): string | null {
     parts.push(
       `${agg.conversation_tests.failed} conversation${agg.conversation_tests.failed > 1 ? "s" : ""} failed`
     );
-  if (agg.load_tests?.failed && agg.load_tests.failed > 0)
-    parts.push("load test failed");
   return parts.length > 0 ? parts.join(", ") : null;
 }
 
@@ -112,10 +106,6 @@ function getMetaTags(spec: TestSpec | null): string[] {
     const turns = spec.conversation_tests.map((t) => t.max_turns);
     const maxTurn = Math.max(...turns);
     if (maxTurn > 0) tags.push(`${maxTurn} max turns`);
-  }
-
-  if (spec.load_test) {
-    tags.push(`${spec.load_test.target_concurrency} concurrent callers`);
   }
 
   return tags;
@@ -153,7 +143,7 @@ function RunMeta({ spec }: { spec: TestSpec | null }) {
 // Filters
 // ---------------------------------------------------------------------------
 
-type TestTypeFilter = "all" | "conversation" | "load_test";
+type TestTypeFilter = "all" | "conversation";
 
 function hasTestType(run: RunRow, type: TestTypeFilter): boolean {
   if (type === "all") return true;
@@ -165,12 +155,6 @@ function hasTestType(run: RunRow, type: TestTypeFilter): boolean {
     return (
       (spec?.conversation_tests?.length ?? 0) > 0 ||
       (agg?.conversation_tests?.total ?? 0) > 0
-    );
-  }
-  if (type === "load_test") {
-    return (
-      spec?.load_test != null ||
-      (agg?.load_tests?.total ?? 0) > 0
     );
   }
   return true;
@@ -223,7 +207,6 @@ function CategoryResult({
 const typeFilters: { value: TestTypeFilter; label: string }[] = [
   { value: "all", label: "All" },
   { value: "conversation", label: "Conversations" },
-  { value: "load_test", label: "Load Test" },
 ];
 
 export default function RunsPage() {

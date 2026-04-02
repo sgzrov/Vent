@@ -3,7 +3,7 @@
 
 export type RunStatus = "queued" | "running" | "pass" | "fail";
 export type SourceType = "bundle" | "remote" | "relay";
-export type TestType = "conversation" | "red_team" | "load_test";
+export type TestType = "conversation" | "red_team";
 export type AudioTestName =
   | "audio_quality"
   | "latency"
@@ -69,11 +69,6 @@ export type PlatformSummary = Record<string, unknown> & {
 export interface TestSpec {
   conversation_tests?: ConversationTestSpec[];
   red_team_tests?: ConversationTestSpec[];
-  load_test?: {
-    target_concurrency: number;
-    caller_prompt: string;
-    max_turns?: number;
-  };
   platform_connection_id?: string | null;
   platform_connection?: PlatformConnectionSummary | null;
   platform?: PlatformSummary | null;
@@ -84,7 +79,6 @@ export interface TestSpec {
 export interface RunAggregateV2 {
   conversation_tests: { total: number; passed: number; failed: number };
   red_team_tests?: { total: number; passed: number; failed: number };
-  load_tests?: { total: number; passed: number; failed: number };
   total_duration_ms: number;
 }
 
@@ -126,7 +120,7 @@ export interface ScenarioResultRow {
   name: string;
   status: "pass" | "fail" | "completed" | "error";
   test_type: TestType | null;
-  metrics_json: AudioTestResult | ConversationTestResult | LoadTestResult;
+  metrics_json: AudioTestResult | ConversationTestResult;
   trace_json: ConversationTurn[];
   created_at: string;
 }
@@ -308,78 +302,6 @@ export interface HarnessOverhead {
   stt_per_turn_ms: number[];
   mean_tts_ms: number;
   mean_stt_ms: number;
-}
-
-// --- Load test types ---
-
-export type LoadTestSeverity = "excellent" | "good" | "acceptable" | "critical";
-
-export interface LoadTestThresholds {
-  ttfw_ms: [number, number, number];
-  p95_latency_ms: [number, number, number];
-  error_rate: [number, number, number];
-  quality_score: [number, number, number];
-}
-
-export interface LoadTestBreakingPoint {
-  concurrency: number;
-  triggered_by: Array<"error_rate" | "p95_latency" | "quality_drop">;
-  error_rate: number;
-  p95_ttfb_ms: number;
-  quality_score?: number;
-}
-
-export interface LoadTestGrading {
-  ttfw: LoadTestSeverity;
-  p95_latency: LoadTestSeverity;
-  error_rate: LoadTestSeverity;
-  quality: LoadTestSeverity;
-  overall: LoadTestSeverity;
-}
-
-export interface LoadTestEvalSummary {
-  total_evaluated: number;
-  mean_quality_score: number;
-  questions: Array<{ question: string; pass_rate: number }>;
-}
-
-export interface LoadTestTierResult {
-  concurrency: number;
-  total_calls: number;
-  successful_calls: number;
-  failed_calls: number;
-  error_rate: number;
-  ttfb_p50_ms: number;
-  ttfb_p95_ms: number;
-  ttfb_p99_ms: number;
-  ttfw_p50_ms: number;
-  ttfw_p95_ms: number;
-  ttfw_p99_ms: number;
-  connect_p50_ms: number;
-  mean_quality_score: number;
-  quality_degradation_pct: number;
-  ttfb_degradation_pct: number;
-  duration_ms: number;
-  phase?: "ramp" | "spike" | "soak";
-  latency_drift_slope?: number;
-  degraded?: boolean;
-}
-
-export interface LoadTestResult {
-  status: "pass" | "fail";
-  severity: LoadTestSeverity;
-  target_concurrency: number;
-  tiers: LoadTestTierResult[];
-  total_calls: number;
-  successful_calls: number;
-  failed_calls: number;
-  breaking_point?: LoadTestBreakingPoint;
-  grading: LoadTestGrading;
-  eval_summary?: LoadTestEvalSummary;
-  thresholds: LoadTestThresholds;
-  duration_ms: number;
-  spike?: LoadTestTierResult;
-  soak?: LoadTestTierResult;
 }
 
 // --- Artifact types ---

@@ -4,8 +4,6 @@ import { createDb, schema, type Database } from "@vent/db";
 import { RUNNER_CALLBACK_HEADER, formatConversationResult } from "@vent/shared";
 import type {
   TestSpec,
-  LoadTestResult,
-  LoadTestTierResult,
   AdapterType,
   PlatformConfig,
 } from "@vent/shared";
@@ -16,7 +14,6 @@ import {
   type EncryptedSecretsEnvelope,
 } from "@vent/platform-connections";
 import { executeTests } from "@vent/runner/executor";
-import { runLoadTest, computeTierSizes } from "@vent/runner/load-test";
 
 // ---------------------------------------------------------------------------
 // Event emission — writes to DB and notifies API for SSE broadcast
@@ -95,91 +92,6 @@ async function resolvePlatformConfig(
 }
 
 // ---------------------------------------------------------------------------
-// Load test execution — runs after conversation tests if load_test spec exists
-// ---------------------------------------------------------------------------
-
-async function executeLoadTestPhase(
-  db: Database,
-  job: RunJob,
-  channelConfig: AudioChannelConfig,
-  apiUrl: string,
-  callbackSecret: string,
-): Promise<{ loadTestResult: LoadTestResult } | null> {
-  const testSpec = job.test_spec as TestSpec;
-  const loadSpec = testSpec.load_test;
-  if (!loadSpec) return null;
-
-  // Preflight: check platform concurrency limit for Vapi
-  if (channelConfig.adapter === "vapi" && loadSpec.target_concurrency > 1) {
-    const { createAudioChannel } = await import("@vent/adapters");
-    const preflight = createAudioChannel(channelConfig);
-    try {
-      await preflight.connect();
-      const limit = (preflight as { platformConcurrencyLimit?: number | null }).platformConcurrencyLimit;
-      await preflight.disconnect();
-      if (limit != null && loadSpec.target_concurrency > limit) {
-        const msg = `Vapi concurrency limit is ${limit} but load test targets ${loadSpec.target_concurrency}. ` +
-          `Increase your limit at Vapi Dashboard > Billings & Add-ons ($10/line/month).`;
-        await emitEvent(db, job.run_id, "load_test_error", msg);
-        throw new Error(msg);
-      }
-    } catch (err) {
-      await preflight.disconnect().catch(() => {});
-      if ((err as Error).message.includes("concurrency limit")) throw err;
-      // Other connect errors — let the load test handle them
-    }
-  }
-
-  await emitEvent(db, job.run_id, "load_test_started", `Starting load test — target concurrency: ${loadSpec.target_concurrency}`);
-
-  const phaseCount = computeTierSizes(loadSpec.target_concurrency, loadSpec.ramps).length
-    + (loadSpec.spike_multiplier ? 1 : 0)
-    + (loadSpec.soak_duration_min ? 1 : 0);
-
-  let tierCount = 0;
-  const result = await runLoadTest({
-    channelConfig,
-    targetConcurrency: loadSpec.target_concurrency,
-    callerPrompt: loadSpec.caller_prompt,
-    callerPrompts: loadSpec.caller_prompts,
-    maxTurns: loadSpec.max_turns,
-    ramps: loadSpec.ramps,
-    thresholds: loadSpec.thresholds,
-    callerAudioPool: loadSpec.caller_audio,
-    language: loadSpec.language,
-    spikeMultiplier: loadSpec.spike_multiplier,
-    soakDurationMin: loadSpec.soak_duration_min,
-    onTierComplete: async (tier: LoadTestTierResult) => {
-      tierCount++;
-      const tierName = tier.phase === "spike"
-        ? "load-test:spike"
-        : tier.phase === "soak"
-          ? "load-test:soak"
-          : `load-test:tier-${tier.concurrency}`;
-
-      void fetch(`${apiUrl}/internal/test-progress`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          [RUNNER_CALLBACK_HEADER]: callbackSecret,
-        },
-        body: JSON.stringify({
-          run_id: job.run_id,
-          completed: tierCount,
-          total: phaseCount,
-          test_type: "load_test",
-          test_name: tierName,
-          status: tier.failed_calls > 0 ? "fail" : "pass",
-          duration_ms: tier.duration_ms,
-        }),
-      }).catch(() => {});
-    },
-  });
-
-  return { loadTestResult: result };
-}
-
-// ---------------------------------------------------------------------------
 // Direct execution for already-deployed agents (platform adapters or agent_url)
 // ---------------------------------------------------------------------------
 
@@ -207,88 +119,60 @@ async function executeRemoteRun(db: Database, job: RunJob): Promise<void> {
   let completedTests = 0;
 
   try {
-    if (testSpec.load_test) {
-      // Load test run
-      const loadResult = await executeLoadTestPhase(db, job, channelConfig, apiUrl, callbackSecret);
-      const status = loadResult!.loadTestResult.status;
+    const platformConcurrency = platform?.max_concurrency as number | undefined;
+    const { status, conversationResults, redTeamResults, aggregate } = await executeTests({
+      testSpec,
+      channelConfig,
+      concurrencyLimit: platformConcurrency,
+      onTestComplete: async (result, testType) => {
+        completedTests++;
+        const testName = result.name ?? testType;
 
-      const response = await fetch(callbackUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          [RUNNER_CALLBACK_HEADER]: callbackSecret,
-        },
-        body: JSON.stringify({
-          run_id: job.run_id,
-          status,
-          conversation_results: [],
-          aggregate: {},
-          load_test_result: loadResult!.loadTestResult,
-        }),
-      });
+        try {
+          const res = await fetch(`${apiUrl}/internal/test-progress`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              [RUNNER_CALLBACK_HEADER]: callbackSecret,
+            },
+            body: JSON.stringify({
+              run_id: job.run_id,
+              completed: completedTests,
+              total: totalTests,
+              test_type: testType,
+              test_name: testName,
+              status: result.status,
+              duration_ms: result.duration_ms,
+              result: formatConversationResult(result),
+            }),
+          });
+          if (!res.ok) console.warn(`test-progress POST failed (${res.status}) for ${testName}`);
+        } catch (err) {
+          console.warn(`test-progress POST error for ${testName}:`, (err as Error).message);
+        }
+      },
+    });
 
-      if (!response.ok) {
-        throw new Error(`Callback failed: ${response.status} ${await response.text()}`);
-      }
+    const response = await fetch(callbackUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        [RUNNER_CALLBACK_HEADER]: callbackSecret,
+      },
+      body: JSON.stringify({
+        run_id: job.run_id,
+        status,
+        conversation_results: conversationResults,
+        red_team_results: redTeamResults,
+        aggregate,
+      }),
+    });
 
-      console.log(`Remote load test ${job.run_id} completed: ${status}`);
-    } else {
-      // Conversation or red team test run
-      const platformConcurrency = platform?.max_concurrency as number | undefined;
-      const { status, conversationResults, redTeamResults, aggregate } = await executeTests({
-        testSpec,
-        channelConfig,
-        concurrencyLimit: platformConcurrency,
-        onTestComplete: async (result, testType) => {
-          completedTests++;
-          const testName = result.name ?? testType;
-
-          try {
-            const res = await fetch(`${apiUrl}/internal/test-progress`, {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                [RUNNER_CALLBACK_HEADER]: callbackSecret,
-              },
-              body: JSON.stringify({
-                run_id: job.run_id,
-                completed: completedTests,
-                total: totalTests,
-                test_type: testType,
-                test_name: testName,
-                status: result.status,
-                duration_ms: result.duration_ms,
-                result: formatConversationResult(result),
-              }),
-            });
-            if (!res.ok) console.warn(`test-progress POST failed (${res.status}) for ${testName}`);
-          } catch (err) {
-            console.warn(`test-progress POST error for ${testName}:`, (err as Error).message);
-          }
-        },
-      });
-
-      const response = await fetch(callbackUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          [RUNNER_CALLBACK_HEADER]: callbackSecret,
-        },
-        body: JSON.stringify({
-          run_id: job.run_id,
-          status,
-          conversation_results: conversationResults,
-          red_team_results: redTeamResults,
-          aggregate,
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error(`Callback failed: ${response.status} ${await response.text()}`);
-      }
-
-      console.log(`Remote run ${job.run_id} completed: ${status}`);
+    if (!response.ok) {
+      throw new Error(`Callback failed: ${response.status} ${await response.text()}`);
     }
+
+    console.log(`Remote run ${job.run_id} completed: ${status}`);
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : "Unknown error";
     console.error(`Remote run ${job.run_id} failed:`, errorMessage);
@@ -349,82 +233,55 @@ async function executeRelayRun(db: Database, job: RunJob, relayMachineId?: strin
       }).catch(() => {});
     };
 
-    if (testSpec.load_test) {
-      // Load test run
-      const loadResult = await executeLoadTestPhase(db, job, channelConfig, apiUrl, callbackSecret);
-      const status = loadResult!.loadTestResult.status;
+    const { status, conversationResults, redTeamResults, aggregate } = await executeTests({
+      testSpec,
+      channelConfig,
+      concurrencyLimit: undefined,
+      onTestComplete: async (result, testType) => {
+        completedTests++;
+        const testName = result.name ?? testType;
 
-      notifyRelayComplete();
+        try {
+          const res = await fetch(`${apiUrl}/internal/test-progress`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", [RUNNER_CALLBACK_HEADER]: callbackSecret },
+            body: JSON.stringify({
+              run_id: job.run_id,
+              completed: completedTests,
+              total: totalTests,
+              test_type: testType,
+              test_name: testName,
+              status: result.status,
+              duration_ms: result.duration_ms,
+              result: formatConversationResult(result),
+            }),
+          });
+          if (!res.ok) console.warn(`test-progress POST failed (${res.status}) for ${testName}`);
+        } catch (err) {
+          console.warn(`test-progress POST error for ${testName}:`, (err as Error).message);
+        }
+      },
+    });
 
-      const response = await fetch(callbackUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", [RUNNER_CALLBACK_HEADER]: callbackSecret },
-        body: JSON.stringify({
-          run_id: job.run_id,
-          status,
-          conversation_results: [],
-          aggregate: {},
-          load_test_result: loadResult!.loadTestResult,
-        }),
-      });
+    notifyRelayComplete();
 
-      if (!response.ok) {
-        throw new Error(`Callback failed: ${response.status} ${await response.text()}`);
-      }
+    const response = await fetch(callbackUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", [RUNNER_CALLBACK_HEADER]: callbackSecret },
+      body: JSON.stringify({
+        run_id: job.run_id,
+        status,
+        conversation_results: conversationResults,
+        red_team_results: redTeamResults,
+        aggregate,
+      }),
+    });
 
-      console.log(`Relay load test ${job.run_id} completed: ${status}`);
-    } else {
-      // Conversation or red team test run
-      const { status, conversationResults, redTeamResults, aggregate } = await executeTests({
-        testSpec,
-        channelConfig,
-        concurrencyLimit: undefined,
-        onTestComplete: async (result, testType) => {
-          completedTests++;
-          const testName = result.name ?? testType;
-
-          try {
-            const res = await fetch(`${apiUrl}/internal/test-progress`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json", [RUNNER_CALLBACK_HEADER]: callbackSecret },
-              body: JSON.stringify({
-                run_id: job.run_id,
-                completed: completedTests,
-                total: totalTests,
-                test_type: testType,
-                test_name: testName,
-                status: result.status,
-                duration_ms: result.duration_ms,
-                result: formatConversationResult(result),
-              }),
-            });
-            if (!res.ok) console.warn(`test-progress POST failed (${res.status}) for ${testName}`);
-          } catch (err) {
-            console.warn(`test-progress POST error for ${testName}:`, (err as Error).message);
-          }
-        },
-      });
-
-      notifyRelayComplete();
-
-      const response = await fetch(callbackUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", [RUNNER_CALLBACK_HEADER]: callbackSecret },
-        body: JSON.stringify({
-          run_id: job.run_id,
-          status,
-          conversation_results: conversationResults,
-          red_team_results: redTeamResults,
-          aggregate,
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error(`Callback failed: ${response.status} ${await response.text()}`);
-      }
-
-      console.log(`Relay run ${job.run_id} completed: ${status}`);
+    if (!response.ok) {
+      throw new Error(`Callback failed: ${response.status} ${await response.text()}`);
     }
+
+    console.log(`Relay run ${job.run_id} completed: ${status}`);
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : "Unknown error";
     console.error(`Relay run ${job.run_id} failed:`, errorMessage);

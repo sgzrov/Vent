@@ -58,11 +58,7 @@ export async function runCommand(args: RunArgs): Promise<number> {
 
   // 2b. Filter to single test if --test is set
   if (args.test) {
-    const cfg = config as { conversation_tests?: Array<{ name?: string }>; red_team_tests?: Array<{ name?: string }>; load_test?: unknown };
-    if (cfg.load_test) {
-      printError("--test only works with conversation_tests or red_team_tests, not load_test.");
-      return 2;
-    }
+    const cfg = config as { conversation_tests?: Array<{ name?: string }>; red_team_tests?: Array<{ name?: string }> };
     const convTests = cfg.conversation_tests ?? [];
     const redTests = cfg.red_team_tests ?? [];
     if (convTests.length === 0 && redTests.length === 0) {

@@ -43,18 +43,6 @@ export interface CallerAudioEffects {
   jitter_ms?: number;
 }
 
-/** Pool config for load tests — values can be ranges/arrays for per-caller randomization. */
-export interface CallerAudioPool {
-  noise?: { type: string | string[]; snr_db: number | [number, number] };
-  speed?: number | [number, number];
-  speakerphone?: boolean | number;
-  mic_distance?: string | string[];
-  clarity?: number | [number, number];
-  accent?: string | string[];
-  packet_loss?: number | [number, number];
-  jitter_ms?: number | [number, number];
-}
-
 // ============================================================
 // Audio actions — infrastructure challenges injected into conversation turns
 // ============================================================
@@ -314,27 +302,9 @@ export interface ProsodyWarning {
   message: string;
 }
 
-export interface LoadTestSpec {
-  target_concurrency: number;
-  caller_prompt: string;
-  /** Array of caller prompts — one picked at random per caller. Use instead of caller_prompt. */
-  caller_prompts?: string[];
-  max_turns?: number;
-  /** Custom ramp steps — overrides default tier computation. */
-  ramps?: number[];
-  thresholds?: Partial<LoadTestThresholds>;
-  caller_audio?: CallerAudioPool;
-  language?: string;
-  /** Spike multiplier — fires spike_multiplier × target_concurrency calls at once. */
-  spike_multiplier?: number;
-  /** Soak duration in minutes — maintains target_concurrency active calls for this duration. */
-  soak_duration_min?: number;
-}
-
 export interface TestSpec {
   conversation_tests?: ConversationTestSpec[];
   red_team_tests?: ConversationTestSpec[];
-  load_test?: LoadTestSpec;
 }
 
 export interface TestDiagnostics {
@@ -581,7 +551,6 @@ export interface ConversationTestResult {
 export interface RunAggregateV2 {
   conversation_tests: { total: number; passed: number; failed: number };
   red_team_tests?: { total: number; passed: number; failed: number };
-  load_tests?: { total: number; passed: number; failed: number };
   total_duration_ms: number;
   total_cost_usd?: number;
 }
@@ -595,91 +564,3 @@ export interface RunnerCallbackPayloadV2 {
   error_text?: string;
 }
 
-// ============================================================
-// Load testing types
-// ============================================================
-
-export type LoadTestSeverity = "excellent" | "good" | "acceptable" | "critical";
-export type LoadTestPhase = "ramp" | "spike" | "soak";
-
-export interface LoadTestThresholds {
-  /** [excellent, good, acceptable] — values above acceptable = critical */
-  ttfw_ms: [number, number, number];
-  p95_latency_ms: [number, number, number];
-  error_rate: [number, number, number];
-  /** Higher = better. Values below acceptable = critical */
-  quality_score: [number, number, number];
-}
-
-export const DEFAULT_LOAD_TEST_THRESHOLDS: LoadTestThresholds = {
-  ttfw_ms: [300, 400, 800],
-  p95_latency_ms: [2200, 2500, 3000],
-  error_rate: [0.001, 0.005, 0.01],
-  quality_score: [0.9, 0.8, 0.7],
-};
-
-export interface LoadTestBreakingPoint {
-  concurrency: number;
-  triggered_by: Array<"error_rate" | "p95_latency" | "quality_drop">;
-  error_rate: number;
-  p95_ttfb_ms: number;
-  quality_score?: number;
-}
-
-export interface LoadTestGrading {
-  ttfw: LoadTestSeverity;
-  p95_latency: LoadTestSeverity;
-  error_rate: LoadTestSeverity;
-  quality: LoadTestSeverity;
-  overall: LoadTestSeverity;
-}
-
-export interface LoadTestEvalSummary {
-  total_evaluated: number;
-  mean_quality_score: number;
-  questions: Array<{ question: string; pass_rate: number }>;
-}
-
-export interface LoadTestTierResult {
-  concurrency: number;
-  total_calls: number;
-  successful_calls: number;
-  failed_calls: number;
-  error_rate: number;
-  ttfb_p50_ms: number;
-  ttfb_p95_ms: number;
-  ttfb_p99_ms: number;
-  ttfw_p50_ms: number;
-  ttfw_p95_ms: number;
-  ttfw_p99_ms: number;
-  connect_p50_ms: number;
-  mean_quality_score: number;
-  quality_degradation_pct: number;
-  ttfb_degradation_pct: number;
-  duration_ms: number;
-  /** Phase identifier — ramp (default), spike, or soak */
-  phase?: LoadTestPhase;
-  /** Soak: linear regression slope of TTFB over call completion order (ms/call). Positive = degradation. */
-  latency_drift_slope?: number;
-  /** Soak: true if drift slope is significantly positive or error rate trended upward */
-  degraded?: boolean;
-}
-
-export interface LoadTestResult {
-  status: "pass" | "fail";
-  severity: LoadTestSeverity;
-  target_concurrency: number;
-  tiers: LoadTestTierResult[];
-  total_calls: number;
-  successful_calls: number;
-  failed_calls: number;
-  breaking_point?: LoadTestBreakingPoint;
-  grading: LoadTestGrading;
-  eval_summary?: LoadTestEvalSummary;
-  thresholds: LoadTestThresholds;
-  duration_ms: number;
-  /** Spike test result (if spike was configured) */
-  spike?: LoadTestTierResult;
-  /** Soak test result (if soak was configured) */
-  soak?: LoadTestTierResult;
-}

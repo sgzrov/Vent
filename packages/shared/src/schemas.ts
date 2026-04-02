@@ -54,23 +54,6 @@ export const CallerAudioEffectsSchema = z.object({
   jitter_ms: z.number().min(0).max(100).optional(),
 });
 
-const noiseTypeEnum = z.enum(["babble", "white", "pink"]);
-const micDistanceEnum = z.enum(["close", "normal", "far"]);
-
-export const CallerAudioPoolSchema = z.object({
-  noise: z.object({
-    type: z.union([noiseTypeEnum, z.array(noiseTypeEnum)]),
-    snr_db: z.union([z.number(), z.tuple([z.number(), z.number()])]),
-  }).optional(),
-  speed: z.union([z.number(), z.tuple([z.number(), z.number()])]).optional(),
-  speakerphone: z.union([z.boolean(), z.number().min(0).max(1)]).optional(),
-  mic_distance: z.union([micDistanceEnum, z.array(micDistanceEnum)]).optional(),
-  clarity: z.union([z.number(), z.tuple([z.number(), z.number()])]).optional(),
-  accent: z.union([z.string(), z.array(z.string())]).optional(),
-  packet_loss: z.union([z.number(), z.tuple([z.number(), z.number()])]).optional(),
-  jitter_ms: z.union([z.number(), z.tuple([z.number(), z.number()])]).optional(),
-});
-
 export const ConversationTestSpecSchema = z.object({
   name: z.string().optional(),
   caller_prompt: z.string().min(1),
@@ -87,32 +70,27 @@ export const ConversationTestSpecSchema = z.object({
   repeat: z.number().int().min(1).max(10).default(1),
 });
 
-// TestSpecSchema uses z.lazy for load_test to avoid forward-reference to LoadTestSpecSchema
 export const TestSpecSchema = z
   .object({
     conversation_tests: z.array(ConversationTestSpecSchema).optional(),
     red_team_tests: z.array(ConversationTestSpecSchema).optional(),
-    load_test: z.lazy(() => LoadTestSpecSchema).optional(),
   })
   .refine(
     (d) => {
       const hasConv = (d.conversation_tests?.length ?? 0) > 0;
       const hasRedTeam = (d.red_team_tests?.length ?? 0) > 0;
-      const hasLoad = d.load_test != null;
-      return hasConv || hasRedTeam || hasLoad;
+      return hasConv || hasRedTeam;
     },
-    { message: "Exactly one of conversation_tests, red_team_tests, or load_test is required" }
+    { message: "At least one of conversation_tests or red_team_tests is required" }
   )
   .refine(
     (d) => {
       const hasConv = (d.conversation_tests?.length ?? 0) > 0;
       const hasRedTeam = (d.red_team_tests?.length ?? 0) > 0;
-      const hasLoad = d.load_test != null;
-      // Only one type per run
-      const count = [hasConv, hasRedTeam, hasLoad].filter(Boolean).length;
+      const count = [hasConv, hasRedTeam].filter(Boolean).length;
       return count === 1;
     },
-    { message: "Only one of conversation_tests, red_team_tests, or load_test can be used per run" }
+    { message: "Only one of conversation_tests or red_team_tests can be used per run" }
   );
 
 export const AdapterTypeSchema = z.enum(["websocket", "livekit", "vapi", "retell", "elevenlabs", "bland"]);
@@ -461,11 +439,6 @@ export const RunAggregateV2Schema = z.object({
     passed: z.number(),
     failed: z.number(),
   }).optional(),
-  load_tests: z.object({
-    total: z.number(),
-    passed: z.number(),
-    failed: z.number(),
-  }).optional(),
   total_duration_ms: z.number(),
   total_cost_usd: z.number().optional(),
 });
@@ -479,94 +452,3 @@ export const RunnerCallbackV2Schema = z.object({
   error_text: z.string().optional(),
 });
 
-// ============================================================
-// Load testing schemas
-// ============================================================
-
-export const LoadTestSeveritySchema = z.enum(["excellent", "good", "acceptable", "critical"]);
-
-const ThresholdTupleSchema = z.tuple([z.number(), z.number(), z.number()]);
-
-export const LoadTestThresholdsSchema = z.object({
-  ttfw_ms: ThresholdTupleSchema,
-  p95_latency_ms: ThresholdTupleSchema,
-  error_rate: ThresholdTupleSchema,
-  quality_score: ThresholdTupleSchema,
-});
-
-export const LoadTestSpecSchema = z.object({
-  target_concurrency: z.number().int().min(1).max(100),
-  caller_prompt: z.string().min(1),
-  caller_prompts: z.array(z.string().min(1)).min(1).optional(),
-  max_turns: z.number().int().min(1).max(10).optional(),
-  ramps: z.array(z.number().int().min(1)).min(1).optional(),
-  thresholds: LoadTestThresholdsSchema.partial().optional(),
-  caller_audio: CallerAudioPoolSchema.optional(),
-  language: z.string().min(2).max(5).optional(),
-  spike_multiplier: z.number().min(1.5).max(5).optional(),
-  soak_duration_min: z.number().min(1).max(60).optional(),
-});
-
-export const LoadTestBreakingPointSchema = z.object({
-  concurrency: z.number(),
-  triggered_by: z.array(z.enum(["error_rate", "p95_latency", "quality_drop"])),
-  error_rate: z.number(),
-  p95_ttfb_ms: z.number(),
-  quality_score: z.number().optional(),
-});
-
-export const LoadTestGradingSchema = z.object({
-  ttfw: LoadTestSeveritySchema,
-  p95_latency: LoadTestSeveritySchema,
-  error_rate: LoadTestSeveritySchema,
-  quality: LoadTestSeveritySchema,
-  overall: LoadTestSeveritySchema,
-});
-
-export const LoadTestEvalSummarySchema = z.object({
-  total_evaluated: z.number().int().min(0),
-  mean_quality_score: z.number().min(0).max(1),
-  questions: z.array(z.object({
-    question: z.string(),
-    pass_rate: z.number().min(0).max(1),
-  })),
-});
-
-export const LoadTestTierResultSchema = z.object({
-  concurrency: z.number().int().min(1),
-  total_calls: z.number().int().min(0),
-  successful_calls: z.number().int().min(0),
-  failed_calls: z.number().int().min(0),
-  error_rate: z.number().min(0).max(1),
-  ttfb_p50_ms: z.number(),
-  ttfb_p95_ms: z.number(),
-  ttfb_p99_ms: z.number(),
-  ttfw_p50_ms: z.number(),
-  ttfw_p95_ms: z.number(),
-  ttfw_p99_ms: z.number(),
-  connect_p50_ms: z.number(),
-  mean_quality_score: z.number().min(0).max(1),
-  quality_degradation_pct: z.number(),
-  ttfb_degradation_pct: z.number(),
-  duration_ms: z.number(),
-  phase: z.enum(["ramp", "spike", "soak"]).optional(),
-  latency_drift_slope: z.number().optional(),
-  degraded: z.boolean().optional(),
-});
-
-export const LoadTestResultSchema = z.object({
-  status: z.enum(["pass", "fail"]),
-  severity: LoadTestSeveritySchema,
-  target_concurrency: z.number(),
-  tiers: z.array(LoadTestTierResultSchema),
-  total_calls: z.number(),
-  successful_calls: z.number(),
-  failed_calls: z.number(),
-  breaking_point: LoadTestBreakingPointSchema.optional(),
-  grading: LoadTestGradingSchema,
-  eval_summary: LoadTestEvalSummarySchema.optional(),
-  thresholds: LoadTestThresholdsSchema,
-  duration_ms: z.number(),
-  spike: LoadTestTierResultSchema.optional(),
-  soak: LoadTestTierResultSchema.optional(),
-});
