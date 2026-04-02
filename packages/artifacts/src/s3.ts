@@ -28,8 +28,8 @@ export class S3Storage {
         secretAccessKey: config.secretAccessKey,
       },
       forcePathStyle: true,
-      // R2 doesn't support AWS checksum extensions — disable them
-      // to prevent x-amz-checksum-mode=ENABLED in presigned URLs
+      // R2 (Cloudflare) does not support AWS checksum extensions — disable them
+      // to avoid x-amz-checksum-mode=ENABLED appearing in presigned URLs
       requestChecksumCalculation: "WHEN_REQUIRED",
       responseChecksumValidation: "WHEN_REQUIRED",
     });
