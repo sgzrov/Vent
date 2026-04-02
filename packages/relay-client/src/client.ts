@@ -60,7 +60,7 @@ export class RelayClient {
         }
       };
 
-      // Hard timeout — if WS never opens AND never errors (network black hole), reject
+      // Hard timeout — if the WebSocket never opens and never errors (network black hole), reject
       const hardTimeout = setTimeout(() => {
         settle(() => {
           ws.close();
