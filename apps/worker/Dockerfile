@@ -10,20 +10,13 @@ COPY packages/db/package.json packages/db/package.json
 COPY packages/voice/package.json packages/voice/package.json
 COPY packages/adapters/package.json packages/adapters/package.json
 COPY packages/runner/package.json packages/runner/package.json
+COPY packages/platform-connections/package.json packages/platform-connections/package.json
+COPY packages/artifacts/package.json packages/artifacts/package.json
 COPY apps/worker/package.json apps/worker/package.json
 RUN pnpm install --frozen-lockfile
-COPY packages/shared packages/shared
-COPY packages/db packages/db
-COPY packages/voice packages/voice
-COPY packages/adapters packages/adapters
-COPY packages/runner packages/runner
+COPY packages packages
 COPY apps/worker apps/worker
 COPY tsconfig.json tsconfig.json
-RUN pnpm --filter @vent/shared build
-RUN pnpm --filter @vent/db build
-RUN pnpm --filter @vent/voice build
-RUN pnpm --filter @vent/adapters build
-RUN pnpm --filter @vent/runner build
 RUN pnpm --filter @vent/worker build
 
 FROM base AS runtime
