@@ -50,9 +50,24 @@ function findBinary(name: string): boolean {
 }
 
 function detectActiveEditor(): string | null {
-  // Claude Code sets CLAUDECODE=1 (confirmed via docs)
+  // Claude Code sets CLAUDECODE=1
   if (process.env.CLAUDECODE) return "claude-code";
-  // No reliable env vars for Cursor or Codex — return null to fall back to detected editors
+
+  // macOS bundle identifier (very reliable)
+  const bundleId = process.env.__CFBundleIdentifier ?? "";
+  if (bundleId.includes("cursor")) return "cursor";
+  if (bundleId.includes("Windsurf") || bundleId.includes("windsurf")) return "cursor"; // same skill format
+  if (bundleId.includes("codex")) return "codex";
+
+  // VS Code fork detection via askpass path (cross-platform)
+  const askpass = process.env.VSCODE_GIT_ASKPASS_NODE ?? process.env.GIT_ASKPASS ?? "";
+  if (/cursor/i.test(askpass)) return "cursor";
+  if (/windsurf/i.test(askpass)) return "cursor";
+  if (/codex/i.test(askpass)) return "codex";
+
+  // Cursor-specific env var
+  if (process.env.CURSOR_CLI) return "cursor";
+
   return null;
 }
 
