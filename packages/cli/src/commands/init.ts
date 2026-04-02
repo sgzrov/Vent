@@ -73,7 +73,7 @@ export async function initCommand(args: InitArgs): Promise<number> {
       };
       await saveApiKey(api_key);
       printSuccess(
-        `Account created (${run_limit} free runs). Run \`npx vent-hq login\` for unlimited.`,
+        `Account created (${run_limit} runs). You'll be prompted to sign in for unlimited access.`,
         { force: true },
       );
     }
