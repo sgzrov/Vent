@@ -6,10 +6,14 @@ import {
   AdapterTypeSchema,
   LoadTestSpecSchema,
   ConversationTestSpecSchema,
-  PlatformConfigSchema,
   CallerAudioEffectsSchema,
+  PlatformSummarySchema,
+  type PlatformConnectionSummary,
+  type PlatformSummary,
 } from "@vent/shared";
 import type { FastifyInstance } from "fastify";
+
+const PLATFORM_ADAPTERS = new Set(["livekit", "vapi", "retell", "elevenlabs", "bland"]);
 
 // ---- Usage limit error ----
 
@@ -27,6 +31,16 @@ export class UsageLimitError extends Error {
   }
 }
 
+export class SubmitRunConfigError extends Error {
+  public statusCode: number;
+
+  constructor(message: string, statusCode = 400) {
+    super(message);
+    this.name = "SubmitRunConfigError";
+    this.statusCode = statusCode;
+  }
+}
+
 // ---- Zod schema for run submission ----
 
 export const RunSubmitConfigSchema = z.object({
@@ -38,7 +52,8 @@ export const RunSubmitConfigSchema = z.object({
     health_endpoint: z.string().optional(),
     target_phone_number: z.string().optional(),
     caller_audio: CallerAudioEffectsSchema.optional(),
-    platform: PlatformConfigSchema.optional(),
+    platform_connection_id: z.string().uuid().optional(),
+    platform: z.never().optional(),
   }),
   conversation_tests: z.array(ConversationTestSpecSchema).optional(),
   red_team_tests: z.array(ConversationTestSpecSchema).optional(),
@@ -60,7 +75,27 @@ export const RunSubmitConfigSchema = z.object({
     return count === 1;
   },
   { message: "Only one of conversation_tests, red_team_tests, or load_test can be used per run." }
-);
+).superRefine((d, ctx) => {
+  const adapter = d.connection.adapter;
+  const platformConnectionId = d.connection.platform_connection_id;
+  const requiresSavedConnection = PLATFORM_ADAPTERS.has(adapter);
+
+  if (requiresSavedConnection && !platformConnectionId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["connection", "platform_connection_id"],
+      message: `${adapter} runs require platform_connection_id`,
+    });
+  }
+
+  if (!requiresSavedConnection && platformConnectionId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["connection", "platform_connection_id"],
+      message: `${adapter} runs cannot include platform_connection_id`,
+    });
+  }
+});
 
 export const RunSubmitSchema = z.object({
   config: RunSubmitConfigSchema,
@@ -75,7 +110,14 @@ export function hashIdempotencyKey(raw: string): string {
   return createHash("sha256").update(raw).digest("hex");
 }
 
-export function buildTestSpec(cfg: Record<string, unknown>) {
+export function buildTestSpec(
+  cfg: Record<string, unknown>,
+  platformMeta?: {
+    platform_connection_id: string | null;
+    platform_connection: PlatformConnectionSummary | null;
+    platform: PlatformSummary | null;
+  },
+) {
   const adapter = (cfg.adapter as string) ?? "websocket";
   const agentUrl = cfg.agent_url as string | undefined;
   const targetPhoneNumber = cfg.target_phone_number as string | undefined;
@@ -102,14 +144,6 @@ export function buildTestSpec(cfg: Record<string, unknown>) {
     });
   }
 
-  // Strip secrets from platform before persisting to DB (secrets stay in job queue only)
-  const platformForDb = cfg.platform
-    ? Object.fromEntries(
-        Object.entries(cfg.platform as Record<string, unknown>)
-          .filter(([k]) => !k.endsWith("_api_key") && !k.endsWith("_api_secret"))
-      )
-    : null;
-
   return {
     testSpecJson: {
       conversation_tests: conversationTests ?? null,
@@ -121,7 +155,9 @@ export function buildTestSpec(cfg: Record<string, unknown>) {
       health_endpoint: cfg.health_endpoint ?? null,
       agent_url: agentUrl ?? null,
       target_phone_number: targetPhoneNumber ?? null,
-      platform: platformForDb,
+      platform_connection_id: platformMeta?.platform_connection_id ?? null,
+      platform_connection: platformMeta?.platform_connection ?? null,
+      platform: platformMeta?.platform ?? null,
     },
     adapter,
     agentUrl,
@@ -129,15 +165,14 @@ export function buildTestSpec(cfg: Record<string, unknown>) {
     targetPhoneNumber,
     conversationTests: conversationTests ?? null,
     redTeamTests: redTeamTests ?? null,
-    isRemote: ["vapi", "retell", "elevenlabs", "bland", "livekit"].includes(adapter)
-      || adapter === "sip" || !!agentUrl,
+    isRemote: PLATFORM_ADAPTERS.has(adapter) || !!agentUrl,
   };
 }
 
 // ---- Core submit function ----
 
 export interface SubmitRunParams {
-  apiKeyId: string;
+  accessTokenId: string;
   userId: string;
   config: RunSubmitInput["config"];
   idempotencyKey?: string;
@@ -161,7 +196,7 @@ export async function submitRun(
   app: FastifyInstance,
   params: SubmitRunParams,
 ): Promise<SubmitRunResult> {
-  const { apiKeyId, userId, config, idempotencyKey } = params;
+  const { accessTokenId, userId, config, idempotencyKey } = params;
 
   const hashedIdempotencyKey = idempotencyKey
     ? hashIdempotencyKey(idempotencyKey)
@@ -185,29 +220,93 @@ export async function submitRun(
     }
   }
 
-  // Usage limit check for anonymous API keys
-  const [apiKeyRow] = await app.db
-    .select({ run_limit: schema.apiKeys.run_limit })
-    .from(schema.apiKeys)
-    .where(eq(schema.apiKeys.id, apiKeyId))
+  // Usage limit check for anonymous access tokens
+  const [accessTokenRow] = await app.db
+    .select({ run_limit: schema.accessTokens.run_limit })
+    .from(schema.accessTokens)
+    .where(eq(schema.accessTokens.id, accessTokenId))
     .limit(1);
 
-  if (apiKeyRow?.run_limit != null) {
+  if (accessTokenRow?.run_limit != null) {
     const [{ count }] = await app.db
       .select({ count: sql<number>`count(*)::int` })
       .from(schema.runs)
       .where(eq(schema.runs.user_id, userId));
 
-    if (count >= apiKeyRow.run_limit) {
-      throw new UsageLimitError(apiKeyRow.run_limit, count);
+    if (count >= accessTokenRow.run_limit) {
+      throw new UsageLimitError(accessTokenRow.run_limit, count);
     }
   }
 
-  // Flatten connection into cfg
   const { connection, ...rest } = config;
   const cfg = { ...connection, ...rest } as Record<string, unknown>;
 
-  const { testSpecJson, adapter, agentUrl, voiceConfig, targetPhoneNumber, conversationTests, redTeamTests, isRemote } = buildTestSpec(cfg);
+  const platformConnectionId = connection.platform_connection_id ?? null;
+  const adapter = connection.adapter;
+  const requiresSavedConnection = PLATFORM_ADAPTERS.has(adapter);
+
+  let platformConnectionSummary: PlatformConnectionSummary | null = null;
+  let platformSummary: PlatformSummary | null = null;
+
+  if (requiresSavedConnection) {
+    if (!platformConnectionId) {
+      throw new SubmitRunConfigError(`${adapter} runs require platform_connection_id`);
+    }
+
+    const [savedConnection] = await app.db
+      .select({
+        id: schema.platformConnections.id,
+        provider: schema.platformConnections.provider,
+        resource_label: schema.platformConnections.resource_label,
+        version: schema.platformConnections.version,
+        config_json: schema.platformConnections.config_json,
+      })
+      .from(schema.platformConnections)
+      .where(
+        and(
+          eq(schema.platformConnections.id, platformConnectionId),
+          eq(schema.platformConnections.user_id, userId),
+        ),
+      )
+      .limit(1);
+
+    if (!savedConnection) {
+      throw new SubmitRunConfigError("Platform connection not found", 404);
+    }
+    if (savedConnection.provider !== adapter) {
+      throw new SubmitRunConfigError(
+        `Adapter ${adapter} does not match saved connection provider ${savedConnection.provider}`,
+      );
+    }
+
+    platformConnectionSummary = {
+      id: savedConnection.id,
+      provider: savedConnection.provider as PlatformConnectionSummary["provider"],
+      version: savedConnection.version,
+      resource_label: savedConnection.resource_label,
+    };
+    platformSummary = PlatformSummarySchema.parse(savedConnection.config_json) as PlatformSummary;
+  } else if (platformConnectionId) {
+    throw new SubmitRunConfigError(`${adapter} runs cannot include platform_connection_id`);
+  }
+
+  delete cfg.platform_connection_id;
+  delete cfg.platform;
+
+  const {
+    testSpecJson,
+    adapter: resolvedAdapter,
+    agentUrl,
+    voiceConfig,
+    targetPhoneNumber,
+    conversationTests,
+    redTeamTests,
+    isRemote,
+  } = buildTestSpec(cfg, {
+    platform_connection_id: platformConnectionId,
+    platform_connection: platformConnectionSummary,
+    platform: platformSummary,
+  });
 
   const apiUrl = process.env["API_URL"] ?? "https://vent-api.fly.dev";
 
@@ -215,7 +314,7 @@ export async function submitRun(
     const [run] = await app.db
       .insert(schema.runs)
       .values({
-        api_key_id: apiKeyId,
+        access_token_id: accessTokenId,
         user_id: userId,
         source_type: "remote",
         bundle_key: null,
@@ -233,7 +332,7 @@ export async function submitRun(
       bundle_key: null,
       bundle_hash: null,
       lockfile_hash: null,
-      adapter,
+      adapter: resolvedAdapter,
       test_spec: {
         conversation_tests: conversationTests ?? null,
         red_team_tests: redTeamTests ?? null,
@@ -244,7 +343,7 @@ export async function submitRun(
       start_command: cfg.start_command as string | undefined,
       health_endpoint: cfg.health_endpoint as string | undefined,
       agent_url: agentUrl,
-      platform: cfg.platform ?? null,
+      platform_connection_id: platformConnectionId,
     }, { jobId: runId });
 
     return { run_id: runId, status: "queued" };
@@ -257,7 +356,7 @@ export async function submitRun(
   const [run] = await app.db
     .insert(schema.runs)
     .values({
-      api_key_id: apiKeyId,
+      access_token_id: accessTokenId,
       user_id: userId,
       source_type: "relay",
       bundle_key: null,

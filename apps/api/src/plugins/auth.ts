@@ -6,17 +6,17 @@ import { WorkOS } from "@workos-inc/node";
 
 declare module "fastify" {
   interface FastifyInstance {
-    verifyApiKey: (request: import("fastify").FastifyRequest, reply: import("fastify").FastifyReply) => Promise<void>;
+    verifyAccessToken: (request: import("fastify").FastifyRequest, reply: import("fastify").FastifyReply) => Promise<void>;
     verifyAuth: (request: import("fastify").FastifyRequest, reply: import("fastify").FastifyReply) => Promise<void>;
   }
   interface FastifyRequest {
-    apiKeyId?: string;
+    accessTokenId?: string;
     userId?: string;
-    authMethod?: "api_key" | "session";
+    authMethod?: "access_token" | "session";
   }
 }
 
-function hashKey(raw: string): string {
+function hashAccessToken(raw: string): string {
   return createHash("sha256").update(raw).digest("hex");
 }
 
@@ -35,7 +35,7 @@ export const authPlugin = fp(async (app) => {
         "WorkOS auth is partially configured. Session auth is disabled until WORKOS_API_KEY, WORKOS_CLIENT_ID, and WORKOS_COOKIE_PASSWORD are all set.",
       );
     } else {
-      app.log.info("WorkOS auth is not configured. API key auth remains enabled.");
+      app.log.info("WorkOS auth is not configured. Access-token auth remains enabled.");
     }
   }
 
@@ -43,7 +43,7 @@ export const authPlugin = fp(async (app) => {
     ? new WorkOS(workosApiKey, { clientId: workosClientId })
     : null;
 
-  async function tryAuthenticateApiKey(
+  async function tryAuthenticateAccessToken(
     request: any,
     reply: any,
     rejectNonBearer: boolean,
@@ -53,53 +53,53 @@ export const authPlugin = fp(async (app) => {
     if (!authHeader.startsWith("Bearer ")) {
       if (!rejectNonBearer) return "none";
       await reply.status(401).send({
-        error: "Invalid authorization header. Expected 'Bearer <api_key>'.",
+        error: "Invalid authorization header. Expected 'Bearer <access_token>'.",
       });
       return "invalid";
     }
 
-    const rawKey = authHeader.slice(7).trim();
-    if (!rawKey) {
-      await reply.status(401).send({ error: "Missing API key value." });
+    const rawAccessToken = authHeader.slice(7).trim();
+    if (!rawAccessToken) {
+      await reply.status(401).send({ error: "Missing access token value." });
       return "invalid";
     }
 
-    const keyHash = hashKey(rawKey);
+    const tokenHash = hashAccessToken(rawAccessToken);
 
     const [found] = await app.db
       .select()
-      .from(schema.apiKeys)
+      .from(schema.accessTokens)
       .where(
         and(
-          eq(schema.apiKeys.key_hash, keyHash),
-          isNull(schema.apiKeys.revoked_at),
+          eq(schema.accessTokens.token_hash, tokenHash),
+          isNull(schema.accessTokens.revoked_at),
         ),
       )
       .limit(1);
 
     if (!found) {
-      await reply.status(401).send({ error: "Invalid API key" });
+      await reply.status(401).send({ error: "Invalid access token" });
       return "invalid";
     }
 
-    request.apiKeyId = found.id;
+    request.accessTokenId = found.id;
     request.userId = found.user_id;
-    request.authMethod = "api_key";
+    request.authMethod = "access_token";
     return "ok";
   }
 
-  async function verifyApiKey(request: any, reply: any) {
-    const apiKeyAuth = await tryAuthenticateApiKey(request, reply, true);
-    if (apiKeyAuth === "ok" || apiKeyAuth === "invalid") return;
+  async function verifyAccessToken(request: any, reply: any) {
+    const accessTokenAuth = await tryAuthenticateAccessToken(request, reply, true);
+    if (accessTokenAuth === "ok" || accessTokenAuth === "invalid") return;
     await reply.status(401).send({
-      error: "Missing authentication. Provide a Bearer API key.",
+      error: "Missing authentication. Provide a Bearer access token.",
     });
   }
 
   async function verifyAuth(request: any, reply: any) {
-    // Path 1: Bearer API key (CLI)
-    const apiKeyAuth = await tryAuthenticateApiKey(request, reply, false);
-    if (apiKeyAuth === "ok" || apiKeyAuth === "invalid") {
+    // Path 1: Bearer access token (CLI)
+    const accessTokenAuth = await tryAuthenticateAccessToken(request, reply, false);
+    if (accessTokenAuth === "ok" || accessTokenAuth === "invalid") {
       return;
     }
 
@@ -108,7 +108,7 @@ export const authPlugin = fp(async (app) => {
     if (sessionCookie) {
       if (!workos || !cookiePassword) {
         await reply.status(401).send({
-          error: "Session authentication is not configured on this API server. Provide a Bearer API key.",
+          error: "Session authentication is not configured on this API server. Provide a Bearer access token.",
         });
         return;
       }
@@ -155,10 +155,10 @@ export const authPlugin = fp(async (app) => {
     }
 
     await reply.status(401).send({
-      error: "Missing or invalid authentication. Provide a Bearer API key or a valid session cookie.",
+      error: "Missing or invalid authentication. Provide a Bearer access token or a valid session cookie.",
     });
   }
 
-  app.decorate("verifyApiKey", verifyApiKey);
+  app.decorate("verifyAccessToken", verifyAccessToken);
   app.decorate("verifyAuth", verifyAuth);
 });

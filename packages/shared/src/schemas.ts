@@ -115,7 +115,8 @@ export const TestSpecSchema = z
     { message: "Only one of conversation_tests, red_team_tests, or load_test can be used per run" }
   );
 
-export const AdapterTypeSchema = z.enum(["websocket", "sip", "livekit", "vapi", "retell", "elevenlabs", "bland"]);
+export const AdapterTypeSchema = z.enum(["websocket", "livekit", "vapi", "retell", "elevenlabs", "bland"]);
+export const PlatformProviderSchema = z.enum(["bland", "livekit", "vapi", "retell", "elevenlabs"]);
 
 // ============================================================
 // Tool call schemas
@@ -205,6 +206,23 @@ export const PlatformConfigSchema = z.discriminatedUnion("provider", [
   RetellPlatformSchema,
   ElevenLabsPlatformSchema,
 ]);
+
+export const PlatformSummarySchema = z.object({
+  provider: PlatformProviderSchema,
+}).catchall(z.unknown());
+
+export const PlatformConnectionSummarySchema = z.object({
+  id: z.string().uuid(),
+  provider: PlatformProviderSchema,
+  version: z.number().int().min(1),
+  resource_label: z.string().min(1),
+});
+
+export const RunPlatformSummarySchema = z.object({
+  platform_connection_id: z.string().uuid().nullable(),
+  platform_connection: PlatformConnectionSummarySchema.nullable(),
+  platform: PlatformSummarySchema.nullable(),
+});
 
 export const AudioAnalysisGradeThresholdsSchema = z.object({
   agent_speech_ratio_min: z.number().min(0).max(1).optional(),

@@ -1,29 +1,29 @@
 import { apiFetch } from "../lib/api.js";
 import { streamRunEvents } from "../lib/sse.js";
 import { printEvent, printError, printInfo } from "../lib/output.js";
-import { loadApiKey } from "../lib/config.js";
+import { loadAccessToken } from "../lib/config.js";
 import { formatConversationResult, formatLoadTestResult } from "@vent/shared";
 
 interface StatusArgs {
   runId: string;
-  apiKey?: string;
+  accessToken?: string;
   json: boolean;
   stream: boolean;
 }
 
 export async function statusCommand(args: StatusArgs): Promise<number> {
-  const apiKey = args.apiKey ?? (await loadApiKey());
-  if (!apiKey) {
-    printError("No API key found. Set VENT_API_KEY, run `npx vent-hq login`, or pass --api-key.");
+  const accessToken = args.accessToken ?? (await loadAccessToken());
+  if (!accessToken) {
+    printError("No Vent access token found. Set VENT_ACCESS_TOKEN, run `npx vent-hq login`, or pass --access-token.");
     return 2;
   }
 
   if (args.stream) {
-    return streamStatus(args.runId, apiKey, args.json);
+    return streamStatus(args.runId, accessToken, args.json);
   }
 
   try {
-    const res = await apiFetch(`/runs/${args.runId}`, apiKey);
+    const res = await apiFetch(`/runs/${args.runId}`, accessToken);
     const data = (await res.json()) as Record<string, unknown>;
 
     if (args.json) {
@@ -94,10 +94,10 @@ export async function statusCommand(args: StatusArgs): Promise<number> {
   }
 }
 
-async function streamStatus(runId: string, apiKey: string, json: boolean): Promise<number> {
+async function streamStatus(runId: string, accessToken: string, json: boolean): Promise<number> {
   let exitCode = 0;
   try {
-    for await (const event of streamRunEvents(runId, apiKey)) {
+    for await (const event of streamRunEvents(runId, accessToken)) {
       printEvent(event, json);
       if (event.event_type === "run_complete") {
         const meta = (event.metadata_json ?? {}) as Record<string, unknown>;

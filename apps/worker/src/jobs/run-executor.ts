@@ -10,6 +10,11 @@ import type {
   PlatformConfig,
 } from "@vent/shared";
 import type { AudioChannelConfig } from "@vent/adapters";
+import {
+  decryptSecrets,
+  mergePlatformConfig,
+  type EncryptedSecretsEnvelope,
+} from "@vent/platform-connections";
 import { executeTests } from "@vent/runner/executor";
 import { runLoadTest, computeTierSizes } from "@vent/runner/load-test";
 
@@ -54,8 +59,39 @@ interface RunJob {
   start_command?: string;
   health_endpoint?: string;
   agent_url?: string;
-  platform?: PlatformConfig | null;
+  platform_connection_id?: string | null;
   relay?: boolean;
+}
+
+async function resolvePlatformConfig(
+  db: Database,
+  platformConnectionId?: string | null,
+): Promise<PlatformConfig | undefined> {
+  if (!platformConnectionId) return undefined;
+
+  const [savedConnection] = await db
+    .select({
+      id: schema.platformConnections.id,
+      config_json: schema.platformConnections.config_json,
+      secrets_encrypted: schema.platformConnections.secrets_encrypted,
+    })
+    .from(schema.platformConnections)
+    .where(eq(schema.platformConnections.id, platformConnectionId))
+    .limit(1);
+
+  if (!savedConnection) {
+    throw new Error(`Platform connection ${platformConnectionId} not found`);
+  }
+
+  await db
+    .update(schema.platformConnections)
+    .set({ last_used_at: new Date() })
+    .where(eq(schema.platformConnections.id, savedConnection.id));
+
+  return mergePlatformConfig(
+    savedConnection.config_json as Record<string, unknown>,
+    decryptSecrets(savedConnection.secrets_encrypted as EncryptedSecretsEnvelope),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -144,7 +180,7 @@ async function executeLoadTestPhase(
 }
 
 // ---------------------------------------------------------------------------
-// Direct execution for already-deployed agents (SIP, WebRTC, agent_url)
+// Direct execution for already-deployed agents (platform adapters or agent_url)
 // ---------------------------------------------------------------------------
 
 async function executeRemoteRun(db: Database, job: RunJob): Promise<void> {
@@ -154,12 +190,13 @@ async function executeRemoteRun(db: Database, job: RunJob): Promise<void> {
 
   const adapterType = (job.adapter ?? "websocket") as AdapterType;
   const agentUrl = job.agent_url ?? "http://localhost:3001";
+  const platform = await resolvePlatformConfig(db, job.platform_connection_id);
 
   const channelConfig: AudioChannelConfig = {
     adapter: adapterType,
     agentUrl,
     targetPhoneNumber: job.target_phone_number,
-    platform: job.platform ?? undefined,
+    platform,
   };
 
   const testSpec = job.test_spec as TestSpec;
@@ -197,7 +234,6 @@ async function executeRemoteRun(db: Database, job: RunJob): Promise<void> {
       console.log(`Remote load test ${job.run_id} completed: ${status}`);
     } else {
       // Conversation or red team test run
-      const platform = job.platform as PlatformConfig | undefined;
       const platformConcurrency = platform?.max_concurrency as number | undefined;
       const { status, conversationResults, redTeamResults, aggregate } = await executeTests({
         testSpec,
@@ -339,12 +375,10 @@ async function executeRelayRun(db: Database, job: RunJob, relayMachineId?: strin
       console.log(`Relay load test ${job.run_id} completed: ${status}`);
     } else {
       // Conversation or red team test run
-      const relayPlatform = job.platform as PlatformConfig | undefined;
-      const relayConcurrency = relayPlatform?.max_concurrency as number | undefined;
       const { status, conversationResults, redTeamResults, aggregate } = await executeTests({
         testSpec,
         channelConfig,
-        concurrencyLimit: relayConcurrency,
+        concurrencyLimit: undefined,
         onTestComplete: async (result, testType) => {
           completedTests++;
           const testName = result.name ?? testType;
@@ -491,7 +525,6 @@ export async function executeRun(job: RunJob): Promise<void> {
     job.adapter === "livekit";
   const isRemote =
     isPlatformAdapter ||
-    job.adapter === "sip" ||
     !!job.agent_url;
   if (isRemote) {
     await emitEvent(db, job.run_id, "connecting", `Connecting to remote agent (${job.adapter ?? "websocket"})...`);

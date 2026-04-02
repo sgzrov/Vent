@@ -98,6 +98,8 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
   private disconnectTimestamp = 0;
   private agentIdentity: string | null = null;
   private disconnectReasonStr: string | null = null;
+  private lastAgentState: string | null = null;
+  private roomDisconnected = false;
 
   // Agent transcript accumulator for consumeAgentText()
   private agentTextBuffer = "";
@@ -114,7 +116,7 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
   }
 
   get connected(): boolean {
-    return this.room !== null;
+    return this.room !== null && !this.roomDisconnected;
   }
 
   async connect(): Promise<void> {
@@ -145,6 +147,12 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
     const jwt = await token.toJwt();
 
     this.room = new Room();
+    this.roomDisconnected = false;
+    this.disconnectTimestamp = 0;
+    this.disconnectReasonStr = null;
+    this.agentIdentity = null;
+    this.lastAgentState = null;
+    this.agentTextBuffer = "";
 
     // On Fly.io (and other containerized environments), direct UDP is unreliable
     // because containers sit behind WireGuard tunnels and HTTP proxies. Force
@@ -199,24 +207,7 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
           return; // Ignore non-agent participants
         }
 
-        const now = Date.now();
-        const turn = this.currentTurnIndex >= 0 ? this.turnTimings[this.currentTurnIndex] : undefined;
-        if (!turn) return;
-
-        switch (agentState) {
-          case "thinking":
-            turn.thinkingAt = now;
-            break;
-          case "speaking":
-            turn.speakingAt = now;
-            break;
-          case "listening":
-            if (turn.speakingAt) {
-              turn.listeningAt = now;
-              this.emit("platformEndOfTurn");
-            }
-            break;
-        }
+        this.handleAgentStateChange(agentState, Date.now());
       }
     );
 
@@ -286,7 +277,7 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
 
     // ── Disconnect reason capture ─────────────────────────────
     this.room.once(RoomEvent.Disconnected, (reason: DisconnectReason) => {
-      this.disconnectReasonStr = DisconnectReason[reason] ?? "UNKNOWN";
+      this.handleRoomDisconnected(reason);
     });
 
     // ── Audio source for publishing ───────────────────────────
@@ -434,6 +425,7 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
     // Track turn timing (same pattern as Vapi adapter)
     this.currentTurnIndex++;
     this.turnTimings[this.currentTurnIndex] = { audioSentAt: Date.now() };
+    this.lastAgentState = null;
 
     // Resample 24kHz → LiveKit sample rate (48kHz for WebRTC/Opus)
     const resampled = resample(pcm, 24000, this.livekitSampleRate);
@@ -488,6 +480,7 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
 
   async disconnect(): Promise<void> {
     this.collecting = false;
+    this.roomDisconnected = true;
     this.stopComfortNoise();
     this.disconnectTimestamp = Date.now();
     if (this.room) {
@@ -615,6 +608,52 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
     } catch {
       // Ignore malformed JSON
     }
+  }
+
+  private handleAgentStateChange(agentState: string, now = Date.now()): void {
+    const previousState = this.lastAgentState;
+    this.lastAgentState = agentState;
+
+    const turn = this.currentTurnIndex >= 0 ? this.turnTimings[this.currentTurnIndex] : undefined;
+
+    switch (agentState) {
+      case "thinking":
+        if (turn && !turn.thinkingAt) {
+          turn.thinkingAt = now;
+        }
+        break;
+
+      case "speaking":
+        if (turn && !turn.speakingAt) {
+          turn.speakingAt = now;
+        }
+        if (previousState !== "speaking") {
+          this.emit("platformSpeechStart");
+        }
+        break;
+
+      case "listening": {
+        const wasSpeaking = previousState === "speaking" || !!turn?.speakingAt;
+        if (turn && turn.speakingAt && !turn.listeningAt) {
+          turn.listeningAt = now;
+        }
+        if (wasSpeaking && previousState !== "listening") {
+          this.emit("platformEndOfTurn");
+        }
+        break;
+      }
+    }
+  }
+
+  private handleRoomDisconnected(reason: DisconnectReason): void {
+    this.collecting = false;
+    this.roomDisconnected = true;
+    this.stopComfortNoise();
+    if (!this.disconnectTimestamp) {
+      this.disconnectTimestamp = Date.now();
+    }
+    this.disconnectReasonStr = DisconnectReason[reason] ?? "UNKNOWN";
+    this.emit("disconnected");
   }
 
   private startReadingTrack(track: RemoteTrack): void {

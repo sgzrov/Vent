@@ -3,7 +3,6 @@ import { RUNNER_CALLBACK_HEADER } from "@vent/shared";
 import type { AudioChannel } from "./audio-channel.js";
 import { WsAudioChannel } from "./ws-audio-channel.js";
 import { WebRtcAudioChannel } from "./webrtc-audio-channel.js";
-import { SipAudioChannel, type SipAudioChannelConfig } from "./sip-audio-channel.js";
 import { VapiAudioChannel } from "./vapi-audio-channel.js";
 import { ElevenLabsAudioChannel } from "./elevenlabs-audio-channel.js";
 import { RetellAudioChannel } from "./retell-audio-channel.js";
@@ -13,7 +12,6 @@ export type { AudioChannel, AudioChannelEvents } from "./audio-channel.js";
 export { BaseAudioChannel } from "./audio-channel.js";
 export { WsAudioChannel } from "./ws-audio-channel.js";
 export { WebRtcAudioChannel } from "./webrtc-audio-channel.js";
-export { SipAudioChannel } from "./sip-audio-channel.js";
 export { VapiAudioChannel } from "./vapi-audio-channel.js";
 export { RetellAudioChannel } from "./retell-audio-channel.js";
 export { ElevenLabsAudioChannel } from "./elevenlabs-audio-channel.js";
@@ -28,7 +26,7 @@ export interface AudioChannelConfig {
   relayHeaders?: Record<string, string>;
 }
 
-/** SIP server port config from environment. On Fly.io, use a fixed port behind the reverse proxy. */
+/** Shared Twilio server port config for phone-based adapters like Bland. */
 function sipPortConfig(): { port?: number; publicPort?: number | null } {
   const listenPort = parseInt(process.env["RUNNER_LISTEN_PORT"] ?? "0", 10) || undefined;
   return listenPort ? { port: listenPort, publicPort: null } : {};
@@ -73,29 +71,6 @@ export function createAudioChannel(config: AudioChannelConfig): AudioChannel {
         apiSecret,
         roomName,
         agentName,
-      });
-    }
-
-    case "sip": {
-      const accountSid = process.env["TWILIO_ACCOUNT_SID"] ?? "";
-      const authToken = process.env["TWILIO_AUTH_TOKEN"] ?? "";
-      const fromNumber = process.env["TWILIO_FROM_NUMBER"] ?? "";
-      const publicHost = process.env["RUNNER_PUBLIC_HOST"] ?? "localhost";
-
-      if (!config.targetPhoneNumber) {
-        throw new Error("SIP adapter requires targetPhoneNumber");
-      }
-      if (!fromNumber) {
-        throw new Error("SIP adapter requires TWILIO_FROM_NUMBER env var");
-      }
-
-      return new SipAudioChannel({
-        phoneNumber: config.targetPhoneNumber,
-        fromNumber,
-        accountSid,
-        authToken,
-        publicHost,
-        ...sipPortConfig(),
       });
     }
 

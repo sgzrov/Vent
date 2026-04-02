@@ -1,29 +1,29 @@
-import { loadApiKey, saveApiKey, validateApiKeyFormat, API_BASE } from "../lib/config.js";
+import { loadAccessToken, saveAccessToken, validateAccessTokenFormat, API_BASE } from "../lib/config.js";
 import { detectGitHubToken } from "../lib/github.js";
 import { printError, printSuccess } from "../lib/output.js";
 import { installSkillsAndScaffold } from "../lib/setup.js";
 
 interface InitArgs {
-  apiKey?: string;
+  accessToken?: string;
 }
 
 export async function initCommand(args: InitArgs): Promise<number> {
   const cwd = process.cwd();
 
-  // 1. Check/save API key
-  let key = args.apiKey ?? (await loadApiKey());
+  // 1. Check/save access token
+  let token = args.accessToken ?? (await loadAccessToken());
 
-  if (args.apiKey) {
-    if (!validateApiKeyFormat(args.apiKey)) {
-      printError("Invalid API key. Keys start with 'vent_'.");
+  if (args.accessToken) {
+    if (!validateAccessTokenFormat(args.accessToken)) {
+      printError("Invalid Vent access token. Tokens start with 'vent_'.");
       return 2;
     }
-    await saveApiKey(args.apiKey);
-    printSuccess("API key saved to ~/.vent/credentials", { force: true });
-  } else if (key) {
+    await saveAccessToken(args.accessToken);
+    printSuccess("Vent access token saved to ~/.vent/credentials", { force: true });
+  } else if (token) {
     printSuccess("Authenticated.", { force: true });
   } else {
-    // No key — try GitHub identity first, then anonymous bootstrap
+    // No token — try GitHub identity first, then anonymous bootstrap
     let authenticated = false;
     const ghToken = detectGitHubToken();
 
@@ -36,11 +36,13 @@ export async function initCommand(args: InitArgs): Promise<number> {
         });
 
         if (res.ok) {
-          const { api_key, username } = (await res.json()) as {
-            api_key: string;
+          const { access_token, username } = (await res.json()) as {
+            access_token?: string;
             username: string;
           };
-          await saveApiKey(api_key);
+          if (!access_token) throw new Error("Missing access token");
+          const token = access_token;
+          await saveAccessToken(token);
           printSuccess(`Authenticated as @${username} (via GitHub).`, {
             force: true,
           });
@@ -67,11 +69,16 @@ export async function initCommand(args: InitArgs): Promise<number> {
         return 1;
       }
 
-      const { api_key, run_limit } = (await res.json()) as {
-        api_key: string;
+      const { access_token, run_limit } = (await res.json()) as {
+        access_token?: string;
         run_limit: number;
       };
-      await saveApiKey(api_key);
+      if (!access_token) {
+        printError("Bootstrap did not return a Vent access token.");
+        return 1;
+      }
+      const token = access_token;
+      await saveAccessToken(token);
       printSuccess(
         `Account created (${run_limit} runs). You'll be prompted to sign in for unlimited access.`,
         { force: true },

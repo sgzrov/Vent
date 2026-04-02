@@ -15,9 +15,9 @@ Test voice agents from the terminal. Tests run in the cloud — results stream b
 - Before marking a task complete that touches agent behavior: run tests
 - Do NOT skip testing — voice agents are non-deterministic, small changes can break flows
 
-## Setup (if no API key)
+## Setup (if no Vent access token)
 
-If `~/.vent/credentials` does not exist and `VENT_API_KEY` is not set:
+If `~/.vent/credentials` does not exist and `VENT_ACCESS_TOKEN` is not set:
 
 ```bash
 npx vent-hq init
@@ -33,7 +33,7 @@ One command. No email, no browser, no human interaction needed. You get 10 free 
 | `npx vent-hq run -f .vent/suite.<adapter>.json --list` | List test names from suite |
 | `npx vent-hq run -f .vent/suite.<adapter>.json --test <name>` | Run a single test by name |
 | `npx vent-hq run --config '{...}'` | Run from inline JSON (one-off, no file needed) |
-| `npx vent-hq run -f .vent/suite.<adapter>.json --test <name> --submit` | Submit test, return immediately with run_id (deployed agents) |
+| `npx vent-hq run -f .vent/suite.<adapter>.json --test <name> --submit` | Submit remote test, return immediately with run_id (hosted custom agents or platform-direct adapters) |
 | `npx vent-hq stop <run-id>` | Cancel a queued or running test |
 | `npx vent-hq status <run-id> --json` | Poll results for a submitted run (--submit only) |
 
@@ -98,15 +98,15 @@ For a single test without creating a file:
 npx vent-hq run --config '{"connection":{"adapter":"websocket","start_command":"npm run start","agent_port":3001},"conversation_tests":[{"name":"quick-check","caller_prompt":"You are a customer calling to ask about business hours.","max_turns":4}]}'
 ```
 
-### Submit + check later (deployed agents only)
+### Submit + check later (remote runs only)
 
 1. `npx vent-hq run -f .vent/suite.json --test <name> --submit` → returns `{"run_id":"..."}`
 2. Later: `npx vent-hq status <run-id> --json`
 
 ## Connection
 
-- **Local agents**: set `start_command` in config — Vent starts the agent automatically via relay. Do NOT start the agent yourself.
-- **Deployed agents**: set `agent_url` instead. Compatible with `--submit`.
+- **BYO agent runtime**: your agent owns its own provider credentials. Use `start_command` for a local agent or `agent_url` for a hosted custom endpoint.
+- **Platform-direct runtime**: use adapter `vapi | retell | elevenlabs | bland | livekit`. This is the only mode where Vent itself needs provider credentials and saved platform connections apply.
 
 ## Full Config Schema
 
@@ -116,7 +116,7 @@ npx vent-hq run --config '{"connection":{"adapter":"websocket","start_command":"
   |----------|----------------------------------|-------------------|
   | LiveKit | **5** | Build=5, Ship=20, Scale=50+ |
   | Vapi | **10** | Starter=10, Growth=50, Enterprise=100+ |
-  | Bland (sip) | **3** (SIP-based, 10s between calls) | Max 3 concurrent. Bland uses phone calls (SIP), not WebSocket/WebRTC. All calls route through one Twilio number — Bland drops calls when 4+ target the same number. Scaling beyond 3 requires a Twilio number pool (not yet implemented). |
+  | Bland | **3** (phone-based, 10s between calls) | Max 3 concurrent. Bland uses phone calls routed through one Twilio number — Bland drops calls when 4+ target the same number. Scaling beyond 3 requires a Twilio number pool (not yet implemented). |
   | ElevenLabs | **5** | Ask user |
   | Retell | **5** | Ask user |
   | websocket (custom) | No platform limit | — |
@@ -143,25 +143,31 @@ OR
 <config_connection>
 {
   "connection": {
-    "adapter": "required -- websocket | sip | livekit | vapi | retell | elevenlabs | bland",
+    "adapter": "required -- websocket | livekit | vapi | retell | elevenlabs | bland",
     "start_command": "shell command to start agent (relay only, required for local)",
     "health_endpoint": "health check path after start_command (default: /health, relay only, required for local)",
-    "agent_url": "deployed agent URL (wss:// or https://). Required for deployed agents.",
+    "agent_url": "hosted custom agent URL (wss:// or https://). Use for BYO hosted agents.",
     "agent_port": "local agent port (default: 3001, required for local)",
-    "target_phone_number": "agent's phone number (required for sip, retell)",
-    "platform": "see adapter-specific examples below -- each platform has its own named fields"
+    "target_phone_number": "platform-specific phone number when required",
+    "platform": "optional authoring convenience for platform-direct adapters only. The CLI resolves this locally, creates/updates a saved platform connection, and strips raw provider secrets before submit. Do not use for websocket start_command or agent_url runs."
   }
 }
 
 <credential_resolution>
 IMPORTANT: How to handle platform credentials (API keys, secrets, agent IDs):
 
-1. The CLI auto-resolves credentials from the project's .env file. If .env already contains the right env vars, you can OMIT credential fields from the config JSON entirely -- the CLI will fill them in automatically.
-2. If you include credential fields in the config, put the ACTUAL VALUE (the real key/secret/ID), NOT the env var name. WRONG: "vapi_api_key": "VAPI_API_KEY". RIGHT: "vapi_api_key": "sk-abc123..." or just omit the field.
-3. To check: read the project's .env file. If it has the env var (e.g. VAPI_API_KEY=sk-abc123), you can omit that field. If not, ask the user for the value.
+There are two product modes:
+- `BYO agent runtime`: your agent owns its own provider credentials. This covers both `start_command` (local) and `agent_url` (hosted custom endpoint).
+- `Platform-direct runtime`: Vent talks to `vapi`, `retell`, `elevenlabs`, `bland`, or `livekit` directly. This is the only mode that uses saved platform connections.
+
+1. For `start_command` and `agent_url` runs, do NOT put Deepgram / ElevenLabs / OpenAI / other provider keys into Vent config unless the Vent adapter itself needs them. Those credentials belong to the user's local or hosted agent runtime.
+2. For platform-direct adapters (`vapi`, `retell`, `elevenlabs`, `bland`, `livekit`), the CLI auto-resolves credentials from `.env.local`, `.env`, and the current shell env. If those env vars already exist, you can omit credential fields from the config JSON entirely.
+3. If you include credential fields in the config, put the ACTUAL VALUE, NOT the env var name. WRONG: `"vapi_api_key": "VAPI_API_KEY"`. RIGHT: `"vapi_api_key": "sk-abc123..."` or omit the field.
+4. The CLI uses the resolved provider config to create or update a saved platform connection server-side, then submits only `platform_connection_id`. Users should not manually author `platform_connection_id`.
+5. To check whether credentials are already available, inspect `.env.local`, `.env`, and any relevant shell env visible to the CLI process.
 
 Auto-resolved env vars per platform:
-| Platform | Config field | Env var (auto-resolved from .env) |
+| Platform | Config field | Env var (auto-resolved from `.env.local`, `.env`, or shell env) |
 |----------|-------------|-----------------------------------|
 | Vapi | vapi_api_key | VAPI_API_KEY |
 | Vapi | vapi_assistant_id | VAPI_ASSISTANT_ID |
@@ -174,6 +180,8 @@ Auto-resolved env vars per platform:
 | Retell | retell_agent_id | RETELL_AGENT_ID |
 | ElevenLabs | elevenlabs_api_key | ELEVENLABS_API_KEY |
 | ElevenLabs | elevenlabs_agent_id | ELEVENLABS_AGENT_ID |
+
+The CLI strips raw platform secrets before `/runs/submit`. Platform-direct runs go through a saved `platform_connection_id` automatically. BYO agent runs (`start_command` and `agent_url`) do not.
 </credential_resolution>
 
 <config_adapter_rules>
@@ -187,19 +195,11 @@ WebSocket (local agent via relay):
   }
 }
 
-WebSocket (deployed agent):
+WebSocket (hosted custom agent):
 {
   "connection": {
     "adapter": "websocket",
     "agent_url": "https://my-agent.fly.dev"
-  }
-}
-
-SIP (telephony -- agent reachable by phone):
-{
-  "connection": {
-    "adapter": "sip",
-    "target_phone_number": "+14155551234"
   }
 }
 
@@ -211,7 +211,7 @@ Retell:
     "platform": { "provider": "retell" }
   }
 }
-Credentials auto-resolve from .env: RETELL_API_KEY, RETELL_AGENT_ID. Only add retell_api_key/retell_agent_id to the JSON if .env doesn't have them.
+Credentials auto-resolve from `.env.local`, `.env`, or shell env: RETELL_API_KEY, RETELL_AGENT_ID. Only add retell_api_key/retell_agent_id to the JSON if those env vars are not already available.
 
 Bland:
 {
@@ -220,7 +220,7 @@ Bland:
     "platform": { "provider": "bland" }
   }
 }
-Credentials auto-resolve from .env: BLAND_API_KEY, BLAND_PATHWAY_ID. Only add bland_api_key/bland_pathway_id to the JSON if .env doesn't have them.
+Credentials auto-resolve from `.env.local`, `.env`, or shell env: BLAND_API_KEY, BLAND_PATHWAY_ID. Only add bland_api_key/bland_pathway_id to the JSON if those env vars are not already available.
 Note: Bland routes through a single Twilio phone number -- concurrent calls are limited by telephony constraints. All agent config (voice, model, tools, etc.) is set on the pathway itself, not in Vent config.
 
 Vapi:
@@ -230,7 +230,7 @@ Vapi:
     "platform": { "provider": "vapi" }
   }
 }
-Credentials auto-resolve from .env: VAPI_API_KEY, VAPI_ASSISTANT_ID. Only add vapi_api_key/vapi_assistant_id to the JSON if .env doesn't have them.
+Credentials auto-resolve from `.env.local`, `.env`, or shell env: VAPI_API_KEY, VAPI_ASSISTANT_ID. Only add vapi_api_key/vapi_assistant_id to the JSON if those env vars are not already available.
 max_concurrency for Vapi: Starter=10, Growth=50, Enterprise=100+. Ask the user which tier they're on. If unknown, default to 10.
 All assistant config (voice, model, transcriber, interruption settings, etc.) is set on the Vapi assistant itself, not in Vent config.
 
@@ -241,7 +241,7 @@ ElevenLabs:
     "platform": { "provider": "elevenlabs" }
   }
 }
-Credentials auto-resolve from .env: ELEVENLABS_API_KEY, ELEVENLABS_AGENT_ID. Only add elevenlabs_api_key/elevenlabs_agent_id to the JSON if .env doesn't have them.
+Credentials auto-resolve from `.env.local`, `.env`, or shell env: ELEVENLABS_API_KEY, ELEVENLABS_AGENT_ID. Only add elevenlabs_api_key/elevenlabs_agent_id to the JSON if those env vars are not already available.
 
 LiveKit:
 {
@@ -254,7 +254,7 @@ LiveKit:
     }
   }
 }
-Credentials auto-resolve from .env: LIVEKIT_API_KEY, LIVEKIT_API_SECRET, LIVEKIT_URL. Only add these to the JSON if .env doesn't have them.
+Credentials auto-resolve from `.env.local`, `.env`, or shell env: LIVEKIT_API_KEY, LIVEKIT_API_SECRET, LIVEKIT_URL. Only add these to the JSON if those env vars are not already available.
 livekit_agent_name is optional -- only needed if the agent registers with an explicit agent_name in WorkerOptions. Omit for automatic dispatch.
 max_concurrency: Free/Build=5, Ship=20, Scale=50+. Ask the user which tier they're on. If unknown, default to 5.
 </config_adapter_rules>
@@ -264,10 +264,9 @@ max_concurrency: Free/Build=5, Ship=20, Scale=50+. Ask the user which tier they'
 <conversation_tests>
 <tool_call_capture>
 vapi/retell/elevenlabs/bland: automatic via platform API (no user code needed).
-WebSocket/WebRTC/SIP: user's agent must emit tool calls:
+WebSocket/WebRTC: user's agent must emit tool calls:
   WebSocket — JSON text frame: {"type":"tool_call","name":"...","arguments":{},"result":{},"successful":true,"duration_ms":150}
   WebRTC/LiveKit — publishData() or sendText() on topic "vent:tool-calls". Same JSON.
-  SIP — POST to callback URL Vent provides at call start.
 </tool_call_capture>
 
 <config_conversation_tests>
@@ -524,7 +523,7 @@ spike and soak only appear when configured. breaking_point only appears when a t
 - **Exit codes**: 0=pass, 1=fail, 2=error
 - The `run` command outputs **complete results as pretty-printed JSON** — including full transcript, latency metrics, tool calls, and audio analysis for every test. Do NOT run a separate `vent status` command — all data is already in the output.
 
-## API Keys
+## Vent Access Token
 
-Run `npx vent-hq login` or set `VENT_API_KEY` env var.
+Run `npx vent-hq login` or set `VENT_ACCESS_TOKEN` env var.
 Vent provides DEEPGRAM_API_KEY and ANTHROPIC_API_KEY automatically.

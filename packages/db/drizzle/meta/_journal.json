@@ -113,6 +113,20 @@
       "when": 1773000000000,
       "tag": "0015_anonymous_auth_and_cancelled",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1773100000000,
+      "tag": "0016_platform_connections",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1773200000000,
+      "tag": "0017_access_tokens",
+      "breakpoints": true
     }
   ]
 }

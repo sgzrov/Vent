@@ -26,14 +26,14 @@ import {
 } from "@/components/ui/table";
 import { Copy, Plus, Trash2, Key, Check } from "lucide-react";
 import {
-  fetchApiKeys,
-  createApiKey,
-  revokeApiKey,
-  type ApiKey,
+  fetchAccessTokens,
+  createAccessToken,
+  revokeAccessToken,
+  type AccessToken,
 } from "@/lib/api";
 
-export default function ApiKeysPage() {
-  const [keys, setKeys] = useState<ApiKey[]>([]);
+export default function AccessTokensPage() {
+  const [keys, setKeys] = useState<AccessToken[]>([]);
   const [loading, setLoading] = useState(true);
 
   const [createOpen, setCreateOpen] = useState(false);
@@ -44,7 +44,7 @@ export default function ApiKeysPage() {
 
   const loadKeys = useCallback(async () => {
     try {
-      const data = await fetchApiKeys();
+      const data = await fetchAccessTokens();
       setKeys(data);
     } catch {
       // silently fail — page still usable
@@ -60,8 +60,8 @@ export default function ApiKeysPage() {
   const handleCreate = async () => {
     setCreating(true);
     try {
-      const data = await createApiKey(newKeyName || "default");
-      setCreatedKey(data.api_key);
+      const data = await createAccessToken(newKeyName || "default");
+      setCreatedKey(data.access_token);
       loadKeys();
     } catch {
       // TODO: show error
@@ -87,7 +87,7 @@ export default function ApiKeysPage() {
 
   const handleRevoke = async (id: string) => {
     try {
-      await revokeApiKey(id);
+      await revokeAccessToken(id);
       loadKeys();
     } catch {
       // TODO: show error
@@ -102,10 +102,10 @@ export default function ApiKeysPage() {
       <div className="h-16 flex items-center justify-between">
         <div>
           <h1 className="text-[1.125rem] leading-none font-medium tracking-[-0.01em]">
-            API Keys
+            Access Tokens
           </h1>
           <p className="text-[14px] text-muted-foreground mt-2">
-            Manage API keys for authenticating with the Vent CLI.
+            Manage Vent access tokens for authenticating with the CLI.
           </p>
         </div>
         <Dialog
@@ -118,19 +118,19 @@ export default function ApiKeysPage() {
           <DialogTrigger asChild>
             <Button>
               <Plus className="h-4 w-4 mr-2" />
-              Create Key
+              Create Token
             </Button>
           </DialogTrigger>
           <DialogContent>
             <DialogHeader>
               <DialogTitle>
-                {createdKey ? "API Key Created" : "Create API Key"}
+                {createdKey ? "Access Token Created" : "Create Access Token"}
               </DialogTitle>
             </DialogHeader>
             {createdKey ? (
               <div className="space-y-4">
                 <p className="text-sm text-muted-foreground">
-                  Copy this key now. It will not be shown again.
+                  Copy this access token now. It will not be shown again.
                 </p>
                 <div className="flex items-center gap-2">
                   <code className="flex-1 p-3 bg-muted rounded-md text-sm font-mono break-all select-all">
@@ -149,7 +149,7 @@ export default function ApiKeysPage() {
                     Usage:
                   </p>
                   <code className="text-xs">
-                    {`export VENT_API_KEY=<your-key>`}
+                    {`export VENT_ACCESS_TOKEN=<your-token>`}
                   </code>
                   <p className="text-xs mt-1.5">
                     Or run <code className="font-mono">vent login</code> to save it locally.
@@ -159,9 +159,9 @@ export default function ApiKeysPage() {
             ) : (
               <div className="space-y-4">
                 <div>
-                  <label className="text-sm font-medium">Key Name</label>
+                  <label className="text-sm font-medium">Token Name</label>
                   <Input
-                    placeholder="e.g., CI Pipeline"
+                    placeholder="e.g., Vent CLI Login"
                     value={newKeyName}
                     onChange={(e) => setNewKeyName(e.target.value)}
                     className="mt-1"
@@ -175,7 +175,7 @@ export default function ApiKeysPage() {
                   className="w-full"
                   disabled={creating}
                 >
-                  {creating ? "Creating..." : "Create Key"}
+                  {creating ? "Creating..." : "Create Token"}
                 </Button>
               </div>
             )}
@@ -190,9 +190,9 @@ export default function ApiKeysPage() {
         <Card>
           <CardContent className="py-12 text-center">
             <Key className="h-8 w-8 mx-auto mb-3 text-muted-foreground" />
-            <p className="text-muted-foreground">No API keys yet.</p>
+            <p className="text-muted-foreground">No access tokens yet.</p>
             <p className="text-sm text-muted-foreground mt-1">
-              Create a key to authenticate with the Vent CLI.
+              Create a token to authenticate with the Vent CLI.
             </p>
           </CardContent>
         </Card>
@@ -201,14 +201,14 @@ export default function ApiKeysPage() {
           {activeKeys.length > 0 && (
             <Card>
               <CardHeader>
-                <CardTitle className="text-lg">Active Keys</CardTitle>
+                <CardTitle className="text-lg">Active Tokens</CardTitle>
               </CardHeader>
               <CardContent>
                 <Table>
                   <TableHeader>
                     <TableRow>
                       <TableHead>Name</TableHead>
-                      <TableHead>Key</TableHead>
+                      <TableHead>Token</TableHead>
                       <TableHead>Created</TableHead>
                       <TableHead className="w-[80px]" />
                     </TableRow>
@@ -248,14 +248,14 @@ export default function ApiKeysPage() {
           {revokedKeys.length > 0 && (
             <Card className="opacity-60">
               <CardHeader>
-                <CardTitle className="text-lg">Revoked Keys</CardTitle>
+                <CardTitle className="text-lg">Revoked Tokens</CardTitle>
               </CardHeader>
               <CardContent>
                 <Table>
                   <TableHeader>
                     <TableRow>
                       <TableHead>Name</TableHead>
-                      <TableHead>Key</TableHead>
+                      <TableHead>Token</TableHead>
                       <TableHead>Created</TableHead>
                       <TableHead>Revoked</TableHead>
                     </TableRow>

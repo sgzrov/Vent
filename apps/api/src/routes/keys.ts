@@ -10,15 +10,15 @@ export async function keyRoutes(app: FastifyInstance) {
     const body = request.body as { name?: string } | undefined;
     const name = body?.name ?? "default";
 
-    const rawKey = `vent_${randomBytes(24).toString("hex")}`;
-    const keyHash = createHash("sha256").update(rawKey).digest("hex");
-    const prefix = rawKey.slice(0, 12);
+    const rawAccessToken = `vent_${randomBytes(24).toString("hex")}`;
+    const tokenHash = createHash("sha256").update(rawAccessToken).digest("hex");
+    const prefix = rawAccessToken.slice(0, 12);
 
     const [row] = await app.db
-      .insert(schema.apiKeys)
+      .insert(schema.accessTokens)
       .values({
         user_id: request.userId!,
-        key_hash: keyHash,
+        token_hash: tokenHash,
         name,
         prefix,
       })
@@ -26,26 +26,26 @@ export async function keyRoutes(app: FastifyInstance) {
 
     return reply.status(201).send({
       id: row!.id,
-      api_key: rawKey,
+      access_token: rawAccessToken,
       name,
       prefix,
       created_at: row!.created_at,
-      warning: "Save this key — it will not be shown again.",
+      warning: "Save this access token — it will not be shown again.",
     });
   });
 
   app.get("/keys", authPreHandler, async (request, reply) => {
     const rows = await app.db
       .select({
-        id: schema.apiKeys.id,
-        name: schema.apiKeys.name,
-        prefix: schema.apiKeys.prefix,
-        created_at: schema.apiKeys.created_at,
-        revoked_at: schema.apiKeys.revoked_at,
+        id: schema.accessTokens.id,
+        name: schema.accessTokens.name,
+        prefix: schema.accessTokens.prefix,
+        created_at: schema.accessTokens.created_at,
+        revoked_at: schema.accessTokens.revoked_at,
       })
-      .from(schema.apiKeys)
-      .where(eq(schema.apiKeys.user_id, request.userId!))
-      .orderBy(desc(schema.apiKeys.created_at));
+      .from(schema.accessTokens)
+      .where(eq(schema.accessTokens.user_id, request.userId!))
+      .orderBy(desc(schema.accessTokens.created_at));
 
     const keys = rows.map((row) => ({
       ...row,
@@ -62,13 +62,13 @@ export async function keyRoutes(app: FastifyInstance) {
       const { id } = request.params;
 
       const [updated] = await app.db
-        .update(schema.apiKeys)
+        .update(schema.accessTokens)
         .set({ revoked_at: new Date() })
         .where(
           and(
-            eq(schema.apiKeys.id, id),
-            eq(schema.apiKeys.user_id, request.userId!),
-            isNull(schema.apiKeys.revoked_at),
+            eq(schema.accessTokens.id, id),
+            eq(schema.accessTokens.user_id, request.userId!),
+            isNull(schema.accessTokens.revoked_at),
           )
         )
         .returning();
@@ -76,7 +76,7 @@ export async function keyRoutes(app: FastifyInstance) {
       if (!updated) {
         return reply
           .status(404)
-          .send({ error: "Key not found or already revoked" });
+          .send({ error: "Access token not found or already revoked" });
       }
 
       return reply.send({ id: updated.id, revoked_at: updated.revoked_at });

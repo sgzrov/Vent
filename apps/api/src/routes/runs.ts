@@ -2,14 +2,14 @@ import type { FastifyInstance } from "fastify";
 import { eq, and, desc, asc } from "drizzle-orm";
 import { schema } from "@vent/db";
 import { subscribe, unsubscribe, broadcast } from "../lib/run-subscribers.js";
-import { RunSubmitSchema, submitRun, UsageLimitError } from "../lib/run-submit.js";
+import { RunSubmitSchema, submitRun, SubmitRunConfigError, UsageLimitError } from "../lib/run-submit.js";
 
 export async function runRoutes(app: FastifyInstance) {
   const authPreHandler = { preHandler: app.verifyAuth };
-  const apiKeyPreHandler = { preHandler: app.verifyApiKey };
+  const accessTokenPreHandler = { preHandler: app.verifyAccessToken };
 
   // --- Submit a run with full test config (used by CLI) ---
-  app.post("/runs/submit", apiKeyPreHandler, async (request, reply) => {
+  app.post("/runs/submit", accessTokenPreHandler, async (request, reply) => {
     const parsed = RunSubmitSchema.safeParse(request.body);
     if (!parsed.success) {
       return reply.status(400).send({
@@ -24,7 +24,7 @@ export async function runRoutes(app: FastifyInstance) {
     let result;
     try {
       result = await submitRun(app, {
-        apiKeyId: request.apiKeyId!,
+        accessTokenId: request.accessTokenId!,
         userId: request.userId!,
         config: parsed.data.config,
         idempotencyKey: parsed.data.idempotency_key,
@@ -37,6 +37,9 @@ export async function runRoutes(app: FastifyInstance) {
           limit: err.limit,
           used: err.used,
         });
+      }
+      if (err instanceof SubmitRunConfigError) {
+        return reply.status(err.statusCode).send({ error: err.message });
       }
       throw err;
     }
@@ -187,7 +190,7 @@ export async function runRoutes(app: FastifyInstance) {
   // --- Stop/cancel a run ---
   app.post<{ Params: { id: string } }>(
     "/runs/:id/stop",
-    apiKeyPreHandler,
+    accessTokenPreHandler,
     async (request, reply) => {
       const { id } = request.params;
 

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { createApiKey } from "@/lib/api";
+import { createAccessToken } from "@/lib/api";
 
 export default function CliAuthContent() {
   const searchParams = useSearchParams();
@@ -29,19 +29,19 @@ export default function CliAuthContent() {
 
     async function authorize() {
       try {
-        const data = await createApiKey("CLI Login");
+        const data = await createAccessToken("Vent CLI Login");
 
         if (cancelled) return;
 
         const callbackUrl = new URL(`http://127.0.0.1:${portNum}/callback`);
-        callbackUrl.searchParams.set("api_key", data.api_key);
+        callbackUrl.searchParams.set("access_token", data.access_token);
         callbackUrl.searchParams.set("state", state!);
 
         window.location.href = callbackUrl.toString();
       } catch {
         if (cancelled) return;
         setStatus("error");
-        setErrorMessage("Failed to create API key. Try again.");
+        setErrorMessage("Failed to create access token. Try again.");
       }
     }
 
@@ -60,7 +60,7 @@ export default function CliAuthContent() {
             Authorizing CLI...
           </h1>
           <p className="text-muted-foreground mt-2 text-sm">
-            Creating an API key and redirecting back to your terminal.
+            Creating a Vent access token and redirecting back to your terminal.
           </p>
         </>
       ) : (

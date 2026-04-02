@@ -31,7 +31,7 @@ export async function setBaseline(runId: string) {
   return res.json();
 }
 
-export interface ApiKey {
+export interface AccessToken {
   id: string;
   name: string;
   prefix: string;
@@ -40,39 +40,39 @@ export interface ApiKey {
   active: boolean;
 }
 
-export interface CreateKeyResponse {
+export interface CreateAccessTokenResponse {
   id: string;
-  api_key: string;
+  access_token: string;
   name: string;
   prefix: string;
   created_at: string;
   warning: string;
 }
 
-export async function fetchApiKeys(): Promise<ApiKey[]> {
+export async function fetchAccessTokens(): Promise<AccessToken[]> {
   const res = await fetch(`${API_URL}/keys`, {
     cache: "no-store",
     credentials: "include",
   });
-  if (!res.ok) throw new Error(`Failed to fetch API keys: ${res.status}`);
+  if (!res.ok) throw new Error(`Failed to fetch access tokens: ${res.status}`);
   return res.json();
 }
 
-export async function createApiKey(name: string): Promise<CreateKeyResponse> {
+export async function createAccessToken(name: string): Promise<CreateAccessTokenResponse> {
   const res = await fetch(`${API_URL}/keys`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "include",
     body: JSON.stringify({ name }),
   });
-  if (!res.ok) throw new Error(`Failed to create API key: ${res.status}`);
+  if (!res.ok) throw new Error(`Failed to create access token: ${res.status}`);
   return res.json();
 }
 
-export async function revokeApiKey(id: string): Promise<void> {
+export async function revokeAccessToken(id: string): Promise<void> {
   const res = await fetch(`${API_URL}/keys/${id}`, {
     method: "DELETE",
     credentials: "include",
   });
-  if (!res.ok) throw new Error(`Failed to revoke API key: ${res.status}`);
+  if (!res.ok) throw new Error(`Failed to revoke access token: ${res.status}`);
 }

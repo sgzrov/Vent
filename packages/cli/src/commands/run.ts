@@ -1,13 +1,14 @@
 import * as fs from "node:fs/promises";
 import { writeFileSync } from "node:fs";
 import * as net from "node:net";
-import { apiFetch, ApiError } from "../lib/api.js";
+import { apiFetch, ApiError, ensurePlatformConnection } from "../lib/api.js";
 import { deviceAuthFlow } from "../lib/auth.js";
 import { streamRunEvents } from "../lib/sse.js";
 import { startRelay } from "../lib/relay.js";
 import { printEvent, printError, printInfo, printSummary, debug, setVerbose } from "../lib/output.js";
-import { loadApiKey, saveApiKey } from "../lib/config.js";
+import { loadAccessToken, saveAccessToken } from "../lib/config.js";
 import { saveRunHistory } from "../lib/run-history.js";
+import { resolveRemotePlatformConfig } from "../lib/platform-connections.js";
 import type { RelayHandle } from "../lib/relay.js";
 import type { SSEEvent } from "../lib/sse.js";
 
@@ -17,7 +18,7 @@ interface RunArgs {
   config?: string;
   file?: string;
   test?: string;
-  apiKey?: string;
+  accessToken?: string;
   json: boolean;
   submit: boolean;
   verbose?: boolean;
@@ -27,13 +28,13 @@ export async function runCommand(args: RunArgs): Promise<number> {
   if (args.verbose) setVerbose(true);
   debug(`start args=${JSON.stringify({ file: args.file, test: args.test, json: args.json, submit: args.submit })}`);
 
-  // 1. Resolve API key
-  const apiKey = args.apiKey ?? (await loadApiKey());
-  if (!apiKey) {
-    printError("No API key found. Set VENT_API_KEY, run `npx vent-hq login`, or pass --api-key.");
+  // 1. Resolve Vent access token
+  const accessToken = args.accessToken ?? (await loadAccessToken());
+  if (!accessToken) {
+    printError("No Vent access token found. Set VENT_ACCESS_TOKEN, run `npx vent-hq login`, or pass --access-token.");
     return 2;
   }
-  debug(`api-key resolved (${apiKey.slice(0, 8)}…)`);
+  debug(`access-token resolved (${accessToken.slice(0, 8)}…)`);
 
   // 2. Parse config
   let config: unknown;
@@ -89,44 +90,19 @@ export async function runCommand(args: RunArgs): Promise<number> {
     debug(`filtered to test: ${args.test}`);
   }
 
-  // 2c. Resolve platform credentials from local env so the worker doesn't need them
-  const cfgPlatform = (config as { connection?: { platform?: Record<string, unknown> & { provider?: string } } });
-  const connAdapter = (config as { connection?: { adapter?: string } }).connection?.adapter;
-  const plat = cfgPlatform.connection?.platform;
-  if (plat) {
-    const provider = plat.provider ?? connAdapter;
-    // Map provider → { configField: envVar } for auto-resolution
-    const envMap: Record<string, Record<string, string>> = {
-      vapi: { vapi_api_key: "VAPI_API_KEY", vapi_assistant_id: "VAPI_ASSISTANT_ID" },
-      bland: { bland_api_key: "BLAND_API_KEY", bland_pathway_id: "BLAND_PATHWAY_ID" },
-      livekit: { livekit_api_key: "LIVEKIT_API_KEY", livekit_api_secret: "LIVEKIT_API_SECRET", livekit_url: "LIVEKIT_URL" },
-      retell: { retell_api_key: "RETELL_API_KEY", retell_agent_id: "RETELL_AGENT_ID" },
-      elevenlabs: { elevenlabs_api_key: "ELEVENLABS_API_KEY", elevenlabs_agent_id: "ELEVENLABS_AGENT_ID" },
-    };
-    const resolveProvider = provider;
-    const fields = resolveProvider ? envMap[resolveProvider] : undefined;
-    if (fields) {
-      for (const [field, envVar] of Object.entries(fields)) {
-        const current = plat[field];
-        // Resolve if empty, or if the value is the env var name itself (coding agent mistake),
-        // or if it looks like an env var reference (ALL_CAPS_WITH_UNDERSCORES)
-        const needsResolve = !current
-          || current === envVar
-          || (typeof current === "string" && /^[A-Z][A-Z0-9_]+$/.test(current));
-        if (needsResolve) {
-          const val = process.env[envVar];
-          if (val) {
-            plat[field] = val;
-            debug(`resolved ${field} from ${envVar}`);
-          }
-        }
-      }
-    }
+  // 2c. Resolve remote platform credentials from local env and keep them local to the CLI.
+  // The CLI will upsert a saved platform connection and submit only the resulting ID.
+  let resolvedRemotePlatform = null;
+  try {
+    resolvedRemotePlatform = resolveRemotePlatformConfig(config);
+  } catch (err) {
+    printError((err as Error).message);
+    return 2;
   }
 
   // 2d. Enforce platform concurrency limits
   const adapterForLimit = (config as { connection?: { adapter?: string } }).connection?.adapter;
-  const platformProvider = cfgPlatform.connection?.platform?.provider;
+  const platformProvider = resolvedRemotePlatform?.provider;
   const defaultLimits: Record<string, number> = { livekit: 5, vapi: 10, bland: 10, elevenlabs: 5, retell: 5 };
   const providerKey = platformProvider ?? adapterForLimit;
   const concurrencyLimit = providerKey ? defaultLimits[providerKey] : undefined;
@@ -168,14 +144,44 @@ export async function runCommand(args: RunArgs): Promise<number> {
     };
   };
 
-  let activeKey = apiKey;
-  try {
-    const res = await apiFetch("/runs/submit", activeKey, {
+  let activeAccessToken = accessToken;
+  const configConnection = config as {
+    connection?: {
+      adapter?: string;
+      platform?: Record<string, unknown>;
+      platform_connection_id?: string;
+    };
+  };
+
+  async function prepareConfigForSubmit(currentAccessToken: string): Promise<void> {
+    if (!configConnection.connection) return;
+
+    if (resolvedRemotePlatform) {
+      debug(`ensuring saved ${resolvedRemotePlatform.provider} connection…`);
+      const ensured = await ensurePlatformConnection(currentAccessToken, resolvedRemotePlatform);
+      configConnection.connection.platform_connection_id = ensured.platform_connection_id;
+      debug(
+        `saved connection ready id=${ensured.platform_connection_id} created=${ensured.created} updated=${ensured.updated}`,
+      );
+    }
+
+    if ("platform" in configConnection.connection) {
+      delete configConnection.connection.platform;
+    }
+  }
+
+  async function submitPrepared(currentAccessToken: string): Promise<typeof submitResult> {
+    await prepareConfigForSubmit(currentAccessToken);
+    const res = await apiFetch("/runs/submit", currentAccessToken, {
       method: "POST",
       body: JSON.stringify({ config }),
     });
     debug(`API response status: ${res.status}`);
-    submitResult = (await res.json()) as typeof submitResult;
+    return res.json() as Promise<typeof submitResult>;
+  }
+
+  try {
+    submitResult = await submitPrepared(activeAccessToken);
   } catch (err) {
     // Auto-trigger login when anonymous run limit is hit
     if (err instanceof ApiError && err.status === 403) {
@@ -190,15 +196,11 @@ export async function runCommand(args: RunArgs): Promise<number> {
           printError("Authentication failed. Run `npx vent-hq login` manually.");
           return 1;
         }
-        activeKey = authResult.apiKey;
-        await saveApiKey(activeKey);
+        activeAccessToken = authResult.accessToken;
+        await saveAccessToken(activeAccessToken);
         printInfo("Authenticated! Retrying run submission...", { force: true });
         try {
-          const retryRes = await apiFetch("/runs/submit", activeKey, {
-            method: "POST",
-            body: JSON.stringify({ config }),
-          });
-          submitResult = (await retryRes.json()) as typeof submitResult;
+          submitResult = await submitPrepared(activeAccessToken);
         } catch (retryErr) {
           debug(`retry submit error: ${(retryErr as Error).message}`);
           printError(`Submit failed after login: ${(retryErr as Error).message}`);

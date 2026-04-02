@@ -55,6 +55,17 @@ export interface ConversationTestSpec {
   caller_audio?: CallerAudioEffects;
 }
 
+export interface PlatformConnectionSummary {
+  id: string;
+  provider: "bland" | "livekit" | "vapi" | "retell" | "elevenlabs";
+  version: number;
+  resource_label: string;
+}
+
+export type PlatformSummary = Record<string, unknown> & {
+  provider: "bland" | "livekit" | "vapi" | "retell" | "elevenlabs";
+};
+
 export interface TestSpec {
   conversation_tests?: ConversationTestSpec[];
   red_team_tests?: ConversationTestSpec[];
@@ -63,6 +74,9 @@ export interface TestSpec {
     caller_prompt: string;
     max_turns?: number;
   };
+  platform_connection_id?: string | null;
+  platform_connection?: PlatformConnectionSummary | null;
+  platform?: PlatformSummary | null;
 }
 
 // --- Run-level types ---
