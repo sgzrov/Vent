@@ -1,11 +1,12 @@
 import * as fs from "node:fs/promises";
 import { writeFileSync } from "node:fs";
 import * as net from "node:net";
-import { apiFetch } from "../lib/api.js";
+import { apiFetch, ApiError } from "../lib/api.js";
+import { deviceAuthFlow } from "../lib/auth.js";
 import { streamRunEvents } from "../lib/sse.js";
 import { startRelay } from "../lib/relay.js";
 import { printEvent, printError, printInfo, printSummary, debug, setVerbose } from "../lib/output.js";
-import { loadApiKey } from "../lib/config.js";
+import { loadApiKey, saveApiKey } from "../lib/config.js";
 import { saveRunHistory } from "../lib/run-history.js";
 import type { RelayHandle } from "../lib/relay.js";
 import type { SSEEvent } from "../lib/sse.js";
@@ -167,17 +168,52 @@ export async function runCommand(args: RunArgs): Promise<number> {
     };
   };
 
+  let activeKey = apiKey;
   try {
-    const res = await apiFetch("/runs/submit", apiKey, {
+    const res = await apiFetch("/runs/submit", activeKey, {
       method: "POST",
       body: JSON.stringify({ config }),
     });
     debug(`API response status: ${res.status}`);
     submitResult = (await res.json()) as typeof submitResult;
   } catch (err) {
-    debug(`submit error: ${(err as Error).message}`);
-    printError(`Submit failed: ${(err as Error).message}`);
-    return 2;
+    // Auto-trigger login when anonymous run limit is hit
+    if (err instanceof ApiError && err.status === 403) {
+      const body = err.body as { code?: string } | undefined;
+      if (body?.code === "USAGE_LIMIT") {
+        printInfo(
+          "To prevent abuse, we require a verified account after 10 runs. Opening browser to sign in...",
+          { force: true },
+        );
+        const authResult = await deviceAuthFlow();
+        if (!authResult.ok) {
+          printError("Authentication failed. Run `npx vent-hq login` manually.");
+          return 1;
+        }
+        activeKey = authResult.apiKey;
+        await saveApiKey(activeKey);
+        printInfo("Authenticated! Retrying run submission...", { force: true });
+        try {
+          const retryRes = await apiFetch("/runs/submit", activeKey, {
+            method: "POST",
+            body: JSON.stringify({ config }),
+          });
+          submitResult = (await retryRes.json()) as typeof submitResult;
+        } catch (retryErr) {
+          debug(`retry submit error: ${(retryErr as Error).message}`);
+          printError(`Submit failed after login: ${(retryErr as Error).message}`);
+          return 2;
+        }
+      } else {
+        debug(`submit error: ${(err as Error).message}`);
+        printError(`Submit failed: ${(err as Error).message}`);
+        return 2;
+      }
+    } else {
+      debug(`submit error: ${(err as Error).message}`);
+      printError(`Submit failed: ${(err as Error).message}`);
+      return 2;
+    }
   }
 
   const { run_id } = submitResult;
@@ -244,7 +280,7 @@ export async function runCommand(args: RunArgs): Promise<number> {
 
   try {
     let eventCount = 0;
-    for await (const event of streamRunEvents(run_id, apiKey, abortController.signal)) {
+    for await (const event of streamRunEvents(run_id, activeKey, abortController.signal)) {
       eventCount++;
       const meta = (event.metadata_json ?? {}) as Record<string, unknown>;
       debug(`event #${eventCount}: type=${event.event_type} meta_keys=[${Object.keys(meta).join(",")}] message="${event.message ?? ""}"`);
