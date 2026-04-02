@@ -10,7 +10,8 @@
   },
   "scripts": {
     "build": "tsc",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "test": "pnpm build && node --test dist/audio-tests/helpers.test.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",

@@ -12,6 +12,7 @@
   "dependencies": {
     "@vent/shared": "workspace:*",
     "@vent/db": "workspace:*",
+    "@vent/platform-connections": "workspace:*",
     "@vent/runner": "workspace:*",
     "@vent/adapters": "workspace:*",
     "bullmq": "^5.30.0",

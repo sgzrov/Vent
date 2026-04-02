@@ -11,7 +11,7 @@
     "deploy:api": "fly deploy . --config apps/api/fly.toml --dockerfile apps/api/Dockerfile --remote-only",
     "deploy:worker": "fly deploy . --config apps/worker/fly.toml --dockerfile apps/worker/Dockerfile --remote-only",
     "deploy:dashboard": "cd apps/dashboard && fly deploy --remote-only",
-    "deploy:all": "pnpm deploy:api & pnpm deploy:worker & pnpm deploy:dashboard & wait"
+    "deploy:all": "pnpm deploy:api && (pnpm deploy:worker & pnpm deploy:dashboard & wait)"
   },
   "devDependencies": {
     "@changesets/cli": "^2.30.0",

@@ -1,11 +1,11 @@
-import { saveApiKey, API_BASE } from "./config.js";
+import { saveAccessToken, API_BASE } from "./config.js";
 import { openBrowser } from "./browser.js";
 import { printError, printInfo } from "./output.js";
 
 const POLL_INTERVAL_MS = 2000;
 
 export type AuthResult =
-  | { ok: true; apiKey: string }
+  | { ok: true; accessToken: string }
   | { ok: false; error: string };
 
 function sleep(ms: number): Promise<void> {
@@ -54,9 +54,10 @@ export async function deviceAuthFlow(): Promise<AuthResult> {
 
       const data = await res.json();
 
-      if (data.status === "approved" && data.api_key) {
-        await saveApiKey(data.api_key);
-        return { ok: true, apiKey: data.api_key };
+      const accessToken = data.access_token;
+      if (data.status === "approved" && accessToken) {
+        await saveAccessToken(accessToken);
+        return { ok: true, accessToken };
       }
 
       if (data.status === "expired") {

@@ -179,7 +179,7 @@ export async function callbackRoutes(app: FastifyInstance) {
       start_command: spec.start_command as string | undefined,
       health_endpoint: spec.health_endpoint as string | undefined,
       agent_url: spec.agent_url as string | undefined,
-      platform: spec.platform ?? null,
+      platform_connection_id: spec.platform_connection_id as string | undefined,
       relay: true,
     }, { jobId: runId });
 

@@ -157,7 +157,7 @@ export function DeviceAuthContent({ code, isAuthenticated, signInUrl }: Props) {
               </div>
               <div>
                 <p className="text-sm font-medium text-foreground">Authenticated</p>
-                <p className="text-xs text-muted-foreground/60">API key saved to ~/.vent/credentials</p>
+                <p className="text-xs text-muted-foreground/60">Access token saved to ~/.vent/credentials</p>
               </div>
             </div>
             <div className="flex items-start gap-3">

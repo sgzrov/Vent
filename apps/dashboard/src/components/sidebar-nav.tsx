@@ -17,7 +17,7 @@ const groups = [
   },
   {
     label: "Settings",
-    items: [{ href: "/settings/keys", label: "API Keys", icon: KeyRound }],
+    items: [{ href: "/settings/keys", label: "Access Tokens", icon: KeyRound }],
   },
 ];
 

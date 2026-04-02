@@ -8,9 +8,9 @@ const CREDENTIALS_FILE = path.join(CONFIG_DIR, "credentials");
 export const API_BASE = process.env.VENT_API_URL ?? "https://vent-api.fly.dev";
 export const DASHBOARD_URL = process.env.VENT_DASHBOARD_URL ?? "https://ventmcp.dev";
 
-export async function loadApiKey(): Promise<string | null> {
+export async function loadAccessToken(): Promise<string | null> {
   // 1. Environment variable (highest priority)
-  if (process.env.VENT_API_KEY) return process.env.VENT_API_KEY;
+  if (process.env.VENT_ACCESS_TOKEN) return process.env.VENT_ACCESS_TOKEN;
 
   // 2. Credentials file
   try {
@@ -24,9 +24,9 @@ export async function loadApiKey(): Promise<string | null> {
   return null;
 }
 
-export async function saveApiKey(key: string): Promise<void> {
+export async function saveAccessToken(token: string): Promise<void> {
   await fs.mkdir(CONFIG_DIR, { recursive: true });
-  await fs.writeFile(CREDENTIALS_FILE, key + "\n", { mode: 0o600 });
+  await fs.writeFile(CREDENTIALS_FILE, token + "\n", { mode: 0o600 });
 }
 
 export async function deleteCredentials(): Promise<void> {
@@ -37,6 +37,6 @@ export async function deleteCredentials(): Promise<void> {
   }
 }
 
-export function validateApiKeyFormat(key: string): boolean {
-  return key.startsWith("vent_") && key.length > 10;
+export function validateAccessTokenFormat(token: string): boolean {
+  return token.startsWith("vent_") && token.length > 10;
 }

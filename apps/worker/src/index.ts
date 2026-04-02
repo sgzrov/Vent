@@ -1,6 +1,5 @@
 import { Worker } from "bullmq";
 import IORedis from "ioredis";
-import type { PlatformConfig } from "@vent/shared";
 import { SharedSipServer } from "@vent/adapters";
 import { executeRun } from "./jobs/run-executor.js";
 
@@ -29,7 +28,7 @@ function createWorkerForQueue(queueName: string) {
         start_command?: string;
         health_endpoint?: string;
         agent_url?: string;
-        platform?: Record<string, unknown> | null;
+        platform_connection_id?: string | null;
         relay?: boolean;
       };
 
@@ -46,7 +45,7 @@ function createWorkerForQueue(queueName: string) {
         start_command: data.start_command,
         health_endpoint: data.health_endpoint,
         agent_url: data.agent_url,
-        platform: data.platform as PlatformConfig | null,
+        platform_connection_id: data.platform_connection_id ?? null,
         relay: data.relay,
       });
     },

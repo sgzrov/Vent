@@ -43,13 +43,13 @@ export async function agentAuthRoutes(app: FastifyInstance) {
       DEFAULT_RUN_LIMIT;
 
     const userId = `anon_${randomUUID()}`;
-    const rawKey = `vent_${randomBytes(24).toString("hex")}`;
-    const keyHash = createHash("sha256").update(rawKey).digest("hex");
-    const prefix = rawKey.slice(0, 12);
+    const rawAccessToken = `vent_${randomBytes(24).toString("hex")}`;
+    const tokenHash = createHash("sha256").update(rawAccessToken).digest("hex");
+    const prefix = rawAccessToken.slice(0, 12);
 
-    await app.db.insert(schema.apiKeys).values({
+    await app.db.insert(schema.accessTokens).values({
       user_id: userId,
-      key_hash: keyHash,
+      token_hash: tokenHash,
       name: "Bootstrap",
       prefix,
       is_anonymous: true,
@@ -57,7 +57,7 @@ export async function agentAuthRoutes(app: FastifyInstance) {
     });
 
     return reply.status(201).send({
-      api_key: rawKey,
+      access_token: rawAccessToken,
       run_limit: runLimit,
     });
   });
@@ -91,13 +91,13 @@ export async function agentAuthRoutes(app: FastifyInstance) {
     }
 
     const userId = `gh_${ghUser.id}`;
-    const rawKey = `vent_${randomBytes(24).toString("hex")}`;
-    const keyHash = createHash("sha256").update(rawKey).digest("hex");
-    const prefix = rawKey.slice(0, 12);
+    const rawAccessToken = `vent_${randomBytes(24).toString("hex")}`;
+    const tokenHash = createHash("sha256").update(rawAccessToken).digest("hex");
+    const prefix = rawAccessToken.slice(0, 12);
 
-    await app.db.insert(schema.apiKeys).values({
+    await app.db.insert(schema.accessTokens).values({
       user_id: userId,
-      key_hash: keyHash,
+      token_hash: tokenHash,
       name: `GitHub (${ghUser.login})`,
       prefix,
       is_anonymous: false,
@@ -105,7 +105,7 @@ export async function agentAuthRoutes(app: FastifyInstance) {
     });
 
     return reply.status(201).send({
-      api_key: rawKey,
+      access_token: rawAccessToken,
       username: ghUser.login,
     });
   });

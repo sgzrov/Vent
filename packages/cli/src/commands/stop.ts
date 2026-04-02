@@ -1,21 +1,21 @@
-import { loadApiKey } from "../lib/config.js";
+import { loadAccessToken } from "../lib/config.js";
 import { apiFetch, ApiError } from "../lib/api.js";
 import { printError, printSuccess } from "../lib/output.js";
 
 interface StopArgs {
   runId: string;
-  apiKey?: string;
+  accessToken?: string;
 }
 
 export async function stopCommand(args: StopArgs): Promise<number> {
-  const key = args.apiKey ?? (await loadApiKey());
-  if (!key) {
+  const accessToken = args.accessToken ?? (await loadAccessToken());
+  if (!accessToken) {
     printError("Not authenticated. Run `npx vent-hq init` first.");
     return 2;
   }
 
   try {
-    const res = await apiFetch(`/runs/${args.runId}/stop`, key, {
+    const res = await apiFetch(`/runs/${args.runId}/stop`, accessToken, {
       method: "POST",
     });
     const data = (await res.json()) as { id: string; status: string };

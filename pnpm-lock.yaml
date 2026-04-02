@@ -44,6 +44,9 @@ importers:
       '@vent/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@vent/platform-connections':
+        specifier: workspace:*
+        version: link:../../packages/platform-connections
       '@vent/runner':
         specifier: workspace:*
         version: link:../runner
@@ -185,6 +188,9 @@ importers:
       '@vent/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@vent/platform-connections':
+        specifier: workspace:*
+        version: link:../../packages/platform-connections
       '@vent/runner':
         specifier: workspace:*
         version: link:../runner
@@ -295,6 +301,16 @@ importers:
       tsx:
         specifier: ^4.19.0
         version: 4.21.0
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+
+  packages/platform-connections:
+    dependencies:
+      '@vent/shared':
+        specifier: workspace:*
+        version: link:../shared
+    devDependencies:
       typescript:
         specifier: ^5.7.0
         version: 5.9.3

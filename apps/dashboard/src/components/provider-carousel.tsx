@@ -16,7 +16,6 @@ const providers: Provider[] = [
   { name: "LiveKit", icon: "/providers/livekit.png" },
   { name: "WebSocket", icon: "/providers/websocket.svg" },
   { name: "WebRTC", icon: "/providers/webrtc.svg" },
-  { name: "SIP", icon: "/providers/sip.svg" },
 ];
 
 export function ProviderCarousel() {

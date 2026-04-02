@@ -15,7 +15,7 @@ Commands:
   run          Run voice tests
   stop         Cancel a queued or running test
   status       Check status of a previous run
-  login        Save API key (for re-auth or CI/scripts)
+  login        Save Vent access token (for re-auth or CI/scripts)
   logout       Remove saved credentials
 Options:
   --help    Show help
@@ -30,7 +30,7 @@ Options:
   --file, -f     Path to config JSON file
   --test, -t     Run a single test by name (from suite file)
   --list         List test names from suite file
-  --api-key      API key (overrides env/credentials)
+  --access-token Vent access token (overrides env/credentials)
   --json         Output NDJSON instead of colored text
   --submit       Submit and return immediately (print run_id, don't wait for results)
   --verbose      Show debug logs (SSE, relay, internal events)`;
@@ -38,7 +38,7 @@ Options:
 const STATUS_USAGE = `Usage: vent-hq status <run-id> [options]
 
 Options:
-  --api-key      API key (overrides env/credentials)
+  --access-token Vent access token (overrides env/credentials)
   --json         Output raw JSON
   --stream       Stream live results instead of fetching current state`;
 
@@ -67,11 +67,11 @@ async function main(): Promise<number> {
       const { values } = parseArgs({
         args: commandArgs,
         options: {
-          "api-key": { type: "string" },
+          "access-token": { type: "string" },
         },
         strict: true,
       });
-      return initCommand({ apiKey: values["api-key"] });
+      return initCommand({ accessToken: values["access-token"] });
     }
 
     case "run": {
@@ -86,7 +86,7 @@ async function main(): Promise<number> {
           file: { type: "string", short: "f" },
           test: { type: "string", short: "t" },
           list: { type: "boolean", default: false },
-          "api-key": { type: "string" },
+          "access-token": { type: "string" },
           json: { type: "boolean", default: false },
           submit: { type: "boolean", default: false },
           "no-stream": { type: "boolean", default: false },
@@ -128,7 +128,7 @@ async function main(): Promise<number> {
         config: values.config,
         file: values.file,
         test: values.test,
-        apiKey: values["api-key"],
+        accessToken: values["access-token"],
         json: values.json!,
         submit: values.submit! || values["no-stream"]!,
         verbose: values.verbose!,
@@ -144,7 +144,7 @@ async function main(): Promise<number> {
       const { values } = parseArgs({
         args: commandArgs.slice(1),
         options: {
-          "api-key": { type: "string" },
+          "access-token": { type: "string" },
           json: { type: "boolean", default: false },
           stream: { type: "boolean", default: false },
         },
@@ -152,7 +152,7 @@ async function main(): Promise<number> {
       });
       return statusCommand({
         runId,
-        apiKey: values["api-key"],
+        accessToken: values["access-token"],
         json: values.json!,
         stream: values.stream!,
       });
@@ -161,27 +161,27 @@ async function main(): Promise<number> {
     case "stop": {
       const runId = commandArgs[0];
       if (!runId || commandArgs.includes("--help")) {
-        console.log("Usage: vent-hq stop <run-id> [--api-key <key>]");
+        console.log("Usage: vent-hq stop <run-id> [--access-token <token>]");
         return runId ? 0 : 2;
       }
       const { values: stopValues } = parseArgs({
         args: commandArgs.slice(1),
-        options: { "api-key": { type: "string" } },
+        options: { "access-token": { type: "string" } },
         strict: true,
       });
-      return stopCommand({ runId, apiKey: stopValues["api-key"] });
+      return stopCommand({ runId, accessToken: stopValues["access-token"] });
     }
 
     case "login": {
       const { values } = parseArgs({
         args: commandArgs,
         options: {
-          "api-key": { type: "string" },
+          "access-token": { type: "string" },
           status: { type: "boolean", default: false },
         },
         strict: true,
       });
-      return loginCommand({ apiKey: values["api-key"], status: values.status! });
+      return loginCommand({ accessToken: values["access-token"], status: values.status! });
     }
 
     case "logout": {

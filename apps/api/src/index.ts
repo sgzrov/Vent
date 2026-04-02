@@ -8,6 +8,7 @@ import { healthRoutes } from "./routes/health.js";
 import { runRoutes } from "./routes/runs.js";
 import { callbackRoutes } from "./routes/callback.js";
 import { keyRoutes } from "./routes/keys.js";
+import { platformConnectionRoutes } from "./routes/platform-connections.js";
 import { relayRoutes } from "./routes/relay.js";
 import { deviceRoutes } from "./routes/device.js";
 import { agentAuthRoutes } from "./routes/agent-auth.js";
@@ -70,6 +71,7 @@ async function main() {
   await app.register(runRoutes);
   await app.register(callbackRoutes);
   await app.register(keyRoutes);
+  await app.register(platformConnectionRoutes);
   await app.register(relayRoutes);
   await app.register(deviceRoutes);
   await app.register(agentAuthRoutes);

@@ -63,17 +63,20 @@ export async function deviceRoutes(app: FastifyInstance) {
       return reply.send({ status: "consumed" });
     }
 
-    if (!session.user_id || !session.raw_api_key) {
+    if (!session.user_id || !session.raw_access_token) {
       return reply.send({ status: "pending" });
     }
 
-    // Approved — deliver the key and consume the session
+    // Approved — deliver the access token and consume the session
     await app.db
       .update(schema.deviceSessions)
-      .set({ consumed_at: new Date(), raw_api_key: null })
+      .set({ consumed_at: new Date(), raw_access_token: null })
       .where(eq(schema.deviceSessions.id, session.id));
 
-    return reply.send({ status: "approved", api_key: session.raw_api_key });
+    return reply.send({
+      status: "approved",
+      access_token: session.raw_access_token,
+    });
   });
 
   // Approve a device session (authenticated — called by dashboard)
@@ -104,28 +107,28 @@ export async function deviceRoutes(app: FastifyInstance) {
         .send({ error: "Invalid or expired device code" });
     }
 
-    // Create API key (same pattern as keys.ts)
-    const rawKey = `vent_${randomBytes(24).toString("hex")}`;
-    const keyHash = createHash("sha256").update(rawKey).digest("hex");
-    const prefix = rawKey.slice(0, 12);
+    // Create access token (same pattern as keys.ts)
+    const rawAccessToken = `vent_${randomBytes(24).toString("hex")}`;
+    const tokenHash = createHash("sha256").update(rawAccessToken).digest("hex");
+    const prefix = rawAccessToken.slice(0, 12);
 
-    const [keyRow] = await app.db
-      .insert(schema.apiKeys)
+    const [accessTokenRow] = await app.db
+      .insert(schema.accessTokens)
       .values({
         user_id: request.userId!,
-        key_hash: keyHash,
-        name: "CLI Login",
+        token_hash: tokenHash,
+        name: "Vent CLI Login",
         prefix,
       })
       .returning();
 
-    // Mark session as approved with the raw key for CLI to pick up
+    // Mark session as approved with the raw access token for CLI to pick up
     await app.db
       .update(schema.deviceSessions)
       .set({
         user_id: request.userId!,
-        api_key_id: keyRow!.id,
-        raw_api_key: rawKey,
+        access_token_id: accessTokenRow!.id,
+        raw_access_token: rawAccessToken,
       })
       .where(eq(schema.deviceSessions.id, session.id));
 

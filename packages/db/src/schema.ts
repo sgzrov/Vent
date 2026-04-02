@@ -8,6 +8,7 @@ import {
   boolean,
   jsonb,
   pgEnum,
+  index,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
@@ -25,14 +26,15 @@ export const sourceTypeEnum = pgEnum("source_type", ["bundle", "remote", "relay"
 export const scenarioStatusEnum = pgEnum("scenario_status", ["pass", "fail", "completed", "error"]);
 
 export const testTypeEnum = pgEnum("test_type", ["audio", "conversation", "load_test", "red_team"]);
+export const platformConnectionStatusEnum = pgEnum("platform_connection_status", ["active", "disabled", "invalid"]);
 
 export const runs = pgTable(
   "runs",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    api_key_id: uuid("api_key_id")
+    access_token_id: uuid("access_token_id")
       .notNull()
-      .references(() => apiKeys.id),
+      .references(() => accessTokens.id),
     user_id: text("user_id").notNull(),
     status: runStatusEnum("status").notNull().default("queued"),
     source_type: sourceTypeEnum("source_type").notNull(),
@@ -104,10 +106,10 @@ export const depImages = pgTable("dep_images", {
   ready_at: timestamp("ready_at", { withTimezone: true }),
 });
 
-export const apiKeys = pgTable("api_keys", {
+export const accessTokens = pgTable("access_tokens", {
   id: uuid("id").primaryKey().defaultRandom(),
   user_id: text("user_id").notNull(),
-  key_hash: text("key_hash").notNull().unique(),
+  token_hash: text("token_hash").notNull().unique(),
   name: text("name").notNull(),
   prefix: text("prefix").notNull().default(""),
   is_anonymous: boolean("is_anonymous").notNull().default(false),
@@ -117,6 +119,36 @@ export const apiKeys = pgTable("api_keys", {
     .notNull()
     .defaultNow(),
 });
+
+export const platformConnections = pgTable(
+  "platform_connections",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    user_id: text("user_id").notNull(),
+    provider: text("provider").notNull(),
+    identity_key: text("identity_key").notNull(),
+    resource_label: text("resource_label").notNull(),
+    config_json: jsonb("config_json").notNull(),
+    secrets_encrypted: jsonb("secrets_encrypted").notNull(),
+    resolved_hash: text("resolved_hash").notNull(),
+    version: integer("version").notNull().default(1),
+    status: platformConnectionStatusEnum("status").notNull().default("active"),
+    last_verified_at: timestamp("last_verified_at", { withTimezone: true }),
+    last_used_at: timestamp("last_used_at", { withTimezone: true }),
+    created_at: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updated_at: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => ({
+    platformConnectionsUserIdentityUnique: uniqueIndex("platform_connections_user_provider_identity_unique")
+      .on(table.user_id, table.provider, table.identity_key),
+    platformConnectionsUserUpdatedIdx: index("platform_connections_user_updated_idx")
+      .on(table.user_id, table.updated_at),
+  }),
+);
 
 export const artifacts = pgTable("artifacts", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -137,8 +169,8 @@ export const deviceSessions = pgTable("device_sessions", {
   session_id: text("session_id").notNull().unique(),
   user_code: text("user_code").notNull().unique(),
   user_id: text("user_id"),
-  api_key_id: uuid("api_key_id").references(() => apiKeys.id),
-  raw_api_key: text("raw_api_key"),
+  access_token_id: uuid("access_token_id").references(() => accessTokens.id),
+  raw_access_token: text("raw_access_token"),
   expires_at: timestamp("expires_at", { withTimezone: true }).notNull(),
   created_at: timestamp("created_at", { withTimezone: true })
     .notNull()

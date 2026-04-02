@@ -6,7 +6,8 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "test": "pnpm build && node --test dist/webrtc-audio-channel.test.js"
   },
   "dependencies": {
     "@elevenlabs/elevenlabs-js": "^2.39.0",
