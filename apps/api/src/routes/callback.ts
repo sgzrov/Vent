@@ -57,7 +57,7 @@ export async function callbackRoutes(app: FastifyInstance) {
       run_id: string;
       completed: number;
       total: number;
-      test_type: "conversation" | "red_team" | "load_test";
+      test_type: "conversation" | "red_team";
       test_name: string;
       status: "pass" | "fail" | "completed" | "error";
       duration_ms: number;
@@ -172,7 +172,6 @@ export async function callbackRoutes(app: FastifyInstance) {
       test_spec: {
         conversation_tests: spec.conversation_tests ?? null,
         red_team_tests: spec.red_team_tests ?? null,
-        load_test: spec.load_test ?? null,
       },
       target_phone_number: spec.target_phone_number as string | undefined,
       voice_config: spec.voice_config ?? { adapter: spec.adapter },

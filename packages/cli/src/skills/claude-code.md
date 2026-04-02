@@ -110,7 +110,7 @@ npx vent-hq run --config '{"connection":{"adapter":"websocket","start_command":"
 
 ## Full Config Schema
 
-- IMPORTANT: ALWAYS run "conversation_tests", "red_team_tests", and "load_test" separately. Only one per run. Reduces tokens and latency.
+- IMPORTANT: ALWAYS run "conversation_tests" and "red_team_tests" separately. Only one per run. Reduces tokens and latency.
 - **HARD CONCURRENCY LIMITS — NEVER EXCEED** — Each test is a real concurrent call. If you create more tests than the platform allows, excess tests hang forever (agents never connect). Before running, count: total_concurrent = number_of_tests × max(repeat, 1). If total_concurrent > platform limit, REDUCE tests or split into sequential runs.
   | Platform | Default limit (assume if unknown) | Ask user for tier |
   |----------|----------------------------------|-------------------|
@@ -132,11 +132,6 @@ OR
 {
   "connection": { ... },
   "red_team_tests": [{ ... }]
-}
-OR
-{
-  "connection": { ... },
-  "load_test": { ... }
 }
 </vent_run>
 
@@ -403,7 +398,7 @@ Report these alongside standard metrics when interruption tests run. Flag any tu
 
 
 <red_team_tests>
-Red team tests are a separate run type — never combine with conversation_tests or load_test in the same run.
+Red team tests are a separate run type — never combine with conversation_tests in the same run.
 Suggest red team testing after conversation tests pass, as a follow-up security assessment.
 Uses the same schema as conversation_tests but runs as a dedicated security-focused suite.
 
@@ -434,89 +429,6 @@ Tailor attacks to the user's voice agent domain. Examples: banking agent → KYC
 }
 </examples_red_team_tests>
 </red_team_tests>
-
-
-<load_tests>
-Ramp, spike, and soak. All three can be combined or used independently.
-- Ramp: splits target into tiers. Each tier tests a percentage of target calls. Attributes errors to specific concurrency levels. ALWAYS 10 calls in first ramp.
-- Spike: sudden burst of calls. Catches rate limits, pool exhaustion, queue saturation that ramps miss. NEVER use without suggesting to user first.
-- Soak: sustained concurrent calls for x minutes (new call starts when one finishes). NEVER use without suggesting to user first.
-- Spike and soak are usually standalone. Couple with ramp if needed.
-
-Example (ramp):
-target: 10 → 10 (100%). Done.
-target: 20 → 10 (50%), 20 (100%). Done.
-target: 50 → 10 (20%), 25 (50%), 50 (100%). Done.
-target: 100 → 10 (10%), 50 (50%), 100 (100%). Done.
-
-<config_load_test>
-{
-  "load_test": {
-    "target_concurrency": "required — 10-100 (recommended: 20). Adjust based on infra config, scaling, or rate limits.",
-    "caller_prompt": "required (or caller_prompts) — persona for all callers",
-    "caller_prompts": "optional — array of personas, random per caller. Use instead of caller_prompt.",
-    "ramps": "optional — custom ramp steps, overrides default tiers",
-    "spike_multiplier": "optional — enables spike (suggested: 2x target)",
-    "soak_duration_min": "optional — enables soak, in minutes (suggested: 10)",
-    "max_turns": "optional — turns per conversation, max 10 (default: 6)",
-    "thresholds": "optional — override grading thresholds (default: ttfw_p95 excellent ≤300ms/good ≤400ms/acceptable ≤800ms/critical >800ms, error_rate excellent ≤0.1%/good ≤0.5%/acceptable ≤1%/critical >1%)",
-    "caller_audio": "optional — randomized per caller. Arrays = random range: speed: [0.9, 1.3], noise.type: [\"babble\", \"white\"].",
-    "language": "optional — ISO 639-1: en, es, fr, de, it, nl, ja"
-  }
-}
-
-<examples_config_load_test>
-<simple_load_config_example>
-{
-  "load_test": {
-    "target_concurrency": 20,
-    "caller_prompt": "You are a customer calling to book a dentist appointment. You want the earliest available slot this week."
-  }
-}
-</simple_load_config_example>
-
-<advanced_load_config_example>
-{
-  "load_test": {
-    "target_concurrency": 40,
-    "caller_prompts": [
-      "You are Maria, calling to reschedule her Thursday cleaning to next Tuesday morning.",
-      "You are James, an impatient customer calling to cancel his root canal appointment.",
-      "You are Sarah, a new patient calling to ask about insurance coverage and book a first visit."
-    ],
-    "ramps": [5, 10, 20, 40],
-    "spike_multiplier": 2,
-    "soak_duration_min": 10,
-    "caller_audio": { "noise": { "type": ["babble", "white"], "snr_db": [15, 30] }, "speed": [0.9, 1.3] }
-  }
-}
-</advanced_load_config_example>
-</examples_config_load_test>
-</config_load_test>
-
-<output_load_test>
-{
-  "status": "fail",
-  "severity": "acceptable",
-  "target_concurrency": 50,
-  "total_calls": 85,
-  "successful_calls": 82,
-  "failed_calls": 3,
-  "duration_ms": 245000,
-  "tiers": [
-    { "concurrency": 10, "total_calls": 10, "successful_calls": 10, "failed_calls": 0, "error_rate": 0, "ttfw_p50_ms": 280, "ttfw_p95_ms": 350, "ttfw_p99_ms": 380, "ttfb_degradation_pct": 0, "duration_ms": 42000 },
-    { "concurrency": 25, "total_calls": 25, "successful_calls": 25, "failed_calls": 0, "error_rate": 0, "ttfw_p50_ms": 320, "ttfw_p95_ms": 480, "ttfw_p99_ms": 560, "ttfb_degradation_pct": 14.2, "duration_ms": 55000 },
-    { "concurrency": 50, "total_calls": 50, "successful_calls": 47, "failed_calls": 3, "error_rate": 0.06, "ttfw_p50_ms": 450, "ttfw_p95_ms": 920, "ttfw_p99_ms": 1100, "ttfb_degradation_pct": 62.8, "duration_ms": 78000 }
-  ],
-  "spike": { "concurrency": 100, "total_calls": 100, "successful_calls": 91, "failed_calls": 9, "error_rate": 0.09, "ttfw_p50_ms": 680, "ttfw_p95_ms": 1400, "ttfw_p99_ms": 1800, "ttfb_degradation_pct": 142.8, "duration_ms": 35000 },
-  "soak": { "concurrency": 50, "total_calls": 200, "successful_calls": 195, "failed_calls": 5, "error_rate": 0.025, "ttfw_p50_ms": 700, "ttfw_p95_ms": 950, "ttfw_p99_ms": 1150, "ttfb_degradation_pct": 90, "duration_ms": 600000, "latency_drift_slope": 2.3, "degraded": true },
-  "breaking_point": { "concurrency": 50, "triggered_by": ["error_rate"], "error_rate": 0.06, "p95_ttfb_ms": 920 },
-  "grading": { "ttfw": "acceptable", "p95_latency": "good", "error_rate": "critical", "quality": "good", "overall": "acceptable" }
-}
-
-spike and soak only appear when configured. breaking_point only appears when a threshold is breached. Severity values: "excellent", "good", "acceptable", "critical".
-</output_load_test>
-</load_tests>
 
 ## Output
 

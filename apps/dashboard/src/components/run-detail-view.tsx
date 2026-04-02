@@ -8,7 +8,6 @@ import { MetricCards } from "@/components/metric-cards";
 import { AudioTestResults } from "@/components/audio-test-results";
 import { AudioMetricConclusions } from "@/components/audio-metric-conclusions";
 import { ConversationTestResults } from "@/components/conversation-test-results";
-import { LoadTestResults } from "@/components/load-test-results";
 import { TestConfigSection } from "@/components/test-config-section";
 import { TestDocumentation } from "@/components/test-documentation";
 import type { RunDetail, RunAggregateV2, RunEventRow } from "@/lib/types";
@@ -29,8 +28,6 @@ function describeRunDetail(run: RunDetail): string {
       parts.push(
         `${spec.red_team_tests.length} red team${spec.red_team_tests.length > 1 ? " tests" : " test"}`
       );
-    if (spec.load_test)
-      parts.push(`load test (${spec.load_test.target_concurrency} concurrent)`);
     if (parts.length > 0) return parts.join(", ");
   }
   const agg = run.aggregate_json as RunAggregateV2 | null;
@@ -44,8 +41,6 @@ function describeRunDetail(run: RunDetail): string {
       parts.push(
         `${agg.red_team_tests.total} red team${agg.red_team_tests.total > 1 ? " tests" : " test"}`
       );
-    if (agg.load_tests && agg.load_tests.total > 0)
-      parts.push(`${agg.load_tests.total} load test${agg.load_tests.total > 1 ? "s" : ""}`);
     if (parts.length > 0) return parts.join(", ");
   }
   return "Test run";
@@ -55,7 +50,7 @@ function describeRunDetail(run: RunDetail): string {
 // Tab types
 // ---------------------------------------------------------------------------
 
-type TabId = "overview" | "conversations" | "red_team" | "audio" | "load_test" | "artifacts";
+type TabId = "overview" | "conversations" | "red_team" | "audio" | "artifacts";
 
 interface TabDef {
   id: TabId;
@@ -115,10 +110,6 @@ export function RunDetailView({
   const redTeamScenarios = run.scenarios.filter(
     (s) => s.test_type === "red_team"
   );
-  const loadTestScenarios = run.scenarios.filter(
-    (s) => s.test_type === "load_test"
-  );
-
   // Build tabs — only show tabs with content
   const tabs: TabDef[] = [{ id: "overview", label: "Overview" }];
 
@@ -161,15 +152,6 @@ export function RunDetailView({
       label: "Infrastructure",
       count: audioScenarios.length,
       status: hasErrors ? "fail" : "pass",
-    });
-  }
-
-  if (loadTestScenarios.length > 0) {
-    tabs.push({
-      id: "load_test",
-      label: "Load Test",
-      count: loadTestScenarios.length,
-      status: loadTestScenarios.every((s) => s.status === "pass") ? "pass" : "fail",
     });
   }
 
@@ -345,10 +327,6 @@ export function RunDetailView({
 
         {activeTab === "audio" && (
           <AudioTestResults scenarios={audioScenarios} />
-        )}
-
-        {activeTab === "load_test" && loadTestScenarios.length > 0 && (
-          <LoadTestResults scenario={loadTestScenarios[0]!} />
         )}
 
         {activeTab === "artifacts" && (

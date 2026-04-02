@@ -16,11 +16,6 @@ import type {
   AudioAnalysisMetrics,
   ProsodyMetrics,
   ToolCallMetrics,
-  LoadTestResult,
-  LoadTestTierResult,
-  LoadTestSeverity,
-  LoadTestBreakingPoint,
-  LoadTestGrading,
   CallMetadata,
   CostBreakdown,
   ComponentLatencyMetrics,
@@ -285,84 +280,3 @@ function hasContent(obj: object): boolean {
   return Object.values(obj).some((v) => v != null);
 }
 
-// ---- Load test formatting ----
-
-interface FormattedLoadTestTier {
-  concurrency: number;
-  total_calls: number;
-  successful_calls: number;
-  failed_calls: number;
-  error_rate: number;
-  ttfw_p50_ms: number;
-  ttfw_p95_ms: number;
-  ttfw_p99_ms: number;
-  ttfb_degradation_pct: number;
-  duration_ms: number;
-}
-
-interface FormattedLoadTestSoak extends FormattedLoadTestTier {
-  latency_drift_slope: number;
-  degraded: boolean;
-}
-
-export interface FormattedLoadTestResult {
-  status: "pass" | "fail";
-  severity: LoadTestSeverity;
-  target_concurrency: number;
-  total_calls: number;
-  successful_calls: number;
-  failed_calls: number;
-  duration_ms: number;
-  tiers: FormattedLoadTestTier[];
-  spike?: FormattedLoadTestTier;
-  soak?: FormattedLoadTestSoak;
-  breaking_point?: LoadTestBreakingPoint;
-  grading: LoadTestGrading;
-}
-
-export function formatLoadTestResult(raw: unknown): FormattedLoadTestResult | null {
-  if (!raw || typeof raw !== "object") return null;
-  const r = raw as LoadTestResult;
-  if (typeof r.status !== "string") return null;
-
-  // Filter tiers to ramp-only (spike/soak live at top level)
-  const rampTiers = r.tiers.filter(t => !t.phase || t.phase === "ramp");
-
-  return {
-    status: r.status,
-    severity: r.severity,
-    target_concurrency: r.target_concurrency,
-    total_calls: r.total_calls,
-    successful_calls: r.successful_calls,
-    failed_calls: r.failed_calls,
-    duration_ms: r.duration_ms,
-    tiers: rampTiers.map(formatTier),
-    spike: r.spike ? formatTier(r.spike) : undefined,
-    soak: r.soak ? formatSoakTier(r.soak) : undefined,
-    breaking_point: r.breaking_point,
-    grading: r.grading,
-  };
-}
-
-function formatTier(t: LoadTestTierResult): FormattedLoadTestTier {
-  return {
-    concurrency: t.concurrency,
-    total_calls: t.total_calls,
-    successful_calls: t.successful_calls,
-    failed_calls: t.failed_calls,
-    error_rate: t.error_rate,
-    ttfw_p50_ms: t.ttfw_p50_ms,
-    ttfw_p95_ms: t.ttfw_p95_ms,
-    ttfw_p99_ms: t.ttfw_p99_ms,
-    ttfb_degradation_pct: t.ttfb_degradation_pct,
-    duration_ms: t.duration_ms,
-  };
-}
-
-function formatSoakTier(t: LoadTestTierResult): FormattedLoadTestSoak {
-  return {
-    ...formatTier(t),
-    latency_drift_slope: t.latency_drift_slope ?? 0,
-    degraded: t.degraded ?? false,
-  };
-}

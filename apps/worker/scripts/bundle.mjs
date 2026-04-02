@@ -20,7 +20,6 @@ await build({
     "@vent/voice": path.resolve(packages, "voice/src/index.ts"),
     "@vent/adapters": path.resolve(packages, "adapters/src/index.ts"),
     "@vent/runner/executor": path.resolve(packages, "runner/src/executor.ts"),
-    "@vent/runner/load-test": path.resolve(packages, "runner/src/load-test.ts"),
     "@vent/runner": path.resolve(packages, "runner/src/executor.ts"),
     "@vent/platform-connections": path.resolve(packages, "platform-connections/src/index.ts"),
     "@vent/artifacts": path.resolve(packages, "artifacts/src/index.ts"),

@@ -4,7 +4,6 @@ import { schema } from "@vent/db";
 import { z } from "zod";
 import {
   AdapterTypeSchema,
-  LoadTestSpecSchema,
   ConversationTestSpecSchema,
   CallerAudioEffectsSchema,
   PlatformSummarySchema,
@@ -57,24 +56,20 @@ export const RunSubmitConfigSchema = z.object({
   }),
   conversation_tests: z.array(ConversationTestSpecSchema).optional(),
   red_team_tests: z.array(ConversationTestSpecSchema).optional(),
-  load_test: LoadTestSpecSchema.optional(),
 }).refine(
   (d) => {
     const hasConv = (d.conversation_tests?.length ?? 0) > 0;
     const hasRedTeam = (d.red_team_tests?.length ?? 0) > 0;
-    const hasLoad = d.load_test != null;
-    return hasConv || hasRedTeam || hasLoad;
+    return hasConv || hasRedTeam;
   },
-  { message: "Exactly one of conversation_tests, red_team_tests, or load_test is required." }
+  { message: "Exactly one of conversation_tests or red_team_tests is required." }
 ).refine(
   (d) => {
     const hasConv = (d.conversation_tests?.length ?? 0) > 0;
     const hasRedTeam = (d.red_team_tests?.length ?? 0) > 0;
-    const hasLoad = d.load_test != null;
-    const count = [hasConv, hasRedTeam, hasLoad].filter(Boolean).length;
-    return count === 1;
+    return !(hasConv && hasRedTeam);
   },
-  { message: "Only one of conversation_tests, red_team_tests, or load_test can be used per run." }
+  { message: "Only one of conversation_tests or red_team_tests can be used per run." }
 ).superRefine((d, ctx) => {
   const adapter = d.connection.adapter;
   const platformConnectionId = d.connection.platform_connection_id;
@@ -148,7 +143,6 @@ export function buildTestSpec(
     testSpecJson: {
       conversation_tests: conversationTests ?? null,
       red_team_tests: redTeamTests ?? null,
-      load_test: cfg.load_test ?? null,
       adapter,
       voice_config: voiceConfig,
       start_command: cfg.start_command ?? null,
@@ -336,7 +330,6 @@ export async function submitRun(
       test_spec: {
         conversation_tests: conversationTests ?? null,
         red_team_tests: redTeamTests ?? null,
-        load_test: cfg.load_test ?? null,
       },
       target_phone_number: targetPhoneNumber,
       voice_config: voiceConfig,
