@@ -4,9 +4,10 @@
   "private": true,
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc",
+    "build": "node scripts/bundle.mjs",
     "dev": "tsx watch src/index.ts",
     "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist"
   },
   "dependencies": {
@@ -19,6 +20,7 @@
     "ioredis": "^5.4.0"
   },
   "devDependencies": {
+    "esbuild": "^0.24.0",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0"
   }
