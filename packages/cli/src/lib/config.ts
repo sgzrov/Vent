@@ -2,6 +2,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { homedir } from "node:os";
 
+// Vent config lives in ~/.vent
 const CONFIG_DIR = path.join(homedir(), ".vent");
 const CREDENTIALS_FILE = path.join(CONFIG_DIR, "credentials");
 
