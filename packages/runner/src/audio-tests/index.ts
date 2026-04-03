@@ -1,26 +1,26 @@
 /**
- * Infrastructure probe dispatcher — maps Layer 1 test names to executor functions.
+ * Infrastructure probe dispatcher — maps Layer 1 call names to executor functions.
  * Adds diagnostics (error origin classification + timing) to every result.
  */
 
 import type { AudioChannel } from "@vent/adapters";
-import type { AudioTestName, AudioTestResult, TestDiagnostics } from "@vent/shared";
+import type { AudioCallName, AudioCallResult, CallDiagnostics } from "@vent/shared";
 
-/** @deprecated Infrastructure probes are now integrated into conversation tests. */
+/** @deprecated Infrastructure probes are now integrated into conversation calls. */
 interface InfrastructureProbeConfig {
   prompt?: string;
   [key: string]: unknown;
 }
-import { runAudioQualityTest } from "./audio-quality.js";
-import { runLatencyTest } from "./latency.js";
-import { runEchoTest } from "./echo.js";
+import { runAudioQualityCall } from "./audio-quality.js";
+import { runLatencyCall } from "./latency.js";
+import { runEchoCall } from "./echo.js";
 
-type ProbeExecutor = (channel: AudioChannel, config?: Record<string, unknown>) => Promise<AudioTestResult>;
+type ProbeExecutor = (channel: AudioChannel, config?: Record<string, unknown>) => Promise<AudioCallResult>;
 
-const EXECUTORS: Record<AudioTestName, ProbeExecutor> = {
-  audio_quality: runAudioQualityTest as ProbeExecutor,
-  latency: runLatencyTest as ProbeExecutor,
-  echo: runEchoTest as ProbeExecutor,
+const EXECUTORS: Record<AudioCallName, ProbeExecutor> = {
+  audio_quality: runAudioQualityCall as ProbeExecutor,
+  latency: runLatencyCall as ProbeExecutor,
+  echo: runEchoCall as ProbeExecutor,
 };
 
 /** Platform-side errors: TTS/STT provider failures, connection issues */
@@ -36,7 +36,7 @@ const PLATFORM_ERROR_PATTERNS = [
   /fetch failed/i,
 ];
 
-function classifyErrorOrigin(result: AudioTestResult, channel: AudioChannel): TestDiagnostics["error_origin"] {
+function classifyErrorOrigin(result: AudioCallResult, channel: AudioChannel): CallDiagnostics["error_origin"] {
   if (result.status === "completed") return null;
   if (!result.error) return "agent";
 
@@ -52,15 +52,15 @@ function classifyErrorOrigin(result: AudioTestResult, channel: AudioChannel): Te
  * Run a single infrastructure probe by name against a connected AudioChannel.
  */
 export async function runInfrastructureProbe(
-  testName: AudioTestName,
+  callName: AudioCallName,
   channel: AudioChannel,
   config?: InfrastructureProbeConfig,
-): Promise<AudioTestResult> {
-  const executor = EXECUTORS[testName];
-  const testStart = Date.now();
+): Promise<AudioCallResult> {
+  const executor = EXECUTORS[callName];
+  const callStart = Date.now();
 
   // Merge global prompt with per-probe config
-  const perProbeConfig = config?.[testName] as Record<string, unknown> | undefined;
+  const perProbeConfig = config?.[callName] as Record<string, unknown> | undefined;
   const probeConfig: Record<string, unknown> = {
     prompt: config?.prompt,
     ...perProbeConfig,
@@ -87,11 +87,11 @@ export async function runInfrastructureProbe(
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err);
     return {
-      test_name: testName,
+      call_name: callName,
       status: "error",
       metrics: {},
       transcriptions: {},
-      duration_ms: Date.now() - testStart,
+      duration_ms: Date.now() - callStart,
       error: errorMsg,
       diagnostics: {
         error_origin: "platform",

@@ -2,7 +2,7 @@
  * Transcript-level metrics — pure functions, no external deps.
  */
 
-import type { ConversationTurn, TranscriptMetrics } from "@vent/shared";
+import type { ConversationTurn, HallucinationEvent, TranscriptMetrics } from "@vent/shared";
 
 let _normalizer: { normalize(s: string): string } | null = null;
 async function getWerNormalizer() {
@@ -17,6 +17,15 @@ const FILLER_WORDS = new Set([
   "um", "uh", "erm", "er", "ah", "like", "hmm", "hm",
   "you know", "i mean", "sort of", "kind of",
 ]);
+const HALLUCINATION_MIN_RUN_LENGTH = 5;
+
+type AlignmentOpType = "equal" | "substitution" | "insertion" | "deletion";
+
+interface AlignmentOp {
+  type: AlignmentOpType;
+  reference?: string;
+  hypothesis?: string;
+}
 
 /**
  * Word Error Rate via word-level Levenshtein distance.
@@ -29,26 +38,21 @@ export function computeWER(reference: string, hypothesis: string): number {
   const hyp = tokenize(hypothesis);
 
   if (ref.length === 0) return hyp.length === 0 ? 0 : 1;
+  const { distance } = computeWerAlignment(ref, hyp);
+  return Math.min(distance / ref.length, 1);
+}
 
-  const dp: number[][] = Array.from({ length: ref.length + 1 }, () =>
-    new Array(hyp.length + 1).fill(0),
-  );
+export function extractHallucinationEvents(
+  reference: string,
+  hypothesis: string,
+  minRunLength = HALLUCINATION_MIN_RUN_LENGTH,
+): HallucinationEvent[] {
+  const ref = tokenize(reference);
+  const hyp = tokenize(hypothesis);
+  if (ref.length === 0 || hyp.length === 0) return [];
 
-  for (let i = 0; i <= ref.length; i++) dp[i]![0] = i;
-  for (let j = 0; j <= hyp.length; j++) dp[0]![j] = j;
-
-  for (let i = 1; i <= ref.length; i++) {
-    for (let j = 1; j <= hyp.length; j++) {
-      const cost = ref[i - 1] === hyp[j - 1] ? 0 : 1;
-      dp[i]![j] = Math.min(
-        dp[i - 1]![j]! + 1,     // deletion
-        dp[i]![j - 1]! + 1,     // insertion
-        dp[i - 1]![j - 1]! + cost, // substitution
-      );
-    }
-  }
-
-  return Math.min(dp[ref.length]![hyp.length]! / ref.length, 1);
+  const { alignment } = computeWerAlignment(ref, hyp);
+  return hallucinationEventsFromAlignment(alignment, minRunLength);
 }
 
 /**
@@ -161,6 +165,11 @@ export function computeRepromptCount(agentTexts: string[]): number {
   return count;
 }
 
+function computeRepromptRate(repromptCount: number, agentTurnCount: number): number {
+  if (agentTurnCount <= 0) return 0;
+  return Math.round((repromptCount / agentTurnCount) * 1000) / 1000;
+}
+
 /**
  * Compute all transcript metrics from conversation turns.
  */
@@ -168,6 +177,7 @@ export async function computeTranscriptMetrics(turns: ConversationTurn[], fullPl
   const agentTurns = turns.filter((t) => t.role === "agent");
   const agentTexts = agentTurns.map((t) => t.text);
   const totalAgentAudioMs = agentTurns.reduce((sum, t) => sum + (t.audio_duration_ms ?? 0), 0);
+  const repromptCount = computeRepromptCount(agentTexts);
 
   // WER: compare our caller speech text vs platform's STT of the same speech.
   // Use fullPlatformCallerText (all user entries concatenated, no turn alignment)
@@ -186,6 +196,7 @@ export async function computeTranscriptMetrics(turns: ConversationTurn[], fullPl
 
   // Whisper-style normalization: expand contractions, normalize numbers, lowercase, strip punctuation/fillers
   let wer: number | undefined;
+  let hallucinationEvents: HallucinationEvent[] | undefined;
   if (refStr.length > 0 && hypStr.length > 0) {
     const normalizer = await getWerNormalizer();
     const normRef = normalizeNumbers(normalizer.normalize(refStr));
@@ -193,12 +204,17 @@ export async function computeTranscriptMetrics(turns: ConversationTurn[], fullPl
     wer = normRef.length > 0 && normHyp.length > 0
       ? computeWER(normRef, normHyp)
       : undefined;
+    hallucinationEvents = normRef.length > 0 && normHyp.length > 0
+      ? extractHallucinationEvents(normRef, normHyp)
+      : undefined;
   }
 
   return {
     wer,
+    hallucination_events: hallucinationEvents?.length ? hallucinationEvents : undefined,
     repetition_score: computeRepetitionScore(agentTexts),
-    reprompt_count: computeRepromptCount(agentTexts),
+    reprompt_count: repromptCount,
+    reprompt_rate: computeRepromptRate(repromptCount, agentTexts.length),
     filler_word_rate: computeFillerWordRate(agentTexts),
     words_per_minute: totalAgentAudioMs > 0 ? computeWordsPerMinute(agentTexts, totalAgentAudioMs) : undefined,
     vocabulary_diversity: computeVocabularyDiversity(agentTexts),
@@ -278,4 +294,97 @@ function tokenize(text: string): string[] {
     .replace(/[^\w\s]/g, "")
     .split(/\s+/)
     .filter((w) => w.length > 0);
+}
+
+function computeWerAlignment(reference: string[], hypothesis: string[]): { distance: number; alignment: AlignmentOp[] } {
+  const dp: number[][] = Array.from({ length: reference.length + 1 }, () =>
+    new Array(hypothesis.length + 1).fill(0),
+  );
+
+  for (let i = 0; i <= reference.length; i++) dp[i]![0] = i;
+  for (let j = 0; j <= hypothesis.length; j++) dp[0]![j] = j;
+
+  for (let i = 1; i <= reference.length; i++) {
+    for (let j = 1; j <= hypothesis.length; j++) {
+      const cost = reference[i - 1] === hypothesis[j - 1] ? 0 : 1;
+      dp[i]![j] = Math.min(
+        dp[i - 1]![j]! + 1,
+        dp[i]![j - 1]! + 1,
+        dp[i - 1]![j - 1]! + cost,
+      );
+    }
+  }
+
+  const alignment: AlignmentOp[] = [];
+  let i = reference.length;
+  let j = hypothesis.length;
+
+  while (i > 0 || j > 0) {
+    if (i > 0 && j > 0) {
+      const cost = reference[i - 1] === hypothesis[j - 1] ? 0 : 1;
+      if (dp[i]![j] === dp[i - 1]![j - 1]! + cost) {
+        alignment.push({
+          type: cost === 0 ? "equal" : "substitution",
+          reference: reference[i - 1],
+          hypothesis: hypothesis[j - 1],
+        });
+        i--;
+        j--;
+        continue;
+      }
+    }
+
+    if (j > 0 && dp[i]![j] === dp[i]![j - 1]! + 1) {
+      alignment.push({
+        type: "insertion",
+        hypothesis: hypothesis[j - 1],
+      });
+      j--;
+      continue;
+    }
+
+    if (i > 0 && dp[i]![j] === dp[i - 1]![j]! + 1) {
+      alignment.push({
+        type: "deletion",
+        reference: reference[i - 1],
+      });
+      i--;
+      continue;
+    }
+
+    throw new Error("WER alignment backtrace failed");
+  }
+
+  alignment.reverse();
+  return { distance: dp[reference.length]![hypothesis.length]!, alignment };
+}
+
+function hallucinationEventsFromAlignment(
+  alignment: AlignmentOp[],
+  minRunLength: number,
+): HallucinationEvent[] {
+  const events: HallucinationEvent[] = [];
+  let run: AlignmentOp[] = [];
+
+  const flush = () => {
+    if (run.length >= minRunLength) {
+      events.push({
+        error_count: run.length,
+        reference_text: run.map((op) => op.reference).filter((value): value is string => !!value).join(" "),
+        hypothesis_text: run.map((op) => op.hypothesis).filter((value): value is string => !!value).join(" "),
+      });
+    }
+    run = [];
+  };
+
+  for (const op of alignment) {
+    if (op.type === "insertion" || op.type === "substitution") {
+      run.push(op);
+      continue;
+    }
+    flush();
+  }
+
+  flush();
+  return events;
 }

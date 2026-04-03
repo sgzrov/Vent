@@ -1,7 +1,7 @@
 /**
  * Prosody analysis via Hume Expression Measurement API.
  * Analyzes emotional tone, rhythm, and timbre of agent speech.
- * Opt-in, informational-only — never affects test pass/fail.
+ * Opt-in, informational-only — never affects call pass/fail.
  */
 
 import type {
