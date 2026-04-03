@@ -15,7 +15,12 @@ function getArg(name: string, fallback?: string): string {
   process.exit(1);
 }
 
-const runId = getArg("run-id");
+const runId = process.argv.includes("--run-id")
+  ? getArg("run-id")
+  : undefined;
+const sessionId = process.argv.includes("--session-id")
+  ? getArg("session-id")
+  : undefined;
 const token = getArg("token");
 const apiUrl = getArg("api-url");
 const startCommand = process.argv.includes("--start-command")
@@ -23,6 +28,11 @@ const startCommand = process.argv.includes("--start-command")
   : undefined;
 const agentPort = parseInt(getArg("agent-port", "3001"), 10);
 const healthEndpoint = getArg("health-endpoint", "/health");
+
+if (!runId && !sessionId) {
+  console.error("Missing required argument: --run-id or --session-id");
+  process.exit(1);
+}
 
 // ---------------------------------------------------------------------------
 // Port cleanup — kill any existing process on the agent port
@@ -90,6 +100,7 @@ async function main() {
   const client = new RelayClient({
     apiUrl,
     runId,
+    sessionId,
     relayToken: token,
     agentPort,
     healthEndpoint,
@@ -131,14 +142,18 @@ async function main() {
     console.error("[relay] Agent is healthy");
   }
 
-  // 4. Activate the run (queue the test job)
-  console.error("[relay] Activating run...");
-  await client.activate();
-  console.error("[relay] Run activated — tests will start shortly");
+  // 4. Activate the run only for per-run relay mode.
+  if (runId) {
+    console.error("[relay] Activating run...");
+    await client.activate();
+    console.error("[relay] Run activated — calls will start shortly");
+  } else {
+    console.error(`[relay] Agent session ${sessionId} ready`);
+  }
 
   // 5. Listen for events
   client.on("run_complete", () => {
-    console.error("[relay] Tests complete");
+    console.error("[relay] Calls complete");
   });
 
   client.on("disconnected", () => {

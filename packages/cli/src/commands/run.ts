@@ -1,15 +1,12 @@
 import * as fs from "node:fs/promises";
 import { writeFileSync } from "node:fs";
-import * as net from "node:net";
 import { apiFetch, ApiError, ensurePlatformConnection } from "../lib/api.js";
 import { deviceAuthFlow } from "../lib/auth.js";
 import { streamRunEvents } from "../lib/sse.js";
-import { startRelay } from "../lib/relay.js";
 import { printEvent, printError, printInfo, printSummary, debug, setVerbose } from "../lib/output.js";
 import { loadAccessToken, saveAccessToken } from "../lib/config.js";
 import { saveRunHistory } from "../lib/run-history.js";
 import { resolveRemotePlatformConfig } from "../lib/platform-connections.js";
-import type { RelayHandle } from "../lib/relay.js";
 import type { SSEEvent } from "../lib/sse.js";
 
 const isTTY = process.stdout.isTTY;
@@ -17,7 +14,8 @@ const isTTY = process.stdout.isTTY;
 interface RunArgs {
   config?: string;
   file?: string;
-  test?: string;
+  call?: string;
+  session?: string;
   accessToken?: string;
   json: boolean;
   submit: boolean;
@@ -26,7 +24,7 @@ interface RunArgs {
 
 export async function runCommand(args: RunArgs): Promise<number> {
   if (args.verbose) setVerbose(true);
-  debug(`start args=${JSON.stringify({ file: args.file, test: args.test, json: args.json, submit: args.submit })}`);
+  debug(`start args=${JSON.stringify({ file: args.file, call: args.call, session: args.session, json: args.json, submit: args.submit })}`);
 
   // 1. Resolve Vent access token
   const accessToken = args.accessToken ?? (await loadAccessToken());
@@ -56,34 +54,22 @@ export async function runCommand(args: RunArgs): Promise<number> {
     return 2;
   }
 
-  // 2b. Filter to single test if --test is set
-  if (args.test) {
-    const cfg = config as { conversation_tests?: Array<{ name?: string }>; red_team_tests?: Array<{ name?: string }> };
-    const convTests = cfg.conversation_tests ?? [];
-    const redTests = cfg.red_team_tests ?? [];
-    if (convTests.length === 0 && redTests.length === 0) {
-      printError("--test requires conversation_tests or red_team_tests in config.");
+  // 2b. Filter to single call if --call is set
+  if (args.call) {
+    const cfg = config as { conversation_calls?: Array<{ name?: string }> };
+    const convCalls = cfg.conversation_calls ?? [];
+    if (convCalls.length === 0) {
+      printError("--call requires conversation_calls in config.");
       return 2;
     }
-    // Search both arrays for the named test
-    const convMatch = convTests.filter((t, i) => (t.name ?? `test-${i}`) === args.test);
-    const redMatch = redTests.filter((t, i) => (t.name ?? `red-${i}`) === args.test);
-    if (convMatch.length === 0 && redMatch.length === 0) {
-      const available = [
-        ...convTests.map((t, i) => t.name ?? `test-${i}`),
-        ...redTests.map((t, i) => t.name ?? `red-${i}`),
-      ].join(", ");
-      printError(`Test "${args.test}" not found. Available: ${available}`);
+    const convMatch = convCalls.filter((t, i) => (t.name ?? `call-${i}`) === args.call);
+    if (convMatch.length === 0) {
+      const available = convCalls.map((t, i) => t.name ?? `call-${i}`).join(", ");
+      printError(`Call "${args.call}" not found. Available: ${available}`);
       return 2;
     }
-    if (convMatch.length > 0) {
-      cfg.conversation_tests = convMatch;
-      cfg.red_team_tests = undefined;
-    } else {
-      cfg.red_team_tests = redMatch;
-      cfg.conversation_tests = undefined;
-    }
-    debug(`filtered to test: ${args.test}`);
+    cfg.conversation_calls = convMatch;
+    debug(`filtered to call: ${args.call}`);
   }
 
   // 2c. Resolve remote platform credentials from local env and keep them local to the CLI.
@@ -103,25 +89,30 @@ export async function runCommand(args: RunArgs): Promise<number> {
   const providerKey = platformProvider ?? adapterForLimit;
   const concurrencyLimit = providerKey ? defaultLimits[providerKey] : undefined;
   if (concurrencyLimit) {
-    const convTests = (config as { conversation_tests?: Array<{ repeat?: number }> }).conversation_tests ?? [];
-    const redTests = (config as { red_team_tests?: Array<{ repeat?: number }> }).red_team_tests ?? [];
-    const allTests = [...convTests, ...redTests];
-    const totalConcurrent = allTests.reduce((sum, t) => sum + (t.repeat ?? 1), 0);
+    const convCalls = (config as { conversation_calls?: Array<{ repeat?: number }> }).conversation_calls ?? [];
+    const totalConcurrent = convCalls.reduce((sum, t) => sum + (t.repeat ?? 1), 0);
     if (totalConcurrent > concurrencyLimit) {
       printError(
-        `Too many concurrent tests (${totalConcurrent}) for ${providerKey} (limit: ${concurrencyLimit}). ` +
-        `Reduce test count or use --test to run a subset. Tests exceeding the limit will hang forever.`
+        `Too many concurrent calls (${totalConcurrent}) for ${providerKey} (limit: ${concurrencyLimit}). ` +
+        `Reduce call count or use --call to run a subset. Calls exceeding the limit will hang forever.`
       );
       return 2;
     }
   }
 
-  // 2e. Auto-assign a free port for local agents so parallel runs don't collide
-  const cfg = config as { connection?: { start_command?: string; agent_port?: number } };
-  if (cfg.connection?.start_command) {
-    const freePort = await findFreePort();
-    cfg.connection.agent_port = freePort;
-    debug(`auto-port assigned: ${freePort}`);
+  const connection = config as {
+    connection?: {
+      start_command?: string;
+      agent_url?: string;
+      adapter?: string;
+    };
+  };
+  const isLocalStartCommand = !!connection.connection?.start_command && !connection.connection?.agent_url;
+  if (isLocalStartCommand && !args.session) {
+    printError(
+      "Local runs require --session <agent-session-id>. Start the shared relay once with `npx vent-hq agent start -f <suite.json>`.",
+    );
+    return 2;
   }
 
   // 3. Submit run
@@ -130,14 +121,6 @@ export async function runCommand(args: RunArgs): Promise<number> {
   let submitResult: {
     run_id: string;
     status: string;
-    relay_config?: {
-      run_id: string;
-      relay_token: string;
-      api_url: string;
-      agent_port: number;
-      start_command: string | null;
-      health_endpoint: string;
-    };
   };
 
   let activeAccessToken = accessToken;
@@ -170,7 +153,10 @@ export async function runCommand(args: RunArgs): Promise<number> {
     await prepareConfigForSubmit(currentAccessToken);
     const res = await apiFetch("/runs/submit", currentAccessToken, {
       method: "POST",
-      body: JSON.stringify({ config }),
+      body: JSON.stringify({
+        config,
+        agent_session_id: args.session,
+      }),
     });
     debug(`API response status: ${res.status}`);
     return res.json() as Promise<typeof submitResult>;
@@ -220,19 +206,11 @@ export async function runCommand(args: RunArgs): Promise<number> {
     printError("Server returned no run_id. Response: " + JSON.stringify(submitResult));
     return 2;
   }
-  debug(`run created: ${run_id} status=${submitResult.status} has_relay=${!!submitResult.relay_config}`);
+  debug(`run created: ${run_id} status=${submitResult.status}`);
   printInfo(`Run ${run_id} created.`);
 
   // 4. Handle --submit (fire-and-forget)
   if (args.submit) {
-    if (submitResult.relay_config) {
-      printError(
-        "Cannot use --submit with local agents (start_command). " +
-        "The CLI must stay running to manage the relay. " +
-        "Use agent_url for deployed agents, or run without --submit."
-      );
-      return 2;
-    }
     process.stdout.write(
       JSON.stringify({
         run_id,
@@ -243,30 +221,12 @@ export async function runCommand(args: RunArgs): Promise<number> {
     return 0;
   }
 
-  // 5. Start relay if needed (local agent)
-  let relay: RelayHandle | null = null;
-  if (submitResult.relay_config) {
-    debug(`starting relay — agent_port=${submitResult.relay_config.agent_port} start_command="${submitResult.relay_config.start_command}" health=${submitResult.relay_config.health_endpoint}`);
-    printInfo("Starting relay for local agent…");
-    printInfo("Connecting to Vent cloud relay (timeout: 30s)…");
-    try {
-      relay = await startRelay(submitResult.relay_config);
-      debug("relay connected, agent healthy, run activated");
-      printInfo("Relay connected, agent started.");
-    } catch (err) {
-      const msg = (err as Error).message;
-      debug(`relay error: ${msg}`);
-      printError(`Relay failed: ${msg}`);
-      return 2;
-    }
-  }
-
-  // 6. Stream results
+  // 5. Stream results
   debug(`connecting to SSE stream for run ${run_id}…`);
   printInfo(`Streaming results for run ${run_id}…`);
   const abortController = new AbortController();
   let exitCode = 0;
-  const testResults: SSEEvent[] = [];
+  const callResults: SSEEvent[] = [];
   let runCompleteData: Record<string, unknown> | null = null;
 
   const onSignal = () => {
@@ -278,15 +238,15 @@ export async function runCommand(args: RunArgs): Promise<number> {
 
   try {
     let eventCount = 0;
-    for await (const event of streamRunEvents(run_id, activeKey, abortController.signal)) {
+    for await (const event of streamRunEvents(run_id, activeAccessToken, abortController.signal)) {
       eventCount++;
       const meta = (event.metadata_json ?? {}) as Record<string, unknown>;
       debug(`event #${eventCount}: type=${event.event_type} meta_keys=[${Object.keys(meta).join(",")}] message="${event.message ?? ""}"`);
       printEvent(event, args.json);
 
-      if (event.event_type === "test_completed") {
-        testResults.push(event);
-        debug(`test_completed: name=${meta.test_name} status=${meta.status} duration=${meta.duration_ms}ms completed=${meta.completed}/${meta.total}`);
+      if (event.event_type === "call_completed") {
+        callResults.push(event);
+        debug(`call_completed: name=${meta.call_name} status=${meta.status} duration=${meta.duration_ms}ms completed=${meta.completed}/${meta.total}`);
       }
 
       if (event.event_type === "run_complete") {
@@ -308,17 +268,12 @@ export async function runCommand(args: RunArgs): Promise<number> {
   } finally {
     process.off("SIGINT", onSignal);
     process.off("SIGTERM", onSignal);
-    if (relay) {
-      debug("cleaning up relay…");
-      await relay.cleanup();
-      debug("relay cleaned up");
-    }
   }
 
-  // 7. Print summary
-  debug(`summary: testResults=${testResults.length} runComplete=${!!runCompleteData} exitCode=${exitCode}`);
+  // 6. Print summary
+  debug(`summary: callResults=${callResults.length} runComplete=${!!runCompleteData} exitCode=${exitCode}`);
   if (runCompleteData) {
-    printSummary(testResults, runCompleteData, run_id, args.json);
+    printSummary(callResults, runCompleteData, run_id, args.json);
   } else if (!isTTY) {
     // Fallback: if SSE stream ended without run_complete, still write something to stdout
     // so coding agents don't see empty output / "undefined"
@@ -334,9 +289,9 @@ export async function runCommand(args: RunArgs): Promise<number> {
     }
   }
 
-  // 8. Save run history locally
+  // 7. Save run history locally
   if (runCompleteData) {
-    const savedPath = await saveRunHistory(run_id, testResults, runCompleteData);
+    const savedPath = await saveRunHistory(run_id, callResults, runCompleteData);
     if (savedPath) {
       debug(`run saved to ${savedPath}`);
       printInfo(`Run saved to ${savedPath}`);
@@ -346,19 +301,7 @@ export async function runCommand(args: RunArgs): Promise<number> {
   debug(`exiting with code ${exitCode}`);
 
   // Force exit — the fetch TCP socket from the SSE stream keeps the event loop
-  // alive indefinitely. Without this, the process hangs after tests complete,
+  // alive indefinitely. Without this, the process hangs after calls complete,
   // Claude Code eventually kills it, and stdout capture is lost.
   process.exit(exitCode);
-}
-
-function findFreePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.listen(0, () => {
-      const addr = server.address();
-      const port = (addr as net.AddressInfo).port;
-      server.close(() => resolve(port));
-    });
-    server.on("error", reject);
-  });
 }

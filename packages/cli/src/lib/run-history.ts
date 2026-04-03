@@ -11,13 +11,13 @@ interface RunHistoryEntry {
   git_dirty: boolean;
   summary: {
     status: string;
-    tests_total: number;
-    tests_passed: number;
-    tests_failed: number;
+    calls_total: number;
+    calls_passed: number;
+    calls_failed: number;
     total_duration_ms?: number;
     total_cost_usd?: number;
   };
-  test_results: Array<Record<string, unknown>>;
+  call_results: Array<Record<string, unknown>>;
 }
 
 function gitInfo(): { sha: string | null; branch: string | null; dirty: boolean } {
@@ -33,7 +33,7 @@ function gitInfo(): { sha: string | null; branch: string | null; dirty: boolean 
 
 export async function saveRunHistory(
   runId: string,
-  testResults: SSEEvent[],
+  callResults: SSEEvent[],
   runCompleteData: Record<string, unknown>,
 ): Promise<string | null> {
   try {
@@ -46,12 +46,11 @@ export async function saveRunHistory(
     const shortId = runId.slice(0, 8);
 
     const aggregate = runCompleteData.aggregate as Record<string, unknown> | undefined;
-    const convTests = aggregate?.conversation_tests as { total?: number; passed?: number; failed?: number } | undefined;
-    const redTests = aggregate?.red_team_tests as { total?: number; passed?: number; failed?: number } | undefined;
+    const convCalls = aggregate?.conversation_calls as { total?: number; passed?: number; failed?: number } | undefined;
 
-    const total = (convTests?.total ?? 0) + (redTests?.total ?? 0);
-    const passed = (convTests?.passed ?? 0) + (redTests?.passed ?? 0);
-    const failed = (convTests?.failed ?? 0) + (redTests?.failed ?? 0);
+    const total = convCalls?.total ?? 0;
+    const passed = convCalls?.passed ?? 0;
+    const failed = convCalls?.failed ?? 0;
 
     const entry: RunHistoryEntry = {
       run_id: runId,
@@ -61,13 +60,13 @@ export async function saveRunHistory(
       git_dirty: git.dirty,
       summary: {
         status: runCompleteData.status as string ?? "unknown",
-        tests_total: total,
-        tests_passed: passed,
-        tests_failed: failed,
+        calls_total: total,
+        calls_passed: passed,
+        calls_failed: failed,
         total_duration_ms: aggregate?.total_duration_ms as number | undefined,
         total_cost_usd: aggregate?.total_cost_usd as number | undefined,
       },
-      test_results: testResults.map((e) => e.metadata_json ?? {}),
+      call_results: callResults.map((e) => e.metadata_json ?? {}),
     };
 
     const filename = `${timestamp}_${shortId}.json`;

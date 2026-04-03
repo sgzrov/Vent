@@ -9,10 +9,10 @@ export interface RelayHandle {
 }
 
 /**
- * Start relay and optionally spawn the agent process.
+ * Start a persistent agent session relay and optionally spawn the agent process.
  */
-export async function startRelay(relayConfig: {
-  run_id: string;
+export async function startAgentSession(relayConfig: {
+  session_id: string;
   relay_token: string;
   api_url: string;
   agent_port: number;
@@ -21,7 +21,7 @@ export async function startRelay(relayConfig: {
 }): Promise<RelayHandle> {
   const clientConfig: RelayClientConfig = {
     apiUrl: relayConfig.api_url,
-    runId: relayConfig.run_id,
+    sessionId: relayConfig.session_id,
     relayToken: relayConfig.relay_token,
     agentPort: relayConfig.agent_port,
     healthEndpoint: relayConfig.health_endpoint,
@@ -47,18 +47,22 @@ export async function startRelay(relayConfig: {
       env,
     });
 
+    agentProcess.stdout?.on("data", (data: Buffer) => {
+      if (isVerbose()) process.stderr.write(`[agent] ${data}`);
+    });
+    agentProcess.stderr?.on("data", (data: Buffer) => {
+      if (isVerbose()) process.stderr.write(`[agent] ${data}`);
+    });
+
     agentProcess.on("error", (err) => {
       process.stderr.write(`Agent process error: ${err.message}\n`);
     });
   }
 
-  // 3. Wait for agent to be healthy before activating the run
+  // 3. Wait for agent to be healthy before exposing the session as ready
   if (relayConfig.start_command) {
     await waitForHealth(relayConfig.agent_port, relayConfig.health_endpoint);
   }
-
-  // 4. Activate LAST — agent is up, relay is connected, worker can start tests
-  await client.activate();
 
   const cleanup = async () => {
     if (agentProcess && !agentProcess.killed) {

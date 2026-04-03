@@ -1,5 +1,6 @@
 import { parseArgs } from "node:util";
 import { runCommand } from "./commands/run.js";
+import { agentStartCommand, agentStopCommand } from "./commands/agent.js";
 import { statusCommand } from "./commands/status.js";
 import { loginCommand } from "./commands/login.js";
 import { logoutCommand } from "./commands/logout.js";
@@ -11,9 +12,10 @@ import { loadDotenv } from "./lib/dotenv.js";
 const USAGE = `Usage: vent-hq <command> [options]
 
 Commands:
-  init         Set up Vent (auth + skill files + test scaffold)
-  run          Run voice tests
-  stop         Cancel a queued or running test
+  init         Set up Vent (auth + skill files + call scaffold)
+  agent        Manage a shared local agent session
+  run          Run voice calls
+  stop         Cancel a queued or running call
   status       Check status of a previous run
   login        Save Vent access token (for re-auth or CI/scripts)
   logout       Remove saved credentials
@@ -26,14 +28,31 @@ Run 'npx vent-hq <command> --help' for command-specific help.`;
 const RUN_USAGE = `Usage: vent-hq run [options]
 
 Options:
-  --config, -c   Test config as JSON string
+  --config, -c   Call config as JSON string
   --file, -f     Path to config JSON file
-  --test, -t     Run a single test by name (from suite file)
-  --list         List test names from suite file
+  --call, -t     Run a single call by name (from suite file)
+  --session, -s  Reuse an existing local agent session
+  --list         List call names from suite file
   --access-token Vent access token (overrides env/credentials)
   --json         Output NDJSON instead of colored text
   --submit       Submit and return immediately (print run_id, don't wait for results)
   --verbose      Show debug logs (SSE, relay, internal events)`;
+
+const AGENT_USAGE = `Usage: vent-hq agent <command> [options]
+
+Commands:
+  start         Start a shared local agent session and keep the relay open
+  stop          Close a shared local agent session
+
+Start options:
+  --config, -c   Config JSON string with a connection block
+  --file, -f     Path to config JSON file
+  --access-token Vent access token (overrides env/credentials)
+  --json         Output session info as JSON
+  --verbose      Show relay debug logs
+
+Stop options:
+  vent-hq agent stop <session-id> [--access-token <token>]`;
 
 const STATUS_USAGE = `Usage: vent-hq status <run-id> [options]
 
@@ -84,7 +103,8 @@ async function main(): Promise<number> {
         options: {
           config: { type: "string", short: "c" },
           file: { type: "string", short: "f" },
-          test: { type: "string", short: "t" },
+          call: { type: "string", short: "n" },
+          session: { type: "string", short: "s" },
           list: { type: "boolean", default: false },
           "access-token": { type: "string" },
           json: { type: "boolean", default: false },
@@ -95,9 +115,9 @@ async function main(): Promise<number> {
         strict: true,
       });
 
-      // --list: print test names and exit
+      // --list: print call names and exit
       if (values.list) {
-        let config: { conversation_tests?: Array<{ name?: string }>; red_team_tests?: Array<{ name?: string }> };
+        let config: { conversation_calls?: Array<{ name?: string }> };
         try {
           if (values.file) {
             const fs = await import("node:fs/promises");
@@ -113,13 +133,9 @@ async function main(): Promise<number> {
           printError(`Invalid config JSON: ${(err as Error).message}`);
           return 2;
         }
-        const convTests = config!.conversation_tests ?? [];
-        for (let i = 0; i < convTests.length; i++) {
-          console.log(convTests[i]!.name ?? `test-${i}`);
-        }
-        const redTests = config!.red_team_tests ?? [];
-        for (let i = 0; i < redTests.length; i++) {
-          console.log(redTests[i]!.name ?? `red-${i}`);
+        const convCalls = config!.conversation_calls ?? [];
+        for (let i = 0; i < convCalls.length; i++) {
+          console.log(convCalls[i]!.name ?? `call-${i}`);
         }
         return 0;
       }
@@ -127,12 +143,65 @@ async function main(): Promise<number> {
       return runCommand({
         config: values.config,
         file: values.file,
-        test: values.test,
+        call: values.call,
+        session: values.session,
         accessToken: values["access-token"],
         json: values.json!,
         submit: values.submit! || values["no-stream"]!,
         verbose: values.verbose!,
       });
+    }
+
+    case "agent": {
+      const subcommand = commandArgs[0];
+      if (!subcommand || subcommand === "--help" || subcommand === "-h") {
+        console.log(AGENT_USAGE);
+        return 0;
+      }
+
+      if (subcommand === "start") {
+        const { values } = parseArgs({
+          args: commandArgs.slice(1),
+          options: {
+            config: { type: "string", short: "c" },
+            file: { type: "string", short: "f" },
+            "access-token": { type: "string" },
+            json: { type: "boolean", default: false },
+            verbose: { type: "boolean", default: false },
+          },
+          strict: true,
+        });
+        return agentStartCommand({
+          config: values.config,
+          file: values.file,
+          accessToken: values["access-token"],
+          json: values.json!,
+          verbose: values.verbose!,
+        });
+      }
+
+      if (subcommand === "stop") {
+        const sessionId = commandArgs[1];
+        if (!sessionId) {
+          console.log(AGENT_USAGE);
+          return 2;
+        }
+        const { values } = parseArgs({
+          args: commandArgs.slice(2),
+          options: {
+            "access-token": { type: "string" },
+          },
+          strict: true,
+        });
+        return agentStopCommand({
+          sessionId,
+          accessToken: values["access-token"],
+        });
+      }
+
+      printError(`Unknown agent subcommand: ${subcommand}`);
+      console.log(AGENT_USAGE);
+      return 2;
     }
 
     case "status": {
