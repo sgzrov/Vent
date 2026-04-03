@@ -34,7 +34,7 @@ import {
   type RemoteParticipant,
 } from "@livekit/rtc-node";
 import { resample } from "@vent/voice";
-import type { ObservedToolCall, CallMetadata, ComponentLatency, CostBreakdown } from "@vent/shared";
+import type { ObservedToolCall, CallMetadata, CallTransfer, ComponentLatency, CostBreakdown } from "@vent/shared";
 import { BaseAudioChannel } from "./audio-channel.js";
 
 export interface RetellAudioChannelConfig {
@@ -246,6 +246,7 @@ export class RetellAudioChannel extends BaseAudioChannel {
     }
 
     this._stats.bytesSent += pcm.length;
+    this.captureCallerAudio(pcm, Date.now() - this.connectTimestamp);
 
     const sampleRate = RetellAudioChannel.LIVEKIT_SAMPLE_RATE;
     const resampled = resample(pcm, 24000, sampleRate);
@@ -331,41 +332,12 @@ export class RetellAudioChannel extends BaseAudioChannel {
       summary: data.call_analysis?.call_summary ?? undefined,
       user_sentiment: data.call_analysis?.user_sentiment ?? undefined,
       call_successful: data.call_analysis?.call_successful ?? undefined,
+      transfers: extractRetellTransfers(data),
     };
   }
 
   getComponentTimings(): ComponentLatency[] {
-    const data = this.cachedCallResponse;
-    if (!data?.latency) return [];
-
-    // Retell provides aggregate latency stats (not per-turn).
-    // Return a single entry with p50 values for the executor's component latency report.
-    const lat = data.latency as Record<string, { p50?: number; p90?: number; p95?: number; p99?: number } | undefined>;
-    return [{
-      stt_ms: lat.asr?.p50,
-      llm_ms: lat.llm?.p50,
-      tts_ms: lat.tts?.p50,
-    }];
-  }
-
-  /** Full latency percentiles from Retell — richer than ComponentLatency */
-  getRetellLatency(): Record<string, { p50?: number; p90?: number; p95?: number; p99?: number }> | null {
-    const data = this.cachedCallResponse;
-    if (!data?.latency) return null;
-
-    const result: Record<string, { p50?: number; p90?: number; p95?: number; p99?: number }> = {};
-    const lat = data.latency as Record<string, { p50?: number; p90?: number; p95?: number; p99?: number } | undefined>;
-    for (const key of ["e2e", "asr", "llm", "tts", "knowledge_base", "s2s"]) {
-      if (lat[key]) {
-        result[key] = {
-          p50: lat[key]!.p50,
-          p90: lat[key]!.p90,
-          p95: lat[key]!.p95,
-          p99: lat[key]!.p99,
-        };
-      }
-    }
-    return Object.keys(result).length > 0 ? result : null;
+    return extractRetellComponentTimings(this.cachedCallResponse);
   }
 
   getTranscripts(): Array<{ turnIndex: number; text: string }> {
@@ -384,6 +356,11 @@ export class RetellAudioChannel extends BaseAudioChannel {
       }
     }
     return transcripts;
+  }
+
+  /** Full caller transcript for WER computation (avoids turn alignment issues). */
+  getFullCallerTranscript(): string {
+    return extractRetellCallerTranscript(this.cachedCallResponse);
   }
 
   /** Consume accumulated real-time agent transcript text (resets buffer). */
@@ -514,6 +491,7 @@ export class RetellAudioChannel extends BaseAudioChannel {
           this._stats.bytesReceived += frameBuffer.length;
           // Resample from LiveKit 48kHz → 24kHz for consumers
           const pcm24k = resample(frameBuffer, sampleRate, 24000);
+          this.captureAgentAudio(pcm24k, Date.now() - this.connectTimestamp);
           this.emit("audio", pcm24k);
         }
       } catch (err) {
@@ -527,7 +505,82 @@ export class RetellAudioChannel extends BaseAudioChannel {
   }
 }
 
-function buildRetellCostBreakdown(products: Array<{ product: string; cost: number }>): CostBreakdown {
+export function extractRetellComponentTimings(data: CallResponse | null | undefined): ComponentLatency[] {
+  if (!data?.latency) return [];
+  const lat = data.latency as Record<string, { values?: number[] } | undefined>;
+  const sttValues = lat.asr?.values ?? [];
+  const llmValues = lat.llm?.values ?? [];
+  const ttsValues = lat.tts?.values ?? [];
+  const maxLen = Math.max(sttValues.length, llmValues.length, ttsValues.length);
+  if (maxLen === 0) return [];
+  const timings: ComponentLatency[] = [];
+  for (let i = 0; i < maxLen; i++) {
+    timings.push({
+      stt_ms: sttValues[i],
+      llm_ms: llmValues[i],
+      tts_ms: ttsValues[i],
+    });
+  }
+  return timings;
+}
+
+export function extractRetellTransfers(data: CallResponse): CallTransfer[] | undefined {
+  const disconnectionReason = data.disconnection_reason ?? undefined;
+  const destination = data.transfer_destination ?? undefined;
+  const looksTransferred =
+    destination != null
+    || disconnectionReason === "call_transfer"
+    || disconnectionReason === "transfer_bridged"
+    || disconnectionReason === "transfer_cancelled";
+
+  if (!looksTransferred) return undefined;
+
+  const status = resolveRetellTransferStatus(data);
+  const transfer: CallTransfer = {
+    type: disconnectionReason ?? "call_transfer",
+    destination,
+    status,
+    sources: ["platform_metadata"],
+  };
+  const timestampMs = resolveRetellTransferTimestampMs(data);
+  if (timestampMs != null) {
+    transfer.timestamp_ms = timestampMs;
+  }
+  return [transfer];
+}
+
+function resolveRetellTransferStatus(data: Pick<CallResponse, "disconnection_reason" | "transfer_end_timestamp" | "transfer_destination">): CallTransfer["status"] {
+  const reason = data.disconnection_reason ?? undefined;
+  if (reason === "transfer_bridged") return "completed";
+  if (reason === "transfer_cancelled") return "cancelled";
+  if (reason === "call_transfer" && data.transfer_end_timestamp != null) return "completed";
+  if (reason === "call_transfer" || data.transfer_destination != null) return "attempted";
+  return "unknown";
+}
+
+export function resolveRetellTransferTimestampMs(data: Pick<CallResponse, "start_timestamp" | "transfer_end_timestamp">): number | undefined {
+  if (data.transfer_end_timestamp != null && data.start_timestamp != null && data.transfer_end_timestamp >= data.start_timestamp) {
+    return Math.round(data.transfer_end_timestamp - data.start_timestamp);
+  }
+  return undefined;
+}
+
+export function extractRetellCallerTranscript(
+  data: Pick<CallResponse, "transcript_with_tool_calls"> | null | undefined,
+): string {
+  const entries = data?.transcript_with_tool_calls;
+  if (!entries) return "";
+
+  const callerTexts: string[] = [];
+  for (const entry of entries) {
+    if (entry.role === "user" && "content" in entry && typeof entry.content === "string") {
+      callerTexts.push(entry.content);
+    }
+  }
+  return callerTexts.join(" ");
+}
+
+export function buildRetellCostBreakdown(products: Array<{ product: string; cost: number }>): CostBreakdown {
   const breakdown: CostBreakdown = {};
   let total = 0;
   for (const p of products) {
