@@ -18,35 +18,27 @@ function createWorkerForQueue(queueName: string) {
     async (job) => {
       const data = job.data as {
         run_id: string;
-        bundle_key: string | null;
-        bundle_hash: string | null;
-        lockfile_hash?: string | null;
         adapter?: string;
-        test_spec?: Record<string, unknown>;
-        target_phone_number?: string;
+        call_spec?: Record<string, unknown>;
         voice_config?: Record<string, unknown>;
         start_command?: string;
         health_endpoint?: string;
         agent_url?: string;
         platform_connection_id?: string | null;
-        relay?: boolean;
+        agent_session_id?: string;
       };
 
-      console.log(`[${queueName}] Processing run ${data.run_id} (adapter: ${data.adapter ?? "unknown"}${data.relay ? ", relay" : ""})`);
+      console.log(`[${queueName}] Processing run ${data.run_id} (adapter: ${data.adapter ?? "unknown"}${data.agent_session_id ? ", session" : ""})`);
       await executeRun({
         run_id: data.run_id,
-        bundle_key: data.bundle_key,
-        bundle_hash: data.bundle_hash,
-        lockfile_hash: data.lockfile_hash ?? null,
         adapter: data.adapter,
-        test_spec: data.test_spec,
-        target_phone_number: data.target_phone_number,
+        call_spec: data.call_spec,
         voice_config: data.voice_config,
         start_command: data.start_command,
         health_endpoint: data.health_endpoint,
         agent_url: data.agent_url,
         platform_connection_id: data.platform_connection_id ?? null,
-        relay: data.relay,
+        agent_session_id: data.agent_session_id,
       });
     },
     {
@@ -76,7 +68,7 @@ function createWorkerForQueue(queueName: string) {
 }
 
 async function start() {
-  // Start persistent HTTP server for SIP callbacks (Twilio/Bland webhooks).
+  // Start persistent HTTP server for Bland SIP callbacks.
   // Must listen at boot so Fly.io's proxy routes traffic to this machine.
   const sipPort = parseInt(process.env["RUNNER_LISTEN_PORT"] ?? "0", 10);
   const sipHost = process.env["RUNNER_PUBLIC_HOST"] ?? "";

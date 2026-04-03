@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { FastifyInstance } from "fastify";
-import { eq } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 import IORedis from "ioredis";
 import { schema } from "@vent/db";
 import { RUNNER_CALLBACK_HEADER } from "@vent/shared";
@@ -31,7 +31,9 @@ interface RunnerConnection {
 }
 
 interface RelaySession {
-  runId: string;
+  /** The key this session is stored under — either a session_id or run_id */
+  sessionKey: string;
+  machineId: string;
   userId: string;
   controlWs: WebSocket;
   connections: Map<string, RunnerConnection>;
@@ -43,6 +45,7 @@ interface RelaySession {
 // Module-level state
 // ---------------------------------------------------------------------------
 
+/** Relay sessions keyed by session_id (agent sessions) or run_id (legacy) */
 const relaySessions = new Map<string, RelaySession>();
 
 const PING_INTERVAL_MS = 30_000;
@@ -76,8 +79,8 @@ function parseDataFrame(data: Buffer): { connId: string; payload: Buffer } | nul
 // Helpers
 // ---------------------------------------------------------------------------
 
-function getRelaySession(runId: string): RelaySession | null {
-  return relaySessions.get(runId) ?? null;
+function getRelaySession(key: string): RelaySession | null {
+  return relaySessions.get(key) ?? null;
 }
 
 function sendControl(session: RelaySession, payload: Record<string, unknown>): void {
@@ -90,8 +93,15 @@ function sendControl(session: RelaySession, payload: Record<string, unknown>): v
   }
 }
 
-function cleanupSession(runId: string): void {
-  const session = relaySessions.get(runId);
+async function refreshRelayPresence(session: RelaySession): Promise<void> {
+  await redisPub.set(`vent:relay-session:${session.sessionKey}`, session.machineId, "EX", 600);
+}
+
+function cleanupSession(
+  key: string,
+  opts?: { closeControl?: boolean; code?: number; reason?: string },
+): void {
+  const session = relaySessions.get(key);
   if (!session) return;
 
   clearInterval(session.pingInterval);
@@ -101,25 +111,16 @@ function cleanupSession(runId: string): void {
   }
 
   session.connections.clear();
-  relaySessions.delete(runId);
+  relaySessions.delete(key);
+
+  if (opts?.closeControl && session.controlWs.readyState === session.controlWs.OPEN) {
+    session.controlWs.close(opts.code ?? 1000, opts.reason ?? "session_closed");
+  }
 
   // Clean up Redis key
-  void redisPub.del(`vent:relay-session:${runId}`);
+  void redisPub.del(`vent:relay-session:${key}`);
 }
 
-function notifyRunComplete(runId: string): void {
-  const session = relaySessions.get(runId);
-  if (!session) return;
-
-  sendControl(session, { type: "run_complete" });
-
-  setTimeout(() => {
-    if (session.controlWs.readyState === session.controlWs.OPEN) {
-      session.controlWs.close(1000, "run_complete");
-    }
-    cleanupSession(runId);
-  }, 500);
-}
 
 function isValidUUID(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
@@ -131,86 +132,146 @@ function isValidUUID(value: string): boolean {
 
 async function relayRoutes(app: FastifyInstance) {
   // GET /relay/control — Control + data channel from the relay client (multiplexed)
+  // Supports two modes:
+  //   1. session_id + token → agent session (new: multiple runs share one tunnel)
+  //   2. run_id + token → single-run relay (legacy)
   app.get("/relay/control", { websocket: true }, async (socket, req) => {
-    const query = req.query as { run_id?: string; token?: string };
-    const runId = query.run_id;
+    const query = req.query as { session_id?: string; run_id?: string; token?: string };
     const token = query.token;
+    const sessionId = query.session_id;
+    const runId = query.run_id;
 
-    if (!runId || !token || !isValidUUID(runId)) {
-      socket.close(4400, "Missing or invalid run_id/token");
+    // Determine which mode we're in
+    const sessionKey = sessionId ?? runId;
+    const isAgentSession = !!sessionId;
+
+    if (!sessionKey || !token || !isValidUUID(sessionKey)) {
+      socket.close(4400, "Missing or invalid session_id/run_id/token");
       return;
     }
 
-    if (relaySessions.has(runId)) {
-      socket.close(4409, "Relay already connected for this run");
+    if (relaySessions.has(sessionKey)) {
+      socket.close(4409, "Relay already connected for this session");
       return;
     }
 
-    let run: { id: string; user_id: string; relay_token: string | null } | undefined;
-    try {
-      const [row] = await app.db
-        .select({
-          id: schema.runs.id,
-          user_id: schema.runs.user_id,
-          relay_token: schema.runs.relay_token,
-        })
-        .from(schema.runs)
-        .where(eq(schema.runs.id, runId))
-        .limit(1);
-      run = row;
-    } catch (err) {
-      app.log.error({ runId, err }, "relay/control: DB lookup failed");
-      socket.close(4500, "Internal error");
-      return;
-    }
-
-    if (!run) {
-      socket.close(4404, "Run not found");
-      return;
-    }
-
-    if (!run.relay_token || run.relay_token !== token) {
-      socket.close(4401, "Invalid relay token");
-      return;
-    }
-
-    const pingInterval = setInterval(() => {
+    // Authenticate
+    let userId: string;
+    if (isAgentSession) {
+      // Agent session mode — look up agent_sessions table
+      let agentSession: { id: string; user_id: string; relay_token: string } | undefined;
       try {
-        if (socket.readyState === socket.OPEN) {
-          socket.ping();
-        }
-      } catch {
-        // Socket went away
+        const [row] = await app.db
+          .select({
+            id: schema.agentSessions.id,
+            user_id: schema.agentSessions.user_id,
+            relay_token: schema.agentSessions.relay_token,
+          })
+          .from(schema.agentSessions)
+          .where(
+            and(
+              eq(schema.agentSessions.id, sessionId!),
+              eq(schema.agentSessions.status, "connecting"),
+            ),
+          )
+          .limit(1);
+        agentSession = row;
+      } catch (err) {
+        app.log.error({ sessionId, err }, "relay/control: agent session DB lookup failed");
+        socket.close(4500, "Internal error");
+        return;
       }
-    }, PING_INTERVAL_MS);
 
+      if (!agentSession) {
+        socket.close(4404, "Agent session not found or already active");
+        return;
+      }
+
+      if (agentSession.relay_token !== token) {
+        socket.close(4401, "Invalid relay token");
+        return;
+      }
+
+      userId = agentSession.user_id;
+
+      // Mark session as active
+      await app.db
+        .update(schema.agentSessions)
+        .set({ status: "active" })
+        .where(eq(schema.agentSessions.id, sessionId!));
+    } else {
+      // Legacy run-based mode
+      let run: { id: string; user_id: string; relay_token: string | null } | undefined;
+      try {
+        const [row] = await app.db
+          .select({
+            id: schema.runs.id,
+            user_id: schema.runs.user_id,
+            relay_token: schema.runs.relay_token,
+          })
+          .from(schema.runs)
+          .where(eq(schema.runs.id, runId!))
+          .limit(1);
+        run = row;
+      } catch (err) {
+        app.log.error({ runId, err }, "relay/control: DB lookup failed");
+        socket.close(4500, "Internal error");
+        return;
+      }
+
+      if (!run) {
+        socket.close(4404, "Run not found");
+        return;
+      }
+
+      if (!run.relay_token || run.relay_token !== token) {
+        socket.close(4401, "Invalid relay token");
+        return;
+      }
+
+      userId = run.user_id;
+    }
+
+    const machineId = process.env["FLY_MACHINE_ID"] ?? "local";
     const session: RelaySession = {
-      runId,
-      userId: run.user_id,
+      sessionKey,
+      machineId,
+      userId,
       controlWs: socket,
       connections: new Map(),
       createdAt: Date.now(),
-      pingInterval,
+      pingInterval: setInterval(() => {
+        void refreshRelayPresence(session).catch((err) => {
+          app.log.error({ sessionKey, err }, "relay/control: FAILED to refresh Redis key");
+        });
+
+        try {
+          if (socket.readyState === socket.OPEN) {
+            socket.ping();
+          }
+        } catch {
+          // Socket went away
+        }
+      }, PING_INTERVAL_MS),
     };
 
-    relaySessions.set(runId, session);
-    app.log.info({ runId }, "relay/control: connected");
+    relaySessions.set(sessionKey, session);
+    app.log.info({ sessionKey, isAgentSession }, "relay/control: connected");
 
     // Set a persistent Redis key so the worker can confirm relay is ready.
     try {
-      const machineId = process.env["FLY_MACHINE_ID"] ?? "local";
-      await redisPub.set(`vent:relay-session:${runId}`, machineId, "EX", 600);
-      app.log.info({ runId }, "relay/control: Redis key SET confirmed");
+      await refreshRelayPresence(session);
+      app.log.info({ sessionKey }, "relay/control: Redis key SET confirmed");
     } catch (err) {
-      app.log.error({ runId, err }, "relay/control: FAILED to set Redis key");
+      app.log.error({ sessionKey, err }, "relay/control: FAILED to set Redis key");
     }
 
     // Notify worker via Redis pub/sub — instant notification
     try {
-      await redisPub.publish(`vent:relay-ready:${runId}`, "1");
-      app.log.info({ runId }, "relay/control: Redis PUBLISH confirmed");
+      await redisPub.publish(`vent:relay-ready:${sessionKey}`, "1");
+      app.log.info({ sessionKey }, "relay/control: Redis PUBLISH confirmed");
     } catch (err) {
-      app.log.error({ runId, err }, "relay/control: FAILED to publish relay-ready");
+      app.log.error({ sessionKey, err }, "relay/control: FAILED to publish relay-ready");
     }
 
     // Send agent env vars so relay-client can inject them into the agent process.
@@ -222,12 +283,14 @@ async function relayRoutes(app: FastifyInstance) {
     }
     sendControl(session, { type: "config", env: agentEnv });
 
-    broadcast(runId, {
-      run_id: runId,
-      event_type: "relay_connected",
-      message: "Local dev tunnel connected",
-      created_at: new Date().toISOString(),
-    });
+    if (!isAgentSession && runId) {
+      broadcast(runId, {
+        run_id: runId,
+        event_type: "relay_connected",
+        message: "Local dev tunnel connected",
+        created_at: new Date().toISOString(),
+      });
+    }
 
     // Handle multiplexed data + control messages from CLI
     socket.on("message", (data: Buffer, isBinary: boolean) => {
@@ -252,7 +315,7 @@ async function relayRoutes(app: FastifyInstance) {
                 sendDataFrame(session, msg.conn_id, buf);
               }
               conn.buffered = [];
-              app.log.info({ runId, connId: msg.conn_id }, "relay/control: open_ack received, flushed buffer");
+              app.log.info({ sessionKey, connId: msg.conn_id }, "relay/control: open_ack received, flushed buffer");
             }
           } else if (msg.type === "close" && msg.conn_id) {
             const conn = session.connections.get(msg.conn_id);
@@ -267,22 +330,41 @@ async function relayRoutes(app: FastifyInstance) {
       }
     });
 
+    let finalized = false;
+    const finalizeAgentSession = () => {
+      if (finalized) return;
+      finalized = true;
+      cleanupSession(sessionKey);
+      if (isAgentSession && sessionId) {
+        void app.db
+          .update(schema.agentSessions)
+          .set({ status: "closed", closed_at: new Date() })
+          .where(eq(schema.agentSessions.id, sessionId))
+          .catch((err) => {
+            app.log.error({ sessionId, err }, "relay/control: failed to mark agent session closed");
+          });
+      }
+    };
+
     socket.on("close", () => {
-      app.log.info({ runId }, "relay/control: disconnected");
-      cleanupSession(runId);
+      app.log.info({ sessionKey }, "relay/control: disconnected");
+      finalizeAgentSession();
     });
 
     socket.on("error", (err) => {
-      app.log.error({ runId, err: err.message }, "relay/control: socket error");
-      cleanupSession(runId);
+      app.log.error({ sessionKey, err: err.message }, "relay/control: socket error");
+      finalizeAgentSession();
     });
   });
 
-  // GET /relay/connect — Runner (worker) data channel, one per test
+  // GET /relay/connect — Runner (worker) data channel, one per call
+  // Supports: session_id (agent sessions) or run_id (legacy) for session lookup
   app.get("/relay/connect", { websocket: true }, async (socket, req) => {
-    const query = req.query as { run_id?: string; conn_id?: string };
+    const query = req.query as { session_id?: string; run_id?: string; conn_id?: string };
+    const sessionId = query.session_id;
     const runId = query.run_id;
     const connId = query.conn_id;
+    const sessionKey = sessionId ?? runId;
 
     const secret = (req.headers as Record<string, string>)[RUNNER_CALLBACK_HEADER];
     const expectedSecret = process.env["RUNNER_CALLBACK_SECRET"];
@@ -292,14 +374,14 @@ async function relayRoutes(app: FastifyInstance) {
       return;
     }
 
-    if (!runId || !connId || !isValidUUID(runId) || !isValidUUID(connId)) {
-      socket.close(4400, "Missing or invalid run_id/conn_id");
+    if (!sessionKey || !connId || !isValidUUID(sessionKey) || !isValidUUID(connId)) {
+      socket.close(4400, "Missing or invalid session_id/run_id/conn_id");
       return;
     }
 
-    const session = relaySessions.get(runId);
+    const session = relaySessions.get(sessionKey);
     if (!session) {
-      socket.close(4404, "No relay session for this run");
+      socket.close(4404, "No relay session for this key");
       return;
     }
 
@@ -315,7 +397,7 @@ async function relayRoutes(app: FastifyInstance) {
       ready: false,
     };
     session.connections.set(connId, conn);
-    app.log.info({ runId, connId }, "relay/connect: runner connected");
+    app.log.info({ sessionKey, connId }, "relay/connect: runner connected");
 
     // Notify CLI of new connection
     sendControl(session, { type: "new_connection", conn_id: connId });
@@ -329,7 +411,7 @@ async function relayRoutes(app: FastifyInstance) {
       } else {
         bufferedBytes += payload.length;
         if (bufferedBytes > MAX_BUFFER_BYTES) {
-          app.log.warn({ runId, connId, bufferedBytes }, "relay/connect: buffer limit exceeded, closing");
+          app.log.warn({ sessionKey, connId, bufferedBytes }, "relay/connect: buffer limit exceeded, closing");
           socket.close(4413, "Buffer limit exceeded");
           return;
         }
@@ -344,11 +426,12 @@ async function relayRoutes(app: FastifyInstance) {
     });
 
     socket.on("error", (err) => {
-      app.log.error({ runId, connId, err: err.message }, "relay/connect: socket error");
+      app.log.error({ sessionKey, connId, err: err.message }, "relay/connect: socket error");
     });
   });
 
   // GET /internal/relay-ready/:id — Worker polls this to know when relay tunnel is connected
+  // :id can be either a session_id or run_id
   app.get<{ Params: { id: string } }>("/internal/relay-ready/:id", async (request, reply) => {
     const secret = (request.headers as Record<string, string>)[RUNNER_CALLBACK_HEADER];
     const expectedSecret = process.env["RUNNER_CALLBACK_SECRET"];
@@ -379,8 +462,8 @@ async function relayRoutes(app: FastifyInstance) {
 
   // Cleanup on server shutdown
   app.addHook("onClose", async () => {
-    for (const [runId] of relaySessions) {
-      cleanupSession(runId);
+    for (const [key] of relaySessions) {
+      cleanupSession(key);
     }
     redisPub.disconnect();
   });
@@ -394,6 +477,6 @@ export {
   relayRoutes,
   relaySessions,
   getRelaySession,
-  notifyRunComplete,
+  cleanupSession,
 };
 export type { RelaySession, RunnerConnection };
