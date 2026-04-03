@@ -21,11 +21,12 @@ export const runStatusEnum = pgEnum("run_status", [
   "cancelled",
 ]);
 
-export const sourceTypeEnum = pgEnum("source_type", ["bundle", "remote", "relay"]);
+export const sourceTypeEnum = pgEnum("source_type", ["remote", "session"]);
 
-export const scenarioStatusEnum = pgEnum("scenario_status", ["pass", "fail", "completed", "error"]);
+export const agentSessionStatusEnum = pgEnum("agent_session_status", ["connecting", "active", "closed"]);
 
-export const testTypeEnum = pgEnum("test_type", ["audio", "conversation", "load_test", "red_team"]);
+export const scenarioStatusEnum = pgEnum("scenario_status", ["completed", "error"]);
+
 export const platformConnectionStatusEnum = pgEnum("platform_connection_status", ["active", "disabled", "invalid"]);
 
 export const runs = pgTable(
@@ -38,8 +39,6 @@ export const runs = pgTable(
     user_id: text("user_id").notNull(),
     status: runStatusEnum("status").notNull().default("queued"),
     source_type: sourceTypeEnum("source_type").notNull(),
-    bundle_key: text("bundle_key"),
-    bundle_hash: text("bundle_hash"),
     created_at: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -52,6 +51,7 @@ export const runs = pgTable(
     // Stores a SHA-256 of the provided idempotency key.
     idempotency_key: text("idempotency_key"),
     relay_token: text("relay_token"),
+    agent_session_id: uuid("agent_session_id").references(() => agentSessions.id),
   },
   (table) => ({
     runsUserScopedIdempotency: uniqueIndex("runs_user_id_idempotency_key_unique")
@@ -67,43 +67,12 @@ export const scenarioResults = pgTable("scenario_results", {
     .references(() => runs.id, { onDelete: "cascade" }),
   name: text("name").notNull(),
   status: scenarioStatusEnum("status").notNull(),
-  test_type: testTypeEnum("test_type"),
+  test_type: text("test_type").default("conversation"),
   metrics_json: jsonb("metrics_json").notNull(),
   trace_json: jsonb("trace_json").notNull(),
   created_at: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
-});
-
-export const baselines = pgTable("baselines", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  run_id: uuid("run_id")
-    .notNull()
-    .references(() => runs.id, { onDelete: "cascade" }),
-  user_id: text("user_id").notNull(),
-  created_at: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-});
-
-export const depImageStatusEnum = pgEnum("dep_image_status", [
-  "building",
-  "ready",
-  "failed",
-]);
-
-export const depImages = pgTable("dep_images", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  lockfile_hash: text("lockfile_hash").notNull().unique(),
-  image_ref: text("image_ref").notNull(),
-  base_image_ref: text("base_image_ref"),
-  status: depImageStatusEnum("status").notNull().default("building"),
-  builder_machine_id: text("builder_machine_id"),
-  error_text: text("error_text"),
-  created_at: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-  ready_at: timestamp("ready_at", { withTimezone: true }),
 });
 
 export const accessTokens = pgTable("access_tokens", {
@@ -176,6 +145,21 @@ export const deviceSessions = pgTable("device_sessions", {
     .notNull()
     .defaultNow(),
   consumed_at: timestamp("consumed_at", { withTimezone: true }),
+});
+
+export const agentSessions = pgTable("agent_sessions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  user_id: text("user_id").notNull(),
+  access_token_id: uuid("access_token_id")
+    .notNull()
+    .references(() => accessTokens.id),
+  relay_token: text("relay_token").notNull(),
+  status: agentSessionStatusEnum("status").notNull().default("connecting"),
+  config_json: jsonb("config_json").notNull(),
+  created_at: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  closed_at: timestamp("closed_at", { withTimezone: true }),
 });
 
 export const runEvents = pgTable("run_events", {
