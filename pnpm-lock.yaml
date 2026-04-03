@@ -41,6 +41,9 @@ importers:
       '@vent/adapters':
         specifier: workspace:*
         version: link:../../packages/adapters
+      '@vent/artifacts':
+        specifier: workspace:*
+        version: link:../../packages/artifacts
       '@vent/db':
         specifier: workspace:*
         version: link:../../packages/db
@@ -310,6 +313,9 @@ importers:
       '@vent/adapters':
         specifier: workspace:*
         version: link:../adapters
+      '@vent/artifacts':
+        specifier: workspace:*
+        version: link:../artifacts
       '@vent/shared':
         specifier: workspace:*
         version: link:../shared
