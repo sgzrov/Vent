@@ -1,14 +1,21 @@
 export interface RelayClientConfig {
   apiUrl: string;
-  runId: string;
   relayToken: string;
   agentPort: number;
   healthEndpoint: string;
+  runId?: string;
+  sessionId?: string;
 }
 
 interface LocalConnection {
   local: WebSocket;
   connId: string;
+}
+
+export interface RelayDisconnectedInfo {
+  code: number;
+  reason: string;
+  wasClean: boolean;
 }
 
 type RelayEventHandler = (...args: unknown[]) => void;
@@ -43,8 +50,14 @@ export class RelayClient {
   }
 
   async connect(timeoutMs = 30_000): Promise<void> {
+    if (!this.config.sessionId && !this.config.runId) {
+      throw new Error("RelayClient.connect() requires either sessionId or runId");
+    }
     const wsBase = this.config.apiUrl.replace(/^http/, "ws");
-    const controlUrl = `${wsBase}/relay/control?run_id=${this.config.runId}&token=${this.config.relayToken}`;
+    const query = this.config.sessionId
+      ? `session_id=${this.config.sessionId}`
+      : `run_id=${this.config.runId}`;
+    const controlUrl = `${wsBase}/relay/control?${query}&token=${this.config.relayToken}`;
 
     return new Promise<void>((resolve, reject) => {
       const ws = new WebSocket(controlUrl);
@@ -95,6 +108,9 @@ export class RelayClient {
   }
 
   async activate(timeoutMs = 15_000): Promise<void> {
+    if (!this.config.runId) {
+      throw new Error("activate() requires runId");
+    }
     const activateUrl = `${this.config.apiUrl}/internal/runs/${this.config.runId}/activate`;
     const response = await fetch(activateUrl, {
       method: "POST",
@@ -179,10 +195,14 @@ export class RelayClient {
       }
     });
 
-    ws.addEventListener("close", () => {
+    ws.addEventListener("close", (ev) => {
       this.controlWs = null;
       if (!this.closed) {
-        this.emit("disconnected");
+        this.emit("disconnected", {
+          code: ev.code,
+          reason: ev.reason,
+          wasClean: ev.wasClean,
+        } satisfies RelayDisconnectedInfo);
       }
     });
 
