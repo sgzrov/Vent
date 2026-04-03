@@ -10,12 +10,19 @@ import type { SpeechSegment } from "@vent/voice";
 
 export interface TurnAudioData {
   role: "caller" | "agent";
+  /** Audio timeline start in ms relative to call start. */
+  audioStartTimestampMs: number;
   audioDurationMs: number;
-  /** Speech segments from batch VAD (only present for agent turns) */
+  /** Speech segments from batch VAD (agent) or synthetic full-span speech (caller fallback). */
   speechSegments?: SpeechSegment[];
+  callerDecisionMode?: "continue" | "wait" | "closing" | "end_now";
+  interrupted?: boolean;
+  isInterruption?: boolean;
 }
 
 const SILENCE_GAP_THRESHOLD_MS = 2000;
+const OVERLAP_THRESHOLD_MS = 150;
+const MISSED_RESPONSE_WINDOW_THRESHOLD_MS = 2000;
 
 /**
  * Compute VAD-derived audio analysis metrics from per-turn audio data.
@@ -90,9 +97,70 @@ export function computeAudioAnalysisMetrics(
       ? allSegmentDurations.reduce((a, b) => a + b, 0) / allSegmentDurations.length
       : 0;
 
+  let interruptionOpportunities = 0;
+  let interruptionCount = 0;
+  const bargeInRecoverySamples: number[] = [];
+  let agentInterruptOpportunities = 0;
+  let agentInterruptingUserCount = 0;
+  let missedResponseWindows = 0;
+
+  for (let i = 1; i < turns.length; i++) {
+    const previous = turns[i - 1]!;
+    const current = turns[i]!;
+
+    if (current.role === "caller" && previous.role === "agent") {
+      const callerSpeech = getSpeechIntervals(current);
+      const agentSpeech = getSpeechIntervals(previous);
+      if (callerSpeech.length > 0 && agentSpeech.length > 0) {
+        interruptionOpportunities++;
+        const overlapMs = Math.round(
+          Math.max(0, getLastSpeechEndMs(previous)! - callerSpeech[0]!.start)
+        );
+        if (overlapMs > OVERLAP_THRESHOLD_MS) {
+          interruptionCount++;
+          bargeInRecoverySamples.push(overlapMs);
+        }
+      }
+    }
+
+    if (current.role === "agent" && previous.role === "caller") {
+      const callerSpeech = getSpeechIntervals(previous);
+      if (callerSpeech.length === 0 || previous.callerDecisionMode === "end_now") {
+        continue;
+      }
+
+      agentInterruptOpportunities++;
+      const agentSpeechStartMs = getFirstSpeechStartMs(current);
+      const callerSpeechEndMs = callerSpeech[callerSpeech.length - 1]!.end;
+
+      if (agentSpeechStartMs == null) {
+        missedResponseWindows++;
+        continue;
+      }
+
+      const overlapMs = Math.round(Math.max(0, callerSpeechEndMs - agentSpeechStartMs));
+      if (overlapMs > OVERLAP_THRESHOLD_MS) {
+        agentInterruptingUserCount++;
+      }
+
+      const responseGapMs = Math.round(agentSpeechStartMs - callerSpeechEndMs);
+      if (responseGapMs >= MISSED_RESPONSE_WINDOW_THRESHOLD_MS) {
+        missedResponseWindows++;
+      }
+    }
+  }
+
   return {
+    caller_talk_time_ms: Math.round(totalCallerAudioMs),
+    agent_talk_time_ms: Math.round(totalAgentSpeechMs),
     agent_speech_ratio: round3(agentSpeechRatio),
     talk_ratio_vad: round3(talkRatioVad),
+    interruption_rate: ratio(interruptionCount, interruptionOpportunities),
+    interruption_count: interruptionCount,
+    barge_in_recovery_time_ms: mean(bargeInRecoverySamples),
+    agent_interrupting_user_rate: ratio(agentInterruptingUserCount, agentInterruptOpportunities),
+    agent_interrupting_user_count: agentInterruptingUserCount,
+    missed_response_windows: missedResponseWindows,
     longest_monologue_ms: Math.round(longestMonologueMs),
     silence_gaps_over_2s: silenceGapsOver2s,
     total_internal_silence_ms: Math.round(totalInternalSilenceMs),
@@ -104,7 +172,7 @@ export function computeAudioAnalysisMetrics(
 
 /**
  * Grade audio analysis metrics against configurable thresholds.
- * Returns warnings (informational — does NOT affect conversation test pass/fail).
+ * Returns warnings (informational — does NOT affect conversation call pass/fail).
  */
 export function gradeAudioAnalysisMetrics(
   metrics: AudioAnalysisMetrics,
@@ -197,4 +265,40 @@ export function gradeAudioAnalysisMetrics(
 
 function round3(n: number): number {
   return Math.round(n * 1000) / 1000;
+}
+
+function ratio(count: number, total: number): number {
+  if (total <= 0) return 0;
+  return round3(count / total);
+}
+
+function mean(values: number[]): number | undefined {
+  if (values.length === 0) return undefined;
+  return Math.round(values.reduce((sum, value) => sum + value, 0) / values.length);
+}
+
+function getSpeechIntervals(turn: TurnAudioData): Array<{ start: number; end: number }> {
+  if (turn.audioDurationMs <= 0) return [];
+
+  if (turn.role === "agent") {
+    if (!turn.speechSegments || turn.speechSegments.length === 0) return [];
+    return turn.speechSegments.map((segment) => ({
+      start: turn.audioStartTimestampMs + segment.startMs,
+      end: turn.audioStartTimestampMs + segment.endMs,
+    }));
+  }
+
+  return [{
+    start: turn.audioStartTimestampMs,
+    end: turn.audioStartTimestampMs + turn.audioDurationMs,
+  }];
+}
+
+function getFirstSpeechStartMs(turn: TurnAudioData): number | undefined {
+  return getSpeechIntervals(turn)[0]?.start;
+}
+
+function getLastSpeechEndMs(turn: TurnAudioData): number | undefined {
+  const intervals = getSpeechIntervals(turn);
+  return intervals.length > 0 ? intervals[intervals.length - 1]!.end : undefined;
 }

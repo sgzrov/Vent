@@ -56,7 +56,7 @@ Important: PRODUCTION-ONLY fixes, no localhost.
 
 ## Commit Messages
 
-Use `type: small description` format for commits.
+Use `type: small description` format for commits. Keep commit messages to 8 words or fewer (excluding the type prefix).
 
 | Type       | When to use                                              |
 |------------|----------------------------------------------------------|

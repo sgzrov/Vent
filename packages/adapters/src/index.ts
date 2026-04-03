@@ -1,4 +1,12 @@
-import type { AdapterType, PlatformConfig, BlandPlatformConfig, LiveKitPlatformConfig, VapiPlatformConfig, RetellPlatformConfig, ElevenLabsPlatformConfig } from "@vent/shared";
+import type {
+  AdapterType,
+  PlatformConfig,
+  BlandPlatformConfig,
+  LiveKitPlatformConfig,
+  VapiPlatformConfig,
+  RetellPlatformConfig,
+  ElevenLabsPlatformConfig,
+} from "@vent/shared";
 import { RUNNER_CALLBACK_HEADER } from "@vent/shared";
 import type { AudioChannel } from "./audio-channel.js";
 import { WsAudioChannel } from "./ws-audio-channel.js";
@@ -8,7 +16,7 @@ import { ElevenLabsAudioChannel } from "./elevenlabs-audio-channel.js";
 import { RetellAudioChannel } from "./retell-audio-channel.js";
 import { BlandAudioChannel } from "./bland-audio-channel.js";
 
-export type { AudioChannel, AudioChannelEvents } from "./audio-channel.js";
+export type { AudioChannel, AudioChannelEvents, CallRecording, LiveCallRecording } from "./audio-channel.js";
 export { BaseAudioChannel } from "./audio-channel.js";
 export { WsAudioChannel } from "./ws-audio-channel.js";
 export { WebRtcAudioChannel } from "./webrtc-audio-channel.js";
@@ -21,9 +29,14 @@ export { SharedSipServer } from "./shared-sip-server.js";
 export interface AudioChannelConfig {
   adapter: AdapterType;
   agentUrl?: string;
-  targetPhoneNumber?: string;
   platform?: PlatformConfig;
   relayHeaders?: Record<string, string>;
+  runId?: string;
+  callName?: string;
+  /** Target sample rate for WebSocket wire format. Default: 24000. */
+  wsSampleRate?: number;
+  /** Enable caller audio normalization for WebSocket adapter. Default: false. */
+  wsNormalizeAudio?: boolean;
 }
 
 /** Shared Twilio server port config for phone-based adapters like Bland. */
@@ -38,7 +51,7 @@ export function createAudioChannel(config: AudioChannelConfig): AudioChannel {
   switch (config.adapter) {
     case "websocket": {
       let wsUrl = agentUrl.replace(/^http/, "ws");
-      // When connecting through relay, append a unique conn_id per test connection
+      // When connecting through relay, append a unique conn_id per call connection
       if (wsUrl.includes("/relay/connect")) {
         const connId = crypto.randomUUID();
         wsUrl += (wsUrl.includes("?") ? "&" : "?") + `conn_id=${connId}`;
@@ -50,7 +63,12 @@ export function createAudioChannel(config: AudioChannelConfig): AudioChannel {
         if (secret) headers[RUNNER_CALLBACK_HEADER] = secret;
         if (config.relayHeaders) Object.assign(headers, config.relayHeaders);
       }
-      return new WsAudioChannel({ wsUrl, headers });
+      return new WsAudioChannel({
+        wsUrl,
+        headers,
+        sampleRate: config.wsSampleRate,
+        normalizeAudio: config.wsNormalizeAudio,
+      });
     }
 
     case "livekit": {
@@ -80,7 +98,6 @@ export function createAudioChannel(config: AudioChannelConfig): AudioChannel {
       const assistantId = p?.vapi_assistant_id || process.env["VAPI_ASSISTANT_ID"] || "";
       if (!apiKey) throw new Error("Vapi adapter requires vapi_api_key or VAPI_API_KEY env");
       if (!assistantId) throw new Error("Vapi adapter requires vapi_assistant_id or VAPI_ASSISTANT_ID env");
-
       return new VapiAudioChannel({ apiKey, assistantId });
     }
 
@@ -90,7 +107,6 @@ export function createAudioChannel(config: AudioChannelConfig): AudioChannel {
       const agentId = p?.retell_agent_id || process.env["RETELL_AGENT_ID"] || "";
       if (!apiKey) throw new Error("Retell adapter requires retell_api_key or RETELL_API_KEY env");
       if (!agentId) throw new Error("Retell adapter requires retell_agent_id or RETELL_AGENT_ID env");
-
       return new RetellAudioChannel({ apiKey, agentId });
     }
 
@@ -100,7 +116,6 @@ export function createAudioChannel(config: AudioChannelConfig): AudioChannel {
       const agentId = p?.elevenlabs_agent_id || process.env["ELEVENLABS_AGENT_ID"] || "";
       if (!apiKey) throw new Error("ElevenLabs adapter requires elevenlabs_api_key or ELEVENLABS_API_KEY env");
       if (!agentId) throw new Error("ElevenLabs adapter requires elevenlabs_agent_id or ELEVENLABS_AGENT_ID env");
-
       return new ElevenLabsAudioChannel({ apiKey, agentId });
     }
 

@@ -35,7 +35,7 @@ import {
   type RemoteParticipant,
 } from "@livekit/rtc-node";
 import { ElevenLabsClient } from "@elevenlabs/elevenlabs-js";
-import type { ObservedToolCall, CallMetadata, ComponentLatency, CostBreakdown } from "@vent/shared";
+import type { ObservedToolCall, CallMetadata, CallTransfer, ComponentLatency, CostBreakdown } from "@vent/shared";
 import { resample } from "@vent/voice";
 import { BaseAudioChannel } from "./audio-channel.js";
 
@@ -77,6 +77,7 @@ export class ElevenLabsAudioChannel extends BaseAudioChannel {
     super();
     this.config = config;
     this.client = new ElevenLabsClient({ apiKey: config.apiKey });
+    this.enableRecordingCapture();
   }
 
   get connected(): boolean {
@@ -266,6 +267,7 @@ export class ElevenLabsAudioChannel extends BaseAudioChannel {
     }
 
     this._stats.bytesSent += pcm.length;
+    this.captureCallerAudio(pcm, Date.now() - this.connectTimestamp);
 
     const sampleRate = ElevenLabsAudioChannel.LIVEKIT_SAMPLE_RATE;
     const resampled = resample(pcm, 24000, sampleRate);
@@ -358,35 +360,12 @@ export class ElevenLabsAudioChannel extends BaseAudioChannel {
       summary: analysis?.transcriptSummary as string | undefined,
       call_successful: callSuccessful === "success" ? true
         : callSuccessful === "failure" ? false : undefined,
+      transfers: extractElevenLabsTransfers(data),
     };
   }
 
   getComponentTimings(): ComponentLatency[] {
-    const data = this.cachedConversation;
-    const transcript = data?.transcript as Array<Record<string, unknown>> | undefined;
-    if (!transcript) return [];
-
-    const timings: ComponentLatency[] = [];
-    for (const msg of transcript) {
-      if (msg.role !== "agent") continue;
-      const turnMetrics = msg.conversationTurnMetrics as Record<string, unknown> | undefined;
-      const metrics = turnMetrics?.metrics as Record<string, { elapsedTime?: number }> | undefined;
-      if (!metrics) continue;
-
-      // ElevenLabs metric keys are free-form (e.g. "convai_llm_service_ttfb").
-      // Match by substring to handle varying key names.
-      let llmMs: number | undefined;
-      for (const [key, val] of Object.entries(metrics)) {
-        if (key.includes("llm") && key.includes("ttfb") && val.elapsedTime != null) {
-          llmMs = val.elapsedTime * 1000;
-        }
-      }
-
-      if (llmMs != null) {
-        timings.push({ llm_ms: llmMs });
-      }
-    }
-    return timings;
+    return extractElevenLabsComponentTimings(this.cachedConversation);
   }
 
   getTranscripts(): Array<{ turnIndex: number; text: string }> {
@@ -405,6 +384,11 @@ export class ElevenLabsAudioChannel extends BaseAudioChannel {
       }
     }
     return transcripts;
+  }
+
+  /** Full caller transcript for WER computation (avoids turn alignment issues). */
+  getFullCallerTranscript(): string {
+    return extractElevenLabsCallerTranscript(this.cachedConversation);
   }
 
   /** Consume accumulated real-time agent transcript text (resets buffer). */
@@ -565,6 +549,7 @@ export class ElevenLabsAudioChannel extends BaseAudioChannel {
           this._stats.bytesReceived += frameBuffer.length;
           // Resample from LiveKit 48kHz → 24kHz for consumers
           const pcm24k = resample(frameBuffer, sampleRate, 24000);
+          this.captureAgentAudio(pcm24k, Date.now() - this.connectTimestamp);
           this.emit("audio", pcm24k);
         }
       } catch (err) {
@@ -576,6 +561,175 @@ export class ElevenLabsAudioChannel extends BaseAudioChannel {
 
     readLoop();
   }
+}
+
+export function extractElevenLabsComponentTimings(data: Record<string, unknown> | null | undefined): ComponentLatency[] {
+  const transcript = data?.transcript as Array<Record<string, unknown>> | undefined;
+  if (!transcript) return [];
+
+  const timings: ComponentLatency[] = [];
+  for (const msg of transcript) {
+    if (msg.role !== "agent") continue;
+    const turnMetrics = msg.conversationTurnMetrics as Record<string, unknown> | undefined;
+    const metrics = turnMetrics?.metrics as Record<string, { elapsedTime?: number }> | undefined;
+    if (!metrics) continue;
+
+    let sttMs: number | undefined;
+    let llmMs: number | undefined;
+    let ttsMs: number | undefined;
+    for (const [key, val] of Object.entries(metrics)) {
+      if (val.elapsedTime == null) continue;
+      const ms = val.elapsedTime * 1000;
+      const k = key.toLowerCase();
+      if ((k.includes("asr") || k.includes("stt")) && sttMs == null) {
+        sttMs = ms;
+      } else if (k.includes("llm") && k.includes("ttfb") && llmMs == null) {
+        llmMs = ms;
+      } else if (k.includes("tts") && ttsMs == null) {
+        ttsMs = ms;
+      }
+    }
+
+    if (sttMs != null || llmMs != null || ttsMs != null) {
+      timings.push({ stt_ms: sttMs, llm_ms: llmMs, tts_ms: ttsMs });
+    }
+  }
+  return timings;
+}
+
+export function extractElevenLabsTransfers(data: Record<string, unknown>): CallTransfer[] | undefined {
+  const messages = data.transcript as Array<Record<string, unknown>> | undefined;
+  if (!messages) return undefined;
+
+  const resultMap = new Map<string, { result?: unknown; error?: string; time?: number }>();
+  for (const msg of messages) {
+    const toolResults = msg.toolResults as Array<Record<string, unknown>> | undefined;
+    if (!toolResults) continue;
+    for (const tr of toolResults) {
+      const id = tr.toolCallId as string | undefined;
+      if (!id) continue;
+      resultMap.set(id, {
+        result: tr.result,
+        error: typeof tr.error === "string" ? tr.error : undefined,
+        time: typeof msg.timeInCallSecs === "number" ? msg.timeInCallSecs : undefined,
+      });
+    }
+  }
+
+  const transfers: CallTransfer[] = [];
+
+  for (const msg of messages) {
+    const timestampMs = typeof msg.timeInCallSecs === "number"
+      ? Math.round(msg.timeInCallSecs * 1000)
+      : undefined;
+    const toolCalls = msg.toolCalls as Array<Record<string, unknown>> | undefined;
+    if (!toolCalls) continue;
+
+    for (const toolCall of toolCalls) {
+      const name = toolCall.name;
+      if (typeof name !== "string" || !isElevenLabsTransferTool(name)) continue;
+      const params = toolCall.params as Record<string, unknown> | undefined;
+      const toolCallId = typeof toolCall.toolCallId === "string" ? toolCall.toolCallId : undefined;
+      const resultEntry = toolCallId ? resultMap.get(toolCallId) : undefined;
+      const transfer: CallTransfer = {
+        type: name,
+        destination: extractElevenLabsTransferDestination(params),
+        status: resolveElevenLabsTransferStatus(resultEntry),
+        sources: resultEntry ? ["tool_call", "platform_metadata"] : ["tool_call"],
+      };
+      if (timestampMs != null) {
+        transfer.timestamp_ms = timestampMs;
+      }
+      transfers.push(transfer);
+    }
+  }
+
+  return transfers.length > 0 ? transfers : undefined;
+}
+
+export function extractElevenLabsCallerTranscript(data: Record<string, unknown> | null | undefined): string {
+  const transcript = data?.transcript as Array<Record<string, unknown>> | undefined;
+  if (!transcript) return "";
+
+  return transcript
+    .filter((msg) => msg.role === "user" && typeof msg.message === "string")
+    .map((msg) => msg.message as string)
+    .join(" ");
+}
+
+function isElevenLabsTransferTool(name: string): boolean {
+  const normalized = name.toLowerCase();
+  return normalized === "transfer_to_number"
+    || normalized === "transfer_to_human"
+    || normalized === "agent_transfer";
+}
+
+function extractElevenLabsTransferDestination(params: Record<string, unknown> | undefined): string | undefined {
+  if (!params) return undefined;
+  if (typeof params.transfer_number === "string") return params.transfer_number;
+  if (typeof params.transferNumber === "string") return params.transferNumber;
+  if (typeof params.destination === "string") return params.destination;
+
+  const transferDestination = params.transfer_destination;
+  if (transferDestination && typeof transferDestination === "object") {
+    const value = transferDestination as Record<string, unknown>;
+    if (typeof value.phone_number === "string") return value.phone_number;
+    if (typeof value.sip_uri === "string") return value.sip_uri;
+    if (typeof value.transfer_number === "string") return value.transfer_number;
+  }
+
+  return undefined;
+}
+
+function resolveElevenLabsTransferStatus(
+  resultEntry: { result?: unknown; error?: string } | undefined,
+): CallTransfer["status"] {
+  if (!resultEntry) return "attempted";
+
+  const errorText = resultEntry.error?.trim().toLowerCase();
+  if (errorText) {
+    if (errorText.includes("cancel")) return "cancelled";
+    return "failed";
+  }
+
+  const status = extractElevenLabsResultStatus(resultEntry.result);
+  if (status) return status;
+
+  return "attempted";
+}
+
+function extractElevenLabsResultStatus(result: unknown): CallTransfer["status"] | null {
+  if (result == null) return null;
+  if (typeof result === "boolean") return result ? "completed" : "failed";
+  if (typeof result === "string") {
+    return classifyElevenLabsResultToken(result);
+  }
+  if (typeof result !== "object") return null;
+
+  const record = result as Record<string, unknown>;
+  for (const key of ["status", "outcome", "result", "state"]) {
+    const value = record[key];
+    if (typeof value === "string") {
+      const classified = classifyElevenLabsResultToken(value);
+      if (classified) return classified;
+    }
+  }
+
+  return null;
+}
+
+function classifyElevenLabsResultToken(token: string): CallTransfer["status"] | null {
+  const normalized = token.trim().toLowerCase();
+  if (normalized === "completed" || normalized === "success" || normalized === "succeeded" || normalized === "ok") {
+    return "completed";
+  }
+  if (normalized === "cancelled" || normalized === "canceled") {
+    return "cancelled";
+  }
+  if (normalized === "failed" || normalized === "error") {
+    return "failed";
+  }
+  return null;
 }
 
 function sleep(ms: number): Promise<void> {

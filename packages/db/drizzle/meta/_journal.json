@@ -127,6 +127,20 @@
       "when": 1773200000000,
       "tag": "0017_access_tokens",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1773300000000,
+      "tag": "0018_agent_sessions",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1773400000000,
+      "tag": "0019_simplify_test_type",
+      "breakpoints": true
     }
   ]
 }

@@ -90,7 +90,7 @@ export async function initCommand(args: InitArgs): Promise<number> {
   await installSkillsAndScaffold(cwd);
 
   printSuccess(
-    "Ready — your coding agent can now run tests with `npx vent-hq run`.",
+    "Ready — your coding agent can now run calls with `npx vent-hq run`.",
     { force: true },
   );
   return 0;

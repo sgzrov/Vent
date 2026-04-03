@@ -1,5 +1,5 @@
 /**
- * Shared SIP Server for concurrent Bland testing.
+ * Shared SIP Server for concurrent Bland calls.
  *
  * Singleton HTTP+WebSocket server that multiple BlandAudioChannels share.
  * One TwiML app, one Twilio number config, many concurrent calls.
@@ -199,6 +199,15 @@ export class SharedSipServer {
     if (pp === null) return `wss://${this.config.publicHost}`;
     if (pp !== undefined) return `wss://${this.config.publicHost}:${pp}`;
     return `wss://${this.config.publicHost}:${this.port}`;
+  }
+
+  async completeCall(callSid: string | null | undefined): Promise<void> {
+    if (!callSid) return;
+    try {
+      await this.twilio.calls(callSid).update({ status: "completed" });
+    } catch {
+      // Already ended or unavailable.
+    }
   }
 
   /**

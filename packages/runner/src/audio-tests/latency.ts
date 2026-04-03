@@ -11,7 +11,7 @@
  */
 
 import type { AudioChannel } from "@vent/adapters";
-import type { AudioTestResult } from "@vent/shared";
+import type { AudioCallResult } from "@vent/shared";
 import { synthesize, VoiceActivityDetector, StreamingTranscriber } from "@vent/voice";
 import { CallerLLM } from "../conversation/caller-llm.js";
 import { collectUntilEndOfTurn, linearRegressionSlope } from "./helpers.js";
@@ -28,10 +28,10 @@ function percentile(sorted: number[], p: number): number {
   return sorted[lo]! + (sorted[hi]! - sorted[lo]!) * (idx - lo);
 }
 
-export async function runLatencyTest(
+export async function runLatencyCall(
   channel: AudioChannel,
   config?: { prompt?: string; caller_prompt?: string; turns?: number },
-): Promise<AudioTestResult> {
+): Promise<AudioCallResult> {
   const turns = config?.turns ?? DEFAULT_TURNS;
   const startTime = performance.now();
 
@@ -138,7 +138,7 @@ export async function runLatencyTest(
     const sortedTtfw = [...ttfwValues].sort((a, b) => a - b);
 
     return {
-      test_name: "latency",
+      call_name: "latency",
       status: "completed",
       metrics: {
         ttfb_ms: ttfbValues,

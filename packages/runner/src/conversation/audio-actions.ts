@@ -200,7 +200,7 @@ async function executeSilence(
 
 /**
  * Inject noise: during agent speech, send noise audio into the channel.
- * Tests for false barge-in (agent falsely stops because of noise).
+ * Checks for false barge-in (agent falsely stops because of noise).
  */
 async function executeInjectNoise(
   action: AudioAction,
@@ -263,7 +263,7 @@ async function executeInjectNoise(
 }
 
 /**
- * Split sentence: send partA → pause → partB to test endpointing.
+ * Split sentence: send partA → pause → partB to check endpointing.
  * Checks if agent responds prematurely during the pause.
  */
 async function executeSplitSentence(
@@ -337,7 +337,7 @@ async function executeSplitSentence(
 
 /**
  * Noise on caller: mix noise with caller TTS audio before sending.
- * Tests comprehension under degraded audio conditions.
+ * Checks comprehension under degraded audio conditions.
  */
 async function executeNoiseOnCaller(
   action: AudioAction,

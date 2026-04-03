@@ -62,8 +62,8 @@ export function printEvent(event: SSEEvent, jsonMode: boolean): void {
   if (!isTTY) {
     if (_verbose) {
       const meta = (event.metadata_json ?? {}) as Record<string, unknown>;
-      if (event.event_type === "test_completed") {
-        const name = (meta.test_name as string) ?? "test";
+      if (event.event_type === "call_completed") {
+        const name = (meta.call_name as string) ?? "call";
         const status = (meta.status as string) ?? "unknown";
         const durationMs = meta.duration_ms as number | undefined;
         const duration = durationMs != null ? (durationMs / 1000).toFixed(1) + "s" : "";
@@ -77,14 +77,14 @@ export function printEvent(event: SSEEvent, jsonMode: boolean): void {
   const meta = (event.metadata_json ?? {}) as Record<string, unknown>;
 
   switch (event.event_type) {
-    case "test_completed":
-      printTestResult(meta);
+    case "call_completed":
+      printCallResult(meta);
       break;
     case "run_complete":
       printRunComplete(meta);
       break;
-    case "test_started": {
-      const name = (meta.test_name as string) ?? "test";
+    case "call_started": {
+      const name = (meta.call_name as string) ?? "call";
       process.stderr.write(dim(`  ▸ ${name}…`) + "\n");
       break;
     }
@@ -93,20 +93,25 @@ export function printEvent(event: SSEEvent, jsonMode: boolean): void {
   }
 }
 
-function printTestResult(meta: Record<string, unknown>): void {
+function printCallResult(meta: Record<string, unknown>): void {
   const result = meta.result as FormattedConversationResult | undefined;
 
-  const testName = result?.name ?? (meta.test_name as string) ?? "test";
-  const testStatus = result?.status ?? (meta.status as string);
+  const callName = result?.name ?? (meta.call_name as string) ?? "call";
+  const callStatus = result?.status ?? (meta.status as string);
   const durationMs = result?.duration_ms ?? (meta.duration_ms as number | undefined);
 
-  const statusIcon = testStatus === "completed" || testStatus === "pass" ? green("✔") : red("✘");
+  const statusIcon = callStatus === "completed" || callStatus === "pass" ? green("✔") : red("✘");
   const duration = durationMs != null ? (durationMs / 1000).toFixed(1) + "s" : "—";
 
-  const parts = [statusIcon, bold(testName), dim(duration)];
+  const parts = [statusIcon, bold(callName), dim(duration)];
 
-  if (result?.latency?.p50_ttfw_ms != null) {
-    parts.push(`p50: ${result.latency.p50_ttfw_ms}ms`);
+  if (result?.latency?.p50_response_time_ms != null) {
+    parts.push(`p50: ${result.latency.p50_response_time_ms}ms`);
+  }
+
+  if (result?.call_metadata?.transfer_attempted) {
+    const transferLabel = result.call_metadata.transfer_completed ? "transfer: completed" : "transfer: attempted";
+    parts.push(transferLabel);
   }
 
   stdoutSync(parts.join("  ") + "\n");
@@ -115,12 +120,11 @@ function printTestResult(meta: Record<string, unknown>): void {
 function printRunComplete(meta: Record<string, unknown>): void {
   const status = meta.status as string;
 
-  const agg = meta.aggregate as { conversation_tests?: { passed?: number; failed?: number; total?: number }; red_team_tests?: { passed?: number; failed?: number; total?: number } } | undefined;
-  const redTeam = agg?.red_team_tests;
-  const counts = redTeam ?? agg?.conversation_tests;
-  const total = (meta.total_tests as number | undefined) ?? counts?.total;
-  const passed = (meta.passed_tests as number | undefined) ?? counts?.passed;
-  const failed = (meta.failed_tests as number | undefined) ?? counts?.failed;
+  const agg = meta.aggregate as { conversation_calls?: { passed?: number; failed?: number; total?: number } } | undefined;
+  const counts = agg?.conversation_calls;
+  const total = (meta.total_calls as number | undefined) ?? counts?.total;
+  const passed = (meta.passed_calls as number | undefined) ?? counts?.passed;
+  const failed = (meta.failed_calls as number | undefined) ?? counts?.failed;
 
   stdoutSync("\n");
 
@@ -140,36 +144,36 @@ function printRunComplete(meta: Record<string, unknown>): void {
 }
 
 export function printSummary(
-  testResults: SSEEvent[],
+  callResults: SSEEvent[],
   runComplete: Record<string, unknown>,
   runId: string,
   jsonMode: boolean,
 ): void {
-  // Build test results summary — pass through the full FormattedConversationResult
+  // Build call results summary — pass through the full FormattedConversationResult
   // so coding agents have complete context on latency, behavior, transcript, etc.
-  const allTests = testResults.map((e) => {
+  const allCalls = callResults.map((e) => {
     const meta = e.metadata_json ?? {};
     const r = meta.result as FormattedConversationResult | undefined;
     if (r) return r;
     // Fallback for events without a full result object
     return {
-      name: (meta.test_name as string) ?? "test",
+      name: (meta.call_name as string) ?? "call",
       status: (meta.status as string) ?? "unknown",
       duration_ms: meta.duration_ms as number,
       error: null,
     };
   });
 
-  const agg = runComplete.aggregate as { conversation_tests?: { passed?: number; failed?: number; total?: number }; red_team_tests?: { passed?: number; failed?: number; total?: number } } | undefined;
-  const counts = agg?.red_team_tests ?? agg?.conversation_tests;
+  const agg = runComplete.aggregate as { conversation_calls?: { passed?: number; failed?: number; total?: number } } | undefined;
+  const counts = agg?.conversation_calls;
 
   const summaryData = {
     run_id: runId,
     status: runComplete.status,
-    total: runComplete.total_tests ?? counts?.total,
-    passed: runComplete.passed_tests ?? counts?.passed,
-    failed: runComplete.failed_tests ?? counts?.failed,
-    tests: allTests,
+    total: runComplete.total_calls ?? counts?.total,
+    passed: runComplete.passed_calls ?? counts?.passed,
+    failed: runComplete.failed_calls ?? counts?.failed,
+    calls: allCalls,
   };
 
   // Non-TTY (coding agents) or --json: write single summary JSON to stdout.
@@ -179,14 +183,14 @@ export function printSummary(
     return;
   }
 
-  // TTY: list failed tests with details
-  const failures = allTests.filter((t) => t.status && t.status !== "completed" && t.status !== "pass");
+  // TTY: list failed calls with details
+  const failures = allCalls.filter((t) => t.status && t.status !== "completed" && t.status !== "pass");
 
   if (failures.length > 0) {
-    stdoutSync("\n" + bold("Failed tests:") + "\n");
+    stdoutSync("\n" + bold("Failed calls:") + "\n");
     for (const t of failures) {
       const duration = t.duration_ms != null ? (t.duration_ms / 1000).toFixed(1) + "s" : "—";
-      const parts = [red("✘"), bold(t.name), dim(duration)];
+      const parts = [red("✘"), bold(t.name ?? "call"), dim(duration)];
       stdoutSync("  " + parts.join("  ") + "\n");
     }
   }

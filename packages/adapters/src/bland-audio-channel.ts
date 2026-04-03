@@ -3,7 +3,7 @@
  *
  * Uses POST /v1/calls + SIP inbound via SharedSipServer.
  * Bland dials our Twilio number — real audio over SIP, call_id upfront,
- * webhook events for component latency, concurrent testing support.
+ * webhook events for component latency, concurrent call support.
  *
  * Post-call data is fetched from GET /v1/calls/{call_id}.
  */
@@ -12,7 +12,7 @@ import http from "node:http";
 import { randomBytes } from "node:crypto";
 import { WebSocket } from "ws";
 import { pcmToMulaw, mulawToPcm, resample } from "@vent/voice";
-import type { ObservedToolCall, CallMetadata, ComponentLatency } from "@vent/shared";
+import type { ObservedToolCall, CallMetadata, CallTransfer, ComponentLatency } from "@vent/shared";
 import { BaseAudioChannel, type SendAudioOptions } from "./audio-channel.js";
 import { SharedSipServer, type SharedSipServerConfig } from "./shared-sip-server.js";
 
@@ -54,7 +54,7 @@ export interface BlandCallOptions {
   pronunciation_guide?: Array<{ word: string; pronunciation: string; case_sensitive?: boolean; spaced?: boolean }>;
   /** Start pathway from a specific node instead of the default */
   start_node_id?: string;
-  /** Specific pathway version to test (default: production) */
+  /** Specific pathway version to call (default: production) */
   pathway_version?: number;
 }
 
@@ -94,7 +94,7 @@ interface BlandPathwayLogEntry {
   chosen_node_id?: string;
 }
 
-interface BlandCallResponse {
+export interface BlandCallResponse {
   call_id: string;
   status: string;
   completed?: boolean;
@@ -110,6 +110,17 @@ interface BlandCallResponse {
   answered_by?: string;
   call_ended_by?: string;
   error_message?: string;
+  started_at?: string;
+  end_at?: string;
+  warm_transfer_call?: {
+    state?: string;
+    proxy_agent_calls?: Array<{
+      state?: string;
+      call_id?: string;
+      phone_number?: string;
+    }>;
+  };
+  is_proxy_agent_call?: boolean;
 }
 
 export class BlandAudioChannel extends BaseAudioChannel {
@@ -230,6 +241,7 @@ export class BlandAudioChannel extends BaseAudioChannel {
     }
 
     this._stats.bytesSent += pcm.length;
+    this.captureCallerAudio(pcm, Date.now() - (this.callStartedAt ?? Date.now()));
     const pcm8k = resample(pcm, 24000, 8000);
     const mulaw = pcmToMulaw(pcm8k);
 
@@ -392,6 +404,7 @@ export class BlandAudioChannel extends BaseAudioChannel {
       recording_url: data.recording_url ?? undefined,
       summary: data.summary ?? undefined,
       variables: data.variables,
+      transfers: extractBlandTransfers(data),
     };
   }
 
@@ -593,6 +606,7 @@ export class BlandAudioChannel extends BaseAudioChannel {
           }
         }
 
+        this.captureAgentAudio(pcm24k, Date.now() - (this.callStartedAt ?? Date.now()));
         this.emit("audio", pcm24k);
 
         // EOT logging: track speech ↔ silence transitions
@@ -883,91 +897,10 @@ export class BlandAudioChannel extends BaseAudioChannel {
   }
 
   private parseToolCalls(data: BlandCallResponse): ObservedToolCall[] {
-    const toolCalls: ObservedToolCall[] = [];
+    const toolCalls = parseBlandToolCalls(data);
 
-    // 1. Parse agent-action transcript entries (inline tool calls)
-    const transcripts = data.transcripts ?? [];
-    for (const entry of transcripts) {
-      if (entry.user === "agent-action") {
-        try {
-          const parsed = JSON.parse(entry.text) as {
-            name?: string;
-            tool?: string;
-            arguments?: Record<string, unknown>;
-            result?: unknown;
-          };
-          toolCalls.push({
-            name: parsed.name ?? parsed.tool ?? "unknown",
-            arguments: parsed.arguments ?? {},
-            result: parsed.result,
-            timestamp_ms: new Date(entry.created_at).getTime(),
-          });
-        } catch {
-          toolCalls.push({
-            name: entry.text,
-            arguments: {},
-            timestamp_ms: new Date(entry.created_at).getTime(),
-          });
-        }
-      }
-    }
-
-    // 2. Parse pathway_logs for webhook node executions
-    //    Bland pathway_logs contain: tag, role, text, decision (JSON string), pathway_info (JSON string),
-    //    created_at, chosen_node_id. Webhook nodes are identified by chosen_node_id containing "webhook"
-    //    and pathway_info containing the URL/response data.
-    const pathwayLogs = data.pathway_logs ?? [];
-    const seenWebhookNodes = new Set<string>();
-
-    for (const log of pathwayLogs) {
-      // Identify webhook node executions by chosen_node_id
-      if (log.chosen_node_id && /webhook/i.test(log.chosen_node_id) && !seenWebhookNodes.has(log.chosen_node_id)) {
-        seenWebhookNodes.add(log.chosen_node_id);
-        // Extract name from node ID: "webhook_lookup_customer" → "lookup_customer"
-        const name = log.chosen_node_id.replace(/^webhook[_-]?/i, "") || log.chosen_node_id;
-
-        // Try to find response data from pathway_info
-        let webhookResult: unknown = undefined;
-        let webhookArgs: Record<string, unknown> = {};
-        if (log.pathway_info) {
-          try {
-            const info = JSON.parse(log.pathway_info) as Record<string, unknown>;
-            webhookResult = info.response ?? info.result ?? info;
-            webhookArgs = (info.request_data ?? info.params ?? {}) as Record<string, unknown>;
-          } catch { /* not JSON */ }
-        }
-
-        toolCalls.push({
-          name,
-          arguments: webhookArgs,
-          result: webhookResult,
-          successful: true,
-          timestamp_ms: log.created_at ? new Date(log.created_at).getTime() : undefined,
-        });
-        continue;
-      }
-
-      // Also check pathway_info for URL-based webhook executions on non-webhook-named nodes
-      if (log.pathway_info) {
-        try {
-          const info = JSON.parse(log.pathway_info) as Record<string, unknown>;
-          if (typeof info.url === "string" || typeof info.webhook_url === "string") {
-            const url = (info.url ?? info.webhook_url) as string;
-            const name = log.chosen_node_id ?? log.tag?.name ?? url;
-            toolCalls.push({
-              name: name.replace(/\s+/g, "_").toLowerCase(),
-              arguments: (info.request_data ?? info.params ?? info.body ?? {}) as Record<string, unknown>,
-              result: info.response ?? info.result,
-              successful: info.status_code === 200 || info.status === "success" || info.response != null,
-              timestamp_ms: log.created_at ? new Date(log.created_at).getTime() : undefined,
-            });
-          }
-        } catch { /* not JSON */ }
-      }
-    }
-
-    // 3. Merge real-time tool call webhook events (collected during the call)
-    //    Only add if not already captured from transcripts/pathway_logs (dedupe by name+timestamp proximity)
+    // Merge real-time tool call webhook events (collected during the call)
+    // Only add if not already captured from transcripts/pathway_logs (dedupe by name+timestamp proximity)
     for (const rtc of this.realtimeToolCalls) {
       const isDuplicate = toolCalls.some(
         (tc) => tc.name === rtc.name && tc.timestamp_ms && rtc.timestamp_ms &&
@@ -980,6 +913,132 @@ export class BlandAudioChannel extends BaseAudioChannel {
 
     return toolCalls;
   }
+}
+
+/**
+ * Parse tool calls from Bland post-call API data (transcripts + pathway_logs).
+ * Parses tool calls from Bland post-call API data.
+ */
+export function parseBlandToolCalls(data: BlandCallResponse): ObservedToolCall[] {
+  const toolCalls: ObservedToolCall[] = [];
+
+  // 1. Parse agent-action transcript entries (inline tool calls)
+  const transcripts = data.transcripts ?? [];
+  for (const entry of transcripts) {
+    if (entry.user === "agent-action") {
+      try {
+        const parsed = JSON.parse(entry.text) as {
+          name?: string;
+          tool?: string;
+          arguments?: Record<string, unknown>;
+          result?: unknown;
+        };
+        toolCalls.push({
+          name: parsed.name ?? parsed.tool ?? "unknown",
+          arguments: parsed.arguments ?? {},
+          result: parsed.result,
+          timestamp_ms: new Date(entry.created_at).getTime(),
+        });
+      } catch {
+        toolCalls.push({
+          name: entry.text,
+          arguments: {},
+          timestamp_ms: new Date(entry.created_at).getTime(),
+        });
+      }
+    }
+  }
+
+  // 2. Parse pathway_logs for webhook node executions
+  const pathwayLogs = data.pathway_logs ?? [];
+  const seenWebhookNodes = new Set<string>();
+
+  for (const log of pathwayLogs) {
+    if (log.chosen_node_id && /webhook/i.test(log.chosen_node_id) && !seenWebhookNodes.has(log.chosen_node_id)) {
+      seenWebhookNodes.add(log.chosen_node_id);
+      const name = log.chosen_node_id.replace(/^webhook[_-]?/i, "") || log.chosen_node_id;
+
+      let webhookResult: unknown = undefined;
+      let webhookArgs: Record<string, unknown> = {};
+      if (log.pathway_info) {
+        try {
+          const info = JSON.parse(log.pathway_info) as Record<string, unknown>;
+          webhookResult = info.response ?? info.result ?? info;
+          webhookArgs = (info.request_data ?? info.params ?? {}) as Record<string, unknown>;
+        } catch { /* not JSON */ }
+      }
+
+      toolCalls.push({
+        name,
+        arguments: webhookArgs,
+        result: webhookResult,
+        successful: true,
+        timestamp_ms: log.created_at ? new Date(log.created_at).getTime() : undefined,
+      });
+      continue;
+    }
+
+    if (log.pathway_info) {
+      try {
+        const info = JSON.parse(log.pathway_info) as Record<string, unknown>;
+        if (typeof info.url === "string" || typeof info.webhook_url === "string") {
+          const url = (info.url ?? info.webhook_url) as string;
+          const name = log.chosen_node_id ?? log.tag?.name ?? url;
+          toolCalls.push({
+            name: name.replace(/\s+/g, "_").toLowerCase(),
+            arguments: (info.request_data ?? info.params ?? info.body ?? {}) as Record<string, unknown>,
+            result: info.response ?? info.result,
+            successful: info.status_code === 200 || info.status === "success" || info.response != null,
+            timestamp_ms: log.created_at ? new Date(log.created_at).getTime() : undefined,
+          });
+        }
+      } catch { /* not JSON */ }
+    }
+  }
+
+  return toolCalls;
+}
+
+export function extractBlandTransfers(data: BlandCallResponse): CallTransfer[] | undefined {
+  if (data.is_proxy_agent_call) return undefined;
+  const warmTransfer = data.warm_transfer_call;
+  if (!warmTransfer) return undefined;
+
+  const type = warmTransfer.state
+    ? `warm_transfer_${warmTransfer.state.toLowerCase()}`
+    : "warm_transfer";
+  const status = resolveBlandTransferStatus(warmTransfer.state);
+  const proxyCalls = warmTransfer.proxy_agent_calls ?? [];
+
+  if (proxyCalls.length > 0) {
+    return proxyCalls.map((call) => ({
+      type: call.state ? `warm_transfer_${call.state.toLowerCase()}` : type,
+      destination: call.phone_number,
+      status: resolveBlandTransferStatus(call.state ?? warmTransfer.state),
+      sources: ["platform_metadata"],
+    }));
+  }
+
+  return [{
+    type,
+    status,
+    sources: ["platform_metadata"],
+  }];
+}
+
+function resolveBlandTransferStatus(state: string | undefined): CallTransfer["status"] {
+  const normalized = state?.trim().toLowerCase();
+  if (!normalized) return "unknown";
+  if (normalized === "merged" || normalized === "completed" || normalized === "connected" || normalized === "success") {
+    return "completed";
+  }
+  if (normalized === "cancelled" || normalized === "canceled") {
+    return "cancelled";
+  }
+  if (normalized === "failed" || normalized === "error") {
+    return "failed";
+  }
+  return "attempted";
 }
 
 function sleep(ms: number): Promise<void> {

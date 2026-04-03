@@ -2,7 +2,7 @@ import Fastify from "fastify";
 import cors from "@fastify/cors";
 import cookie from "@fastify/cookie";
 import websocket from "@fastify/websocket";
-import { eq, lt, ne, and } from "drizzle-orm";
+import { eq, lt, and } from "drizzle-orm";
 import { schema } from "@vent/db";
 import { healthRoutes } from "./routes/health.js";
 import { runRoutes } from "./routes/runs.js";
@@ -12,6 +12,8 @@ import { platformConnectionRoutes } from "./routes/platform-connections.js";
 import { relayRoutes } from "./routes/relay.js";
 import { deviceRoutes } from "./routes/device.js";
 import { agentAuthRoutes } from "./routes/agent-auth.js";
+import { agentSessionRoutes } from "./routes/agent-sessions.js";
+import { recordingRoutes } from "./routes/recordings.js";
 import { dbPlugin } from "./plugins/db.js";
 import { queuePlugin } from "./plugins/queue.js";
 import { authPlugin } from "./plugins/auth.js";
@@ -33,7 +35,11 @@ async function main() {
     logger: {
       level: "info",
     },
-    bodyLimit: 10 * 1024 * 1024, // 10MB — test results with full transcripts can be large
+    bodyLimit: 10 * 1024 * 1024, // 10MB — call results with full transcripts can be large
+    // Signed recording tokens are longer than the router's default param limit.
+    routerOptions: {
+      maxParamLength: 512,
+    },
   });
 
   const dashboardUrl = process.env["DASHBOARD_URL"];
@@ -75,12 +81,13 @@ async function main() {
   await app.register(relayRoutes);
   await app.register(deviceRoutes);
   await app.register(agentAuthRoutes);
+  await app.register(agentSessionRoutes);
+  await app.register(recordingRoutes);
 
   // Stuck run cleanup
   const cleanupEnabled = (process.env["RUN_CLEANUP_ENABLED"] ?? "true") !== "false";
   const CLEANUP_INTERVAL_MS = parseMsEnv("RUN_CLEANUP_INTERVAL_MS", 60_000);
   const STUCK_RUNNING_MS = parseMsEnv("RUN_STUCK_RUNNING_MS", 60 * 60_000);
-  const STUCK_QUEUED_RELAY_MS = parseMsEnv("RUN_STUCK_QUEUED_RELAY_MS", 5 * 60_000);
   const STUCK_QUEUED_REMOTE_MS = parseMsEnv("RUN_STUCK_QUEUED_REMOTE_MS", 10 * 60_000);
   let cleanupInterval: ReturnType<typeof setInterval> | undefined;
 
@@ -120,31 +127,9 @@ async function main() {
         console.log(`Cleaned up ${stuckRunning.length} stuck running run(s): ${stuckRunning.map((r) => r.id).join(", ")}`);
       }
 
-      // 2. Relay runs stuck in "queued" that were never activated by client
-      const queuedCutoff = new Date(Date.now() - STUCK_QUEUED_RELAY_MS);
+      // 2. Runs stuck in "queued" (worker never picked them up)
+      const queuedCutoff = new Date(Date.now() - STUCK_QUEUED_REMOTE_MS);
       const stuckQueued = await app.db
-        .update(schema.runs)
-        .set({
-          status: "fail",
-          finished_at: new Date(),
-          error_text: "Run was never activated — the relay command was not executed. Re-run 'vent run' with the same config.",
-        })
-        .where(
-          and(
-            eq(schema.runs.status, "queued"),
-            eq(schema.runs.source_type, "relay"),
-            lt(schema.runs.created_at, queuedCutoff),
-          )
-        )
-        .returning({ id: schema.runs.id });
-
-      if (stuckQueued.length > 0) {
-        console.log(`Cleaned up ${stuckQueued.length} stuck queued relay run(s): ${stuckQueued.map((r) => r.id).join(", ")}`);
-      }
-
-      // 3. Remote runs stuck in "queued" (worker never picked them up)
-      const remoteQueuedCutoff = new Date(Date.now() - STUCK_QUEUED_REMOTE_MS);
-      const stuckRemote = await app.db
         .update(schema.runs)
         .set({
           status: "fail",
@@ -154,14 +139,13 @@ async function main() {
         .where(
           and(
             eq(schema.runs.status, "queued"),
-            ne(schema.runs.source_type, "relay"),
-            lt(schema.runs.created_at, remoteQueuedCutoff),
+            lt(schema.runs.created_at, queuedCutoff),
           )
         )
         .returning({ id: schema.runs.id });
 
-      if (stuckRemote.length > 0) {
-        console.log(`Cleaned up ${stuckRemote.length} stuck queued remote run(s): ${stuckRemote.map((r) => r.id).join(", ")}`);
+      if (stuckQueued.length > 0) {
+        console.log(`Cleaned up ${stuckQueued.length} stuck queued run(s): ${stuckQueued.map((r) => r.id).join(", ")}`);
       }
     } catch (err) {
       console.error("Stuck run cleanup failed:", err);

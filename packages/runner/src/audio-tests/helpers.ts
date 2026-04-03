@@ -1,5 +1,5 @@
 /**
- * Shared helpers for audio test executors.
+ * Shared helpers for audio call executors.
  */
 
 import type { AudioChannel } from "@vent/adapters";

@@ -1,5 +1,5 @@
 /**
- * Signal generation and analysis utilities for audio tests.
+ * Signal generation and analysis utilities for audio calls.
  * All audio is 16-bit signed PCM, 24kHz mono.
  */
 

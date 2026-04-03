@@ -14,7 +14,7 @@
 
 import WebSocket from "ws";
 import { VapiClient, type Vapi } from "@vapi-ai/server-sdk";
-import type { ObservedToolCall, CallMetadata, ComponentLatency } from "@vent/shared";
+import type { ObservedToolCall, CallMetadata, CallTransfer, ComponentLatency } from "@vent/shared";
 import { resample } from "@vent/voice";
 import { BaseAudioChannel, type SendAudioOptions } from "./audio-channel.js";
 
@@ -273,6 +273,7 @@ export class VapiAudioChannel extends BaseAudioChannel {
       throw new Error("Vapi WebSocket not connected");
     }
     this._stats.bytesSent += pcm.length;
+    this.captureCallerAudio(pcm, Date.now() - this.connectTimestamp);
 
     // Track when we send audio for component latency calculation
     this.currentTurnIndex++;
@@ -679,9 +680,16 @@ export class VapiAudioChannel extends BaseAudioChannel {
   private formatTransfers(): CallMetadata["transfers"] {
     if (this.transfers.length === 0) return undefined;
     return this.transfers.map((t) => {
-      const dest = (t.detail as Record<string, unknown>).destination as Record<string, unknown> | undefined;
+      const detail = t.detail as Record<string, unknown>;
+      const dest = detail.destination as Record<string, unknown> | undefined;
       const destination = dest?.number as string ?? dest?.sipUri as string ?? dest?.assistantName as string;
-      return { type: t.type, destination, timestamp_ms: t.timestamp };
+      return {
+        type: t.type,
+        destination,
+        status: resolveVapiTransferStatus(t.type, detail, destination),
+        sources: ["platform_event"],
+        timestamp_ms: t.timestamp,
+      };
     });
   }
 
@@ -946,6 +954,7 @@ export class VapiAudioChannel extends BaseAudioChannel {
             const chunk = data instanceof Buffer ? data : Buffer.from(data as ArrayBuffer);
             this._stats.bytesReceived += chunk.length;
             const resampled = resample(chunk, 16000, 24000);
+            this.captureAgentAudio(resampled, Date.now() - this.connectTimestamp);
             this.emit("audio", resampled);
           } else {
             this.handleControlMessage(data.toString());
@@ -1239,6 +1248,108 @@ export class VapiAudioChannel extends BaseAudioChannel {
 
     return toolCalls;
   }
+
+}
+
+/**
+ * Extract transfers from Vapi post-call API data.
+ * Looks at transferCall tool calls in artifact.messages and endedReason.
+ */
+export function extractVapiTransfers(data: Record<string, unknown>): CallTransfer[] | undefined {
+  const transfers: CallTransfer[] = [];
+  const artifact = data.artifact as Record<string, unknown> | undefined;
+  const messages = artifact?.messages as VapiCallMessage[] | undefined;
+  const endedReason = data.endedReason as string | undefined;
+
+  if (messages) {
+    const resultMap = new Map<string, { result?: string; secondsFromStart?: number }>();
+    for (const msg of messages) {
+      if (msg.role === "tool_call_result" && msg.toolCallId) {
+        resultMap.set(msg.toolCallId, { result: msg.result, secondsFromStart: msg.secondsFromStart });
+      }
+    }
+
+    for (const msg of messages) {
+      if ((msg.role !== "tool_calls" && msg.role !== "tool-call") || !msg.toolCalls) continue;
+      for (const tc of msg.toolCalls) {
+        const name = tc.function.name.toLowerCase();
+        if (name !== "transfercall" && name !== "transfer_call") continue;
+        let args: Record<string, unknown> = {};
+        try { args = JSON.parse(tc.function.arguments) as Record<string, unknown>; } catch {}
+        const dest = args.destination as Record<string, unknown> | undefined;
+        const destination = (dest?.number ?? dest?.sipUri ?? args.number ?? args.sipUri) as string | undefined;
+        const resultEntry = tc.id ? resultMap.get(tc.id) : undefined;
+        const status = resolveVapiToolTransferStatus(resultEntry, endedReason);
+        const timestampMs = msg.secondsFromStart != null ? msg.secondsFromStart * 1000 : undefined;
+        transfers.push({
+          type: "transferCall",
+          destination,
+          status,
+          sources: ["platform_metadata"],
+          ...(timestampMs != null ? { timestamp_ms: timestampMs } : {}),
+        });
+      }
+    }
+  }
+
+  if (transfers.length === 0 && endedReason === "assistant-forwarded-call") {
+    transfers.push({
+      type: "assistant-forwarded-call",
+      status: "completed",
+      sources: ["platform_metadata"],
+    });
+  }
+
+  return transfers.length > 0 ? transfers : undefined;
+}
+
+function resolveVapiToolTransferStatus(
+  resultEntry: { result?: string } | undefined,
+  endedReason: string | undefined,
+): CallTransfer["status"] {
+  if (endedReason === "assistant-forwarded-call") return "completed";
+  if (!resultEntry) return "attempted";
+  if (resultEntry.result) {
+    try {
+      const parsed = JSON.parse(resultEntry.result) as Record<string, unknown>;
+      if (parsed.success === true) return "completed";
+      if (parsed.success === false) return "failed";
+    } catch {}
+  }
+  return "attempted";
+}
+
+function resolveVapiTransferStatus(
+  type: string,
+  detail: Record<string, unknown>,
+  destination: string | undefined,
+): NonNullable<CallMetadata["transfers"]>[number]["status"] {
+  if (type === "transfer-destination-request") return "attempted";
+
+  const statusCandidates = [
+    detail.status,
+    detail.state,
+    detail.result,
+    detail.outcome,
+  ];
+  for (const value of statusCandidates) {
+    if (typeof value !== "string") continue;
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "completed" || normalized === "success" || normalized === "succeeded" || normalized === "bridged") {
+      return "completed";
+    }
+    if (normalized === "cancelled" || normalized === "canceled") {
+      return "cancelled";
+    }
+    if (normalized === "failed" || normalized === "error") {
+      return "failed";
+    }
+  }
+
+  if (detail.success === true) return "completed";
+  if (detail.success === false) return "failed";
+  if (destination != null) return "attempted";
+  return "unknown";
 }
 
 function sleep(ms: number): Promise<void> {

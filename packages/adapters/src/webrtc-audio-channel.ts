@@ -64,6 +64,76 @@ interface LiveKitTurnTiming {
   userTranscript?: string;
 }
 
+interface LiveKitAgentStateTransition {
+  nextLastAgentState: string;
+  emitPlatformSpeechStart: boolean;
+  emitPlatformEndOfTurn: boolean;
+}
+
+interface LiveKitRoomDisconnectState {
+  disconnectTimestamp: number;
+  disconnectReasonStr: string;
+}
+
+export function applyLiveKitAgentStateChange(
+  previousState: string | null,
+  turn: LiveKitTurnTiming | undefined,
+  agentState: string,
+  now: number,
+): LiveKitAgentStateTransition {
+  switch (agentState) {
+    case "thinking":
+      if (turn && !turn.thinkingAt) {
+        turn.thinkingAt = now;
+      }
+      return {
+        nextLastAgentState: agentState,
+        emitPlatformSpeechStart: false,
+        emitPlatformEndOfTurn: false,
+      };
+
+    case "speaking":
+      if (turn && !turn.speakingAt) {
+        turn.speakingAt = now;
+      }
+      return {
+        nextLastAgentState: agentState,
+        emitPlatformSpeechStart: previousState !== "speaking",
+        emitPlatformEndOfTurn: false,
+      };
+
+    case "listening": {
+      const wasSpeaking = previousState === "speaking" || !!turn?.speakingAt;
+      if (turn && turn.speakingAt && !turn.listeningAt) {
+        turn.listeningAt = now;
+      }
+      return {
+        nextLastAgentState: agentState,
+        emitPlatformSpeechStart: false,
+        emitPlatformEndOfTurn: wasSpeaking && previousState !== "listening",
+      };
+    }
+
+    default:
+      return {
+        nextLastAgentState: agentState,
+        emitPlatformSpeechStart: false,
+        emitPlatformEndOfTurn: false,
+      };
+  }
+}
+
+export function resolveLiveKitRoomDisconnectState(
+  reason: DisconnectReason,
+  now: number,
+  existingDisconnectTimestamp = 0,
+): LiveKitRoomDisconnectState {
+  return {
+    disconnectTimestamp: existingDisconnectTimestamp || now,
+    disconnectReasonStr: DisconnectReason[reason] ?? "UNKNOWN",
+  };
+}
+
 export interface WebRtcAudioChannelConfig {
   livekitUrl: string;
   apiKey: string;
@@ -113,6 +183,7 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
     super();
     this.config = config;
     this.livekitSampleRate = config.livekitSampleRate ?? 48000;
+    this.enableRecordingCapture();
   }
 
   get connected(): boolean {
@@ -421,6 +492,7 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
     }
 
     this._stats.bytesSent += pcm.length;
+    this.captureCallerAudio(pcm, Date.now() - this.connectTimestamp);
 
     // Track turn timing (same pattern as Vapi adapter)
     this.currentTurnIndex++;
@@ -512,7 +584,7 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
       );
       await roomSvc.deleteRoom(this.config.roomName);
     } catch {
-      // Best-effort cleanup — don't fail the test if this errors
+      // Best-effort cleanup — don't fail the call if this errors
     }
     // NOTE: Do NOT call dispose() here — it destroys the global FFI runtime
     // and kills all other concurrent LiveKit sessions in this process.
@@ -611,37 +683,14 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
   }
 
   private handleAgentStateChange(agentState: string, now = Date.now()): void {
-    const previousState = this.lastAgentState;
-    this.lastAgentState = agentState;
-
     const turn = this.currentTurnIndex >= 0 ? this.turnTimings[this.currentTurnIndex] : undefined;
-
-    switch (agentState) {
-      case "thinking":
-        if (turn && !turn.thinkingAt) {
-          turn.thinkingAt = now;
-        }
-        break;
-
-      case "speaking":
-        if (turn && !turn.speakingAt) {
-          turn.speakingAt = now;
-        }
-        if (previousState !== "speaking") {
-          this.emit("platformSpeechStart");
-        }
-        break;
-
-      case "listening": {
-        const wasSpeaking = previousState === "speaking" || !!turn?.speakingAt;
-        if (turn && turn.speakingAt && !turn.listeningAt) {
-          turn.listeningAt = now;
-        }
-        if (wasSpeaking && previousState !== "listening") {
-          this.emit("platformEndOfTurn");
-        }
-        break;
-      }
+    const transition = applyLiveKitAgentStateChange(this.lastAgentState, turn, agentState, now);
+    this.lastAgentState = transition.nextLastAgentState;
+    if (transition.emitPlatformSpeechStart) {
+      this.emit("platformSpeechStart");
+    }
+    if (transition.emitPlatformEndOfTurn) {
+      this.emit("platformEndOfTurn");
     }
   }
 
@@ -649,10 +698,9 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
     this.collecting = false;
     this.roomDisconnected = true;
     this.stopComfortNoise();
-    if (!this.disconnectTimestamp) {
-      this.disconnectTimestamp = Date.now();
-    }
-    this.disconnectReasonStr = DisconnectReason[reason] ?? "UNKNOWN";
+    const state = resolveLiveKitRoomDisconnectState(reason, Date.now(), this.disconnectTimestamp);
+    this.disconnectTimestamp = state.disconnectTimestamp;
+    this.disconnectReasonStr = state.disconnectReasonStr;
     this.emit("disconnected");
   }
 
@@ -681,6 +729,7 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
           this._stats.bytesReceived += frameBuffer.length;
           // Resample from LiveKit rate → 24kHz for consumers
           const pcm24k = resample(frameBuffer, this.livekitSampleRate, 24000);
+          this.captureAgentAudio(pcm24k, Date.now() - this.connectTimestamp);
           this.emit("audio", pcm24k);
         }
       } catch (err) {

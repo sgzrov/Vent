@@ -20,7 +20,7 @@ export const SUITE_SCAFFOLD = JSON.stringify(
       start_command: "TODO: command to start your agent (e.g. npm run start)",
       agent_port: 3001,
     },
-    conversation_tests: [
+    conversation_calls: [
       {
         name: "happy-path",
         caller_prompt:

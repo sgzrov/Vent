@@ -31,10 +31,10 @@ export async function statusCommand(args: StatusArgs): Promise<number> {
     } else {
       const status = data.status as string;
       const results = data.results as unknown[] | undefined;
-      const testCount = results?.length ?? 0;
+      const callCount = results?.length ?? 0;
 
       if (status === "running" || status === "queued") {
-        printInfo(`Run ${args.runId}: ${status} (${testCount} tests completed so far)`);
+        printInfo(`Run ${args.runId}: ${status} (${callCount} calls completed so far)`);
       } else {
         // Completed run — show rich output
         const isTTY = process.stdout.isTTY;
@@ -61,12 +61,16 @@ export async function statusCommand(args: StatusArgs): Promise<number> {
               else failed++;
 
               const s = isPass ? green("✔") : red("✘");
-              const name = formatted.name ?? "test";
+              const name = formatted.name ?? "call";
               const dur = (formatted.duration_ms / 1000).toFixed(1) + "s";
               const parts = [s, bold(name), dim(dur)];
 
-              if (formatted.latency?.p50_ttfw_ms != null) {
-                parts.push(`p50: ${formatted.latency.p50_ttfw_ms}ms`);
+              if (formatted.latency?.p50_response_time_ms != null) {
+                parts.push(`p50: ${formatted.latency.p50_response_time_ms}ms`);
+              }
+
+              if (formatted.call_metadata?.transfer_attempted) {
+                parts.push(formatted.call_metadata.transfer_completed ? "transfer: completed" : "transfer: attempted");
               }
 
               process.stdout.write("  " + parts.join("  ") + "\n");

@@ -1,11 +1,11 @@
 import { z } from "zod";
-import { AUDIO_TEST_NAMES, AUDIO_ACTION_TYPES } from "./types.js";
+import { AUDIO_CALL_NAMES, AUDIO_ACTION_TYPES } from "./types.js";
 
 // ============================================================
-// V2 Schemas — Dynamic voice agent testing
+// V2 Schemas — Dynamic voice agent calls
 // ============================================================
 
-export const AudioTestNameSchema = z.enum(AUDIO_TEST_NAMES);
+export const AudioCallNameSchema = z.enum(AUDIO_CALL_NAMES);
 
 export const AudioActionSchema = z.object({
   at_turn: z.number().int().min(0),
@@ -54,7 +54,7 @@ export const CallerAudioEffectsSchema = z.object({
   jitter_ms: z.number().min(0).max(100).optional(),
 });
 
-export const ConversationTestSpecSchema = z.object({
+export const ConversationCallSpecSchema = z.object({
   name: z.string().optional(),
   caller_prompt: z.string().min(1),
   max_turns: z.number().int().min(1).max(50).default(6),
@@ -64,33 +64,19 @@ export const ConversationTestSpecSchema = z.object({
   audio_actions: z.array(AudioActionSchema).optional(),
   prosody: z.boolean().optional(),
   caller_audio: CallerAudioEffectsSchema.optional(),
-  /** ISO 639-1 language code for multilingual testing (e.g., "es", "fr", "de"). Caller speaks this language, STT transcribes it, judge evaluates in it. */
+  /** ISO 639-1 language code for multilingual calls (e.g., "es", "fr", "de"). Caller speaks this language, STT transcribes it, judge evaluates in it. */
   language: z.string().min(2).max(5).optional(),
-  /** Number of times to repeat this test for statistical confidence (1-10). Default 1. */
+  /** Number of times to repeat this call for statistical confidence (1-10). Default 1. */
   repeat: z.number().int().min(1).max(10).default(1),
 });
 
-export const TestSpecSchema = z
+export const CallSpecSchema = z
   .object({
-    conversation_tests: z.array(ConversationTestSpecSchema).optional(),
-    red_team_tests: z.array(ConversationTestSpecSchema).optional(),
+    conversation_calls: z.array(ConversationCallSpecSchema),
   })
   .refine(
-    (d) => {
-      const hasConv = (d.conversation_tests?.length ?? 0) > 0;
-      const hasRedTeam = (d.red_team_tests?.length ?? 0) > 0;
-      return hasConv || hasRedTeam;
-    },
-    { message: "At least one of conversation_tests or red_team_tests is required" }
-  )
-  .refine(
-    (d) => {
-      const hasConv = (d.conversation_tests?.length ?? 0) > 0;
-      const hasRedTeam = (d.red_team_tests?.length ?? 0) > 0;
-      const count = [hasConv, hasRedTeam].filter(Boolean).length;
-      return count === 1;
-    },
-    { message: "Only one of conversation_tests or red_team_tests can be used per run" }
+    (d) => (d.conversation_calls?.length ?? 0) > 0,
+    { message: "conversation_calls must contain at least one call" }
   );
 
 export const AdapterTypeSchema = z.enum(["websocket", "livekit", "vapi", "retell", "elevenlabs", "bland"]);
@@ -221,7 +207,7 @@ export const AudioAnalysisWarningSchema = z.object({
 });
 
 
-export const TestDiagnosticsSchema = z.object({
+export const CallDiagnosticsSchema = z.object({
   error_origin: z.enum(["platform", "agent"]).nullable(),
   error_detail: z.string().nullable(),
   timing: z.object({
@@ -253,16 +239,26 @@ export const ConversationTurnSchema = z.object({
     tts_ms: z.number().optional(),
   }).optional(),
   platform_transcript: z.string().optional(),
+  interrupted: z.boolean().optional(),
+  is_interruption: z.boolean().optional(),
 });
 
 // ============================================================
 // Deep metric schemas
 // ============================================================
 
+export const HallucinationEventSchema = z.object({
+  error_count: z.number().int().min(1),
+  reference_text: z.string(),
+  hypothesis_text: z.string(),
+});
+
 export const TranscriptMetricsSchema = z.object({
   wer: z.number().min(0).max(1).optional(),
+  hallucination_events: z.array(HallucinationEventSchema).optional(),
   repetition_score: z.number().min(0).max(1).optional(),
   reprompt_count: z.number().int().min(0).optional(),
+  reprompt_rate: z.number().min(0).max(1).optional(),
   filler_word_rate: z.number().min(0).optional(),
   words_per_minute: z.number().min(0).optional(),
   vocabulary_diversity: z.number().min(0).max(1).optional(),
@@ -290,8 +286,16 @@ export const LatencyMetricsSchema = z.object({
 
 
 export const AudioAnalysisMetricsSchema = z.object({
+  caller_talk_time_ms: z.number().min(0),
+  agent_talk_time_ms: z.number().min(0),
   agent_speech_ratio: z.number(),
   talk_ratio_vad: z.number(),
+  interruption_rate: z.number().min(0).max(1),
+  interruption_count: z.number().int().min(0),
+  barge_in_recovery_time_ms: z.number().min(0).optional(),
+  agent_interrupting_user_rate: z.number().min(0).max(1),
+  agent_interrupting_user_count: z.number().int().min(0),
+  missed_response_windows: z.number().int().min(0),
   longest_monologue_ms: z.number(),
   silence_gaps_over_2s: z.number().int().min(0),
   total_internal_silence_ms: z.number(),
@@ -375,6 +379,14 @@ export const CostBreakdownSchema = z.object({
   llm_completion_tokens: z.number().int().optional(),
 });
 
+export const CallTransferSchema = z.object({
+  type: z.string(),
+  destination: z.string().optional(),
+  status: z.enum(["attempted", "completed", "cancelled", "failed", "unknown"]),
+  sources: z.array(z.enum(["platform_event", "platform_metadata", "tool_call"])).min(1),
+  timestamp_ms: z.number().optional(),
+});
+
 export const CallMetadataSchema = z.object({
   platform: z.string(),
   ended_reason: z.string().optional(),
@@ -387,6 +399,7 @@ export const CallMetadataSchema = z.object({
   user_sentiment: z.string().nullable().optional(),
   call_successful: z.boolean().optional(),
   variables: z.record(z.unknown()).optional(),
+  transfers: z.array(CallTransferSchema).optional(),
 });
 
 export const ConversationMetricsSchema = z.object({
@@ -404,17 +417,17 @@ export const ConversationMetricsSchema = z.object({
   component_latency: ComponentLatencyMetricsSchema.optional(),
 });
 
-export const AudioTestResultSchema = z.object({
-  test_name: AudioTestNameSchema,
+export const AudioCallResultSchema = z.object({
+  call_name: AudioCallNameSchema,
   status: z.enum(["completed", "error"]),
   metrics: z.record(z.union([z.number(), z.boolean(), z.array(z.number())])),
   transcriptions: z.record(z.union([z.string(), z.array(z.string()), z.null()])),
   duration_ms: z.number(),
   error: z.string().optional(),
-  diagnostics: TestDiagnosticsSchema.optional(),
+  diagnostics: CallDiagnosticsSchema.optional(),
 });
 
-export const ConversationTestResultSchema = z.object({
+export const ConversationCallResultSchema = z.object({
   name: z.string().optional(),
   caller_prompt: z.string(),
   status: z.enum(["completed", "error"]),
@@ -429,16 +442,11 @@ export const ConversationTestResultSchema = z.object({
 });
 
 export const RunAggregateV2Schema = z.object({
-  conversation_tests: z.object({
+  conversation_calls: z.object({
     total: z.number(),
     passed: z.number(),
     failed: z.number(),
   }).default({ total: 0, passed: 0, failed: 0 }),
-  red_team_tests: z.object({
-    total: z.number(),
-    passed: z.number(),
-    failed: z.number(),
-  }).optional(),
   total_duration_ms: z.number(),
   total_cost_usd: z.number().optional(),
 });
@@ -446,9 +454,7 @@ export const RunAggregateV2Schema = z.object({
 export const RunnerCallbackV2Schema = z.object({
   run_id: z.string().uuid(),
   status: z.enum(["pass", "fail"]),
-  conversation_results: z.array(ConversationTestResultSchema).default([]),
-  red_team_results: z.array(ConversationTestResultSchema).default([]),
+  conversation_results: z.array(ConversationCallResultSchema).default([]),
   aggregate: RunAggregateV2Schema,
   error_text: z.string().optional(),
 });
-
