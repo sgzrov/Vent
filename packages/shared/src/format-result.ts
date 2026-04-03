@@ -1,5 +1,5 @@
 /**
- * Transforms raw ConversationTestResult into a structured, grouped format
+ * Transforms raw ConversationCallResult into a structured, grouped format
  * for agent consumption (CLI).
  *
  * Groups metrics by concern and removes Vent internals (harness overhead,
@@ -7,7 +7,7 @@
  */
 
 import type {
-  ConversationTestResult,
+  ConversationCallResult,
   ConversationTurn,
   ObservedToolCall,
   AudioActionResult,
@@ -17,6 +17,7 @@ import type {
   ProsodyMetrics,
   ToolCallMetrics,
   CallMetadata,
+  CallTransfer,
   CostBreakdown,
   ComponentLatencyMetrics,
 } from "./types.js";
@@ -26,33 +27,45 @@ import type {
 interface FormattedTranscriptTurn {
   role: "caller" | "agent";
   text: string;
-  caller_decision_mode?: "continue" | "wait" | "closing" | "end_now";
   ttfb_ms?: number;
   ttfw_ms?: number;
-  stt_confidence?: number;
   audio_duration_ms?: number;
-  silence_pad_ms?: number;
-  component_latency?: { stt_ms?: number; llm_ms?: number; tts_ms?: number; speech_duration_ms?: number };
-  platform_transcript?: string;
+  interrupted?: boolean;
+  is_interruption?: boolean;
 }
 
 interface FormattedLatency {
-  mean_ttfw_ms: number;
-  p50_ttfw_ms: number;
-  p95_ttfw_ms: number;
-  p99_ttfw_ms: number;
-  first_turn_ttfw_ms: number;
+  response_time_ms: number;
+  response_time_source: "ttfw" | "ttfb";
+  p50_response_time_ms: number;
+  p90_response_time_ms: number;
+  p95_response_time_ms: number;
+  p99_response_time_ms: number;
+  first_response_time_ms: number;
+  mean_ttfw_ms?: number;
+  p50_ttfw_ms?: number;
+  p90_ttfw_ms?: number;
+  p95_ttfw_ms?: number;
+  p99_ttfw_ms?: number;
+  first_turn_ttfw_ms?: number;
   total_silence_ms: number;
   mean_turn_gap_ms: number;
-  ttfw_per_turn_ms: number[];
   drift_slope_ms_per_turn?: number;
   mean_silence_pad_ms?: number;
   mouth_to_ear_est_ms?: number;
 }
 
 interface FormattedAudioAnalysis {
+  caller_talk_time_ms: number;
+  agent_talk_time_ms: number;
   agent_speech_ratio: number;
   talk_ratio_vad: number;
+  interruption_rate: number;
+  interruption_count: number;
+  barge_in_recovery_time_ms?: number;
+  agent_interrupting_user_rate: number;
+  agent_interrupting_user_count: number;
+  missed_response_windows: number;
   longest_monologue_ms: number;
   silence_gaps_over_2s: number;
   total_internal_silence_ms: number;
@@ -71,12 +84,16 @@ interface FormattedToolCalls {
     result?: unknown;
     successful?: boolean;
     latency_ms?: number;
+    turn_index?: number;
   }>;
 }
 
 interface FormattedEmotion {
-  emotion_trajectory: "stable" | "improving" | "degrading" | "volatile";
+  naturalness: number;
+  mean_calmness: number;
+  mean_confidence: number;
   peak_frustration: number;
+  emotion_trajectory: "stable" | "improving" | "degrading" | "volatile";
 }
 
 
@@ -102,6 +119,12 @@ interface FormattedCallMetadata {
   user_sentiment?: string;
   call_successful?: boolean;
   variables?: Record<string, unknown>;
+  transfer_attempted?: boolean;
+  transfer_completed?: boolean;
+  escalated?: boolean;
+  transfer_count?: number;
+  completed_transfer_count?: number;
+  transfers?: CallTransfer[];
 }
 
 export interface FormattedConversationResult {
@@ -126,7 +149,7 @@ export interface FormattedConversationResult {
 
 export function formatConversationResult(raw: unknown): FormattedConversationResult | null {
   if (!raw || typeof raw !== "object") return null;
-  const r = raw as ConversationTestResult;
+  const r = raw as ConversationCallResult;
   if (typeof r.caller_prompt !== "string") return null;
 
   return {
@@ -137,7 +160,7 @@ export function formatConversationResult(raw: unknown): FormattedConversationRes
     error: r.error ?? null,
     transcript: formatTranscript(r.transcript),
     latency: r.metrics?.latency ? formatLatency(r.metrics.latency, r.metrics) : null,
-    transcript_quality: r.metrics?.transcript && hasContent(r.metrics.transcript) ? filterTranscriptMetrics(r.metrics.transcript) : null,
+    transcript_quality: r.metrics?.transcript && hasContent(r.metrics.transcript) ? r.metrics.transcript : null,
     audio_analysis: r.metrics?.audio_analysis ? formatAudioAnalysis(r.metrics.audio_analysis) : null,
     tool_calls: formatToolCalls(r.metrics?.tool_calls, r.observed_tool_calls),
     component_latency: formatComponentLatency(r.metrics?.component_latency),
@@ -161,32 +184,43 @@ function formatTranscript(turns: ConversationTurn[] | undefined): FormattedTrans
       role: t.role,
       text: t.text,
     };
-    if (t.caller_decision_mode) turn.caller_decision_mode = t.caller_decision_mode;
-    // Include timing/quality fields when present (strip tts_ms, stt_ms, timestamp_ms)
+    // Include user-facing timing/interrupt fields when present.
     if (t.ttfb_ms != null) turn.ttfb_ms = t.ttfb_ms;
     if (t.ttfw_ms != null) turn.ttfw_ms = t.ttfw_ms;
-    if (t.stt_confidence != null) turn.stt_confidence = t.stt_confidence;
     if (t.audio_duration_ms != null) turn.audio_duration_ms = t.audio_duration_ms;
-    if (t.silence_pad_ms != null) turn.silence_pad_ms = t.silence_pad_ms;
-    if (t.component_latency) turn.component_latency = t.component_latency;
-    if (t.platform_transcript) turn.platform_transcript = t.platform_transcript;
+    if (t.interrupted != null) turn.interrupted = t.interrupted;
+    if (t.is_interruption != null) turn.is_interruption = t.is_interruption;
     return turn;
   });
 }
 
-function formatLatency(latency: LatencyMetrics, metrics: ConversationTestResult["metrics"]): FormattedLatency | null {
-  if (metrics.mean_ttfw_ms == null || latency.p50_ttfw_ms == null || latency.p95_ttfw_ms == null) return null;
+function formatLatency(latency: LatencyMetrics, metrics: ConversationCallResult["metrics"]): FormattedLatency | null {
+  const hasTtfw =
+    metrics.mean_ttfw_ms != null
+    && latency.p50_ttfw_ms != null
+    && latency.p95_ttfw_ms != null;
+  const responseTimeSource: "ttfw" | "ttfb" = hasTtfw ? "ttfw" : "ttfb";
 
   const result: FormattedLatency = {
-    mean_ttfw_ms: metrics.mean_ttfw_ms,
-    p50_ttfw_ms: latency.p50_ttfw_ms,
-    p95_ttfw_ms: latency.p95_ttfw_ms,
-    p99_ttfw_ms: latency.p99_ttfw_ms ?? latency.p99_ttfb_ms,
-    first_turn_ttfw_ms: latency.first_turn_ttfw_ms ?? latency.first_turn_ttfb_ms,
+    response_time_ms: hasTtfw ? metrics.mean_ttfw_ms! : metrics.mean_ttfb_ms,
+    response_time_source: responseTimeSource,
+    p50_response_time_ms: hasTtfw ? latency.p50_ttfw_ms! : latency.p50_ttfb_ms,
+    p90_response_time_ms: hasTtfw ? (latency.p90_ttfw_ms ?? latency.p90_ttfb_ms) : latency.p90_ttfb_ms,
+    p95_response_time_ms: hasTtfw ? latency.p95_ttfw_ms! : latency.p95_ttfb_ms,
+    p99_response_time_ms: hasTtfw ? (latency.p99_ttfw_ms ?? latency.p99_ttfb_ms) : latency.p99_ttfb_ms,
+    first_response_time_ms: hasTtfw ? (latency.first_turn_ttfw_ms ?? latency.first_turn_ttfb_ms) : latency.first_turn_ttfb_ms,
     total_silence_ms: latency.total_silence_ms,
     mean_turn_gap_ms: latency.mean_turn_gap_ms,
-    ttfw_per_turn_ms: latency.ttfw_per_turn_ms ?? latency.ttfb_per_turn_ms,
   };
+
+  if (hasTtfw) {
+    result.mean_ttfw_ms = metrics.mean_ttfw_ms;
+    result.p50_ttfw_ms = latency.p50_ttfw_ms;
+    result.p90_ttfw_ms = latency.p90_ttfw_ms ?? latency.p90_ttfb_ms;
+    result.p95_ttfw_ms = latency.p95_ttfw_ms;
+    result.p99_ttfw_ms = latency.p99_ttfw_ms ?? latency.p99_ttfb_ms;
+    result.first_turn_ttfw_ms = latency.first_turn_ttfw_ms ?? latency.first_turn_ttfb_ms;
+  }
 
   if (latency.drift_slope_ms_per_turn != null) result.drift_slope_ms_per_turn = latency.drift_slope_ms_per_turn;
   if (latency.mean_silence_pad_ms != null) result.mean_silence_pad_ms = latency.mean_silence_pad_ms;
@@ -197,8 +231,16 @@ function formatLatency(latency: LatencyMetrics, metrics: ConversationTestResult[
 
 function formatAudioAnalysis(audio: AudioAnalysisMetrics): FormattedAudioAnalysis {
   return {
+    caller_talk_time_ms: audio.caller_talk_time_ms,
+    agent_talk_time_ms: audio.agent_talk_time_ms,
     agent_speech_ratio: audio.agent_speech_ratio,
     talk_ratio_vad: audio.talk_ratio_vad,
+    interruption_rate: audio.interruption_rate,
+    interruption_count: audio.interruption_count,
+    barge_in_recovery_time_ms: audio.barge_in_recovery_time_ms,
+    agent_interrupting_user_rate: audio.agent_interrupting_user_rate,
+    agent_interrupting_user_count: audio.agent_interrupting_user_count,
+    missed_response_windows: audio.missed_response_windows,
     longest_monologue_ms: audio.longest_monologue_ms,
     silence_gaps_over_2s: audio.silence_gaps_over_2s,
     total_internal_silence_ms: audio.total_internal_silence_ms,
@@ -227,16 +269,13 @@ function formatToolCalls(
   };
 }
 
-
-function filterTranscriptMetrics(t: TranscriptMetrics): Partial<TranscriptMetrics> {
-  const { vocabulary_diversity, filler_word_rate, words_per_minute, ...kept } = t;
-  return kept;
-}
-
 function formatEmotion(prosody: ProsodyMetrics): FormattedEmotion {
   return {
-    emotion_trajectory: prosody.emotion_trajectory,
+    naturalness: prosody.naturalness,
+    mean_calmness: prosody.mean_calmness,
+    mean_confidence: prosody.mean_confidence,
     peak_frustration: prosody.peak_frustration,
+    emotion_trajectory: prosody.emotion_trajectory,
   };
 }
 
@@ -262,21 +301,46 @@ function formatComponentLatency(cl: ComponentLatencyMetrics | undefined): Format
 
 function formatCallMetadata(meta: CallMetadata | undefined): FormattedCallMetadata | null {
   if (!meta) return null;
-  return {
+  const transfers = meta.transfers?.map((transfer) => {
+    const formattedTransfer: CallTransfer = {
+      type: transfer.type,
+      destination: transfer.destination,
+      status: transfer.status,
+      sources: transfer.sources,
+    };
+    if (transfer.timestamp_ms != null) {
+      formattedTransfer.timestamp_ms = transfer.timestamp_ms;
+    }
+    return formattedTransfer;
+  });
+
+  const result: FormattedCallMetadata = {
     platform: meta.platform,
     ended_reason: meta.ended_reason,
     cost_usd: meta.cost_usd,
     cost_breakdown: meta.cost_breakdown,
     recording_url: meta.recording_url,
-    summary: meta.summary,
-    success_evaluation: meta.success_evaluation,
-    user_sentiment: meta.user_sentiment,
+    summary: meta.summary ?? undefined,
+    success_evaluation: meta.success_evaluation ?? undefined,
+    user_sentiment: meta.user_sentiment ?? undefined,
     call_successful: meta.call_successful,
     variables: meta.variables,
   };
+
+  if (transfers && transfers.length > 0) {
+    const completedTransferCount = transfers.filter((transfer) => transfer.status === "completed").length;
+    const transferCompleted = completedTransferCount > 0;
+    result.transfer_attempted = true;
+    result.transfer_completed = transferCompleted;
+    result.escalated = transferCompleted;
+    result.transfer_count = transfers.length;
+    result.completed_transfer_count = completedTransferCount;
+    result.transfers = transfers;
+  }
+
+  return result;
 }
 
 function hasContent(obj: object): boolean {
   return Object.values(obj).some((v) => v != null);
 }
-

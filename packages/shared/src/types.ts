@@ -1,19 +1,22 @@
 export type RunStatus = "queued" | "running" | "pass" | "fail";
-export type SourceType = "bundle" | "remote" | "relay";
+export type SourceType = "remote" | "session";
 
 // ============================================================
-// Audio + Conversation test types
+// Audio + Conversation call types
 // ============================================================
 
-export const AUDIO_TEST_NAMES = [
+export const AUDIO_CALL_NAMES = [
   "audio_quality",
   "latency",
   "echo",
 ] as const;
 
-export type AudioTestName = (typeof AUDIO_TEST_NAMES)[number];
+export type AudioCallName = (typeof AUDIO_CALL_NAMES)[number];
 
 export type AdapterType = "websocket" | "livekit" | "vapi" | "retell" | "elevenlabs" | "bland";
+export type TransferMode = "cold" | "warm" | "unknown";
+export type CallTransferStatus = "attempted" | "completed" | "cancelled" | "failed" | "unknown";
+export type CallTransferSource = "platform_event" | "platform_metadata" | "tool_call";
 
 export interface CallerPersona {
   pace?: "slow" | "normal" | "fast";
@@ -79,7 +82,7 @@ export interface AudioActionResult {
   transcriptions?: Record<string, string | null>;
 }
 
-export interface ConversationTestSpec {
+export interface ConversationCallSpec {
   name?: string;
   caller_prompt: string;
   max_turns: number;
@@ -92,9 +95,9 @@ export interface ConversationTestSpec {
   prosody?: boolean;
   /** Global audio effects applied to all caller audio (speakerphone, speed, noise, accent, etc.) */
   caller_audio?: CallerAudioEffects;
-  /** ISO 639-1 language code for multilingual testing (e.g., "es", "fr", "de"). Caller speaks this language, STT transcribes it, judge evaluates in it. */
+  /** ISO 639-1 language code for multilingual calls (e.g., "es", "fr", "de"). Caller speaks this language, STT transcribes it, judge evaluates in it. */
   language?: string;
-  /** Number of times to repeat this test for statistical confidence. Default 1. */
+  /** Number of times to repeat this call for statistical confidence. Default 1. */
   repeat?: number;
 }
 
@@ -122,7 +125,7 @@ export interface ToolCallMetrics {
 
 /** Shared fields across all platform configs */
 interface BasePlatformConfig {
-  /** Max concurrent test calls (platform-dependent) */
+  /** Max concurrent calls (platform-dependent) */
   max_concurrency?: number;
 }
 
@@ -302,13 +305,12 @@ export interface ProsodyWarning {
   message: string;
 }
 
-export interface TestSpec {
-  conversation_tests?: ConversationTestSpec[];
-  red_team_tests?: ConversationTestSpec[];
+export interface CallSpec {
+  conversation_calls?: ConversationCallSpec[];
 }
 
-export interface TestDiagnostics {
-  /** "platform" = Vent infra issue, "agent" = user's agent issue, null = test passed */
+export interface CallDiagnostics {
+  /** "platform" = Vent infra issue, "agent" = user's agent issue, null = call passed */
   error_origin: "platform" | "agent" | null;
   error_detail: string | null;
   timing: {
@@ -329,15 +331,15 @@ export interface ChannelStats {
   connectLatencyMs: number;
 }
 
-export interface AudioTestResult {
-  test_name: AudioTestName;
+export interface AudioCallResult {
+  call_name: AudioCallName;
   /** "completed" = probe ran successfully, "error" = probe failed to run. NOT pass/fail. */
   status: "completed" | "error";
   metrics: Record<string, number | boolean | number[]>;
   transcriptions: Record<string, string | string[] | null>;
   duration_ms: number;
   error?: string;
-  diagnostics?: TestDiagnostics;
+  diagnostics?: CallDiagnostics;
 }
 
 export interface ConversationTurn {
@@ -373,11 +375,24 @@ export interface ConversationTurn {
 
 export interface TranscriptMetrics {
   wer?: number;
+  /** Consecutive insertion/substitution runs from WER alignment (proxy for STT hallucinations). */
+  hallucination_events?: HallucinationEvent[];
   repetition_score?: number;
   reprompt_count?: number;
+  /** Proportion of agent turns that ask the caller to repeat/rephrase (0-1). */
+  reprompt_rate?: number;
   filler_word_rate?: number;
   words_per_minute?: number;
   vocabulary_diversity?: number;
+}
+
+export interface HallucinationEvent {
+  /** Number of consecutive alignment errors in this run. */
+  error_count: number;
+  /** Reference words Vent expected the platform to hear. */
+  reference_text: string;
+  /** Platform STT words observed during the same error run. */
+  hypothesis_text: string;
 }
 
 export interface LatencyMetrics {
@@ -432,10 +447,26 @@ export interface SignalQualityMetrics {
 }
 
 export interface AudioAnalysisMetrics {
+  /** Total caller talk time across the call (ms). */
+  caller_talk_time_ms: number;
+  /** Total agent speech time across the call (ms), excluding internal silence. */
+  agent_talk_time_ms: number;
   /** Agent speech time / agent total audio time (0-1). Flag if <0.5 */
   agent_speech_ratio: number;
   /** VAD-corrected talk ratio: caller_audio / (caller_audio + agent_speech). Flag if >0.7 or <0.3 */
   talk_ratio_vad: number;
+  /** Caller barges in while agent speech is still active / eligible caller turns */
+  interruption_rate: number;
+  /** Count of caller turns that begin before the prior agent utterance fully ends */
+  interruption_count: number;
+  /** Mean overlap time from caller barge-in until the agent stops speaking */
+  barge_in_recovery_time_ms?: number;
+  /** Agent starts speaking before the caller finished / eligible agent responses */
+  agent_interrupting_user_rate: number;
+  /** Count of agent responses that start before the caller finished speaking */
+  agent_interrupting_user_count: number;
+  /** Count of slow-or-missing agent response windows after caller speech */
+  missed_response_windows: number;
   /** Longest continuous agent speech segment (ms). Flag if >30000 */
   longest_monologue_ms: number;
   /** Count of silence gaps >2s within agent responses (Hamming's SGA metric) */
@@ -512,7 +543,15 @@ export interface CallMetadata {
   /** Final pathway/agent variables at end of call (Bland: pathway state, Vapi: extracted data) */
   variables?: Record<string, unknown>;
   /** Call transfers that occurred during the call */
-  transfers?: Array<{ type: string; destination?: string; timestamp_ms: number }>;
+  transfers?: CallTransfer[];
+}
+
+export interface CallTransfer {
+  type: string;
+  destination?: string;
+  status: CallTransferStatus;
+  sources: CallTransferSource[];
+  timestamp_ms?: number;
 }
 
 export interface ConversationMetrics {
@@ -533,7 +572,7 @@ export interface ConversationMetrics {
   component_latency?: ComponentLatencyMetrics;
 }
 
-export interface ConversationTestResult {
+export interface ConversationCallResult {
   name?: string;
   caller_prompt: string;
   status: "completed" | "error";
@@ -549,8 +588,7 @@ export interface ConversationTestResult {
 }
 
 export interface RunAggregateV2 {
-  conversation_tests: { total: number; passed: number; failed: number };
-  red_team_tests?: { total: number; passed: number; failed: number };
+  conversation_calls: { total: number; passed: number; failed: number };
   total_duration_ms: number;
   total_cost_usd?: number;
 }
@@ -558,9 +596,7 @@ export interface RunAggregateV2 {
 export interface RunnerCallbackPayloadV2 {
   run_id: string;
   status: "pass" | "fail";
-  conversation_results: ConversationTestResult[];
-  red_team_results?: ConversationTestResult[];
+  conversation_results: ConversationCallResult[];
   aggregate: RunAggregateV2;
   error_text?: string;
 }
-
