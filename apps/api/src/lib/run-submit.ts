@@ -1,10 +1,10 @@
-import { randomUUID, createHash } from "node:crypto";
+import { createHash } from "node:crypto";
 import { eq, and, sql } from "drizzle-orm";
 import { schema } from "@vent/db";
 import { z } from "zod";
 import {
   AdapterTypeSchema,
-  ConversationTestSpecSchema,
+  ConversationCallSpecSchema,
   CallerAudioEffectsSchema,
   PlatformSummarySchema,
   type PlatformConnectionSummary,
@@ -49,28 +49,12 @@ export const RunSubmitConfigSchema = z.object({
     agent_port: z.number().int().min(1).max(65535).optional(),
     start_command: z.string().optional(),
     health_endpoint: z.string().optional(),
-    target_phone_number: z.string().optional(),
     caller_audio: CallerAudioEffectsSchema.optional(),
     platform_connection_id: z.string().uuid().optional(),
     platform: z.never().optional(),
   }),
-  conversation_tests: z.array(ConversationTestSpecSchema).optional(),
-  red_team_tests: z.array(ConversationTestSpecSchema).optional(),
-}).refine(
-  (d) => {
-    const hasConv = (d.conversation_tests?.length ?? 0) > 0;
-    const hasRedTeam = (d.red_team_tests?.length ?? 0) > 0;
-    return hasConv || hasRedTeam;
-  },
-  { message: "Exactly one of conversation_tests or red_team_tests is required." }
-).refine(
-  (d) => {
-    const hasConv = (d.conversation_tests?.length ?? 0) > 0;
-    const hasRedTeam = (d.red_team_tests?.length ?? 0) > 0;
-    return !(hasConv && hasRedTeam);
-  },
-  { message: "Only one of conversation_tests or red_team_tests can be used per run." }
-).superRefine((d, ctx) => {
+  conversation_calls: z.array(ConversationCallSpecSchema).min(1, "conversation_calls must contain at least one call"),
+}).superRefine((d, ctx) => {
   const adapter = d.connection.adapter;
   const platformConnectionId = d.connection.platform_connection_id;
   const requiresSavedConnection = PLATFORM_ADAPTERS.has(adapter);
@@ -95,6 +79,7 @@ export const RunSubmitConfigSchema = z.object({
 export const RunSubmitSchema = z.object({
   config: RunSubmitConfigSchema,
   idempotency_key: z.string().uuid().optional(),
+  agent_session_id: z.string().uuid().optional(),
 });
 
 export type RunSubmitInput = z.infer<typeof RunSubmitSchema>;
@@ -105,7 +90,7 @@ export function hashIdempotencyKey(raw: string): string {
   return createHash("sha256").update(raw).digest("hex");
 }
 
-export function buildTestSpec(
+export function buildCallSpec(
   cfg: Record<string, unknown>,
   platformMeta?: {
     platform_connection_id: string | null;
@@ -115,40 +100,28 @@ export function buildTestSpec(
 ) {
   const adapter = (cfg.adapter as string) ?? "websocket";
   const agentUrl = cfg.agent_url as string | undefined;
-  const targetPhoneNumber = cfg.target_phone_number as string | undefined;
-  const voiceConfig = { adapter, target_phone_number: targetPhoneNumber };
+  const voiceConfig = { adapter };
 
-  // Merge root-level caller_audio as default onto conversation/red_team tests
+  // Merge root-level caller_audio as default onto conversation calls
   const callerAudio = cfg.caller_audio as Record<string, unknown> | undefined;
-  let conversationTests = cfg.conversation_tests as Record<string, unknown>[] | null | undefined;
-  let redTeamTests = cfg.red_team_tests as Record<string, unknown>[] | null | undefined;
-  if (callerAudio && Array.isArray(conversationTests)) {
-    conversationTests = conversationTests.map((test) => {
-      if (test.caller_audio === undefined) {
-        return { ...test, caller_audio: callerAudio };
+  let conversationCalls = cfg.conversation_calls as Record<string, unknown>[] | null | undefined;
+  if (callerAudio && Array.isArray(conversationCalls)) {
+    conversationCalls = conversationCalls.map((call) => {
+      if (call.caller_audio === undefined) {
+        return { ...call, caller_audio: callerAudio };
       }
-      return test;
-    });
-  }
-  if (callerAudio && Array.isArray(redTeamTests)) {
-    redTeamTests = redTeamTests.map((test) => {
-      if (test.caller_audio === undefined) {
-        return { ...test, caller_audio: callerAudio };
-      }
-      return test;
+      return call;
     });
   }
 
   return {
-    testSpecJson: {
-      conversation_tests: conversationTests ?? null,
-      red_team_tests: redTeamTests ?? null,
+    callSpecJson: {
+      conversation_calls: conversationCalls ?? null,
       adapter,
       voice_config: voiceConfig,
       start_command: cfg.start_command ?? null,
       health_endpoint: cfg.health_endpoint ?? null,
       agent_url: agentUrl ?? null,
-      target_phone_number: targetPhoneNumber ?? null,
       platform_connection_id: platformMeta?.platform_connection_id ?? null,
       platform_connection: platformMeta?.platform_connection ?? null,
       platform: platformMeta?.platform ?? null,
@@ -156,9 +129,8 @@ export function buildTestSpec(
     adapter,
     agentUrl,
     voiceConfig,
-    targetPhoneNumber,
-    conversationTests: conversationTests ?? null,
-    redTeamTests: redTeamTests ?? null,
+
+    conversationCalls: conversationCalls ?? null,
     isRemote: PLATFORM_ADAPTERS.has(adapter) || !!agentUrl,
   };
 }
@@ -170,27 +142,20 @@ export interface SubmitRunParams {
   userId: string;
   config: RunSubmitInput["config"];
   idempotencyKey?: string;
+  agentSessionId?: string;
 }
 
 export interface SubmitRunResult {
   run_id: string;
   status: string;
   deduplicated?: boolean;
-  relay_config?: {
-    run_id: string;
-    relay_token: string;
-    api_url: string;
-    agent_port: number;
-    start_command: string | null;
-    health_endpoint: string;
-  };
 }
 
 export async function submitRun(
   app: FastifyInstance,
   params: SubmitRunParams,
 ): Promise<SubmitRunResult> {
-  const { accessTokenId, userId, config, idempotencyKey } = params;
+  const { accessTokenId, userId, config, idempotencyKey, agentSessionId } = params;
 
   const hashedIdempotencyKey = idempotencyKey
     ? hashIdempotencyKey(idempotencyKey)
@@ -288,21 +253,18 @@ export async function submitRun(
   delete cfg.platform;
 
   const {
-    testSpecJson,
+    callSpecJson,
     adapter: resolvedAdapter,
     agentUrl,
     voiceConfig,
-    targetPhoneNumber,
-    conversationTests,
-    redTeamTests,
+
+    conversationCalls,
     isRemote,
-  } = buildTestSpec(cfg, {
+  } = buildCallSpec(cfg, {
     platform_connection_id: platformConnectionId,
     platform_connection: platformConnectionSummary,
     platform: platformSummary,
   });
-
-  const apiUrl = process.env["API_URL"] ?? "https://vent-api.fly.dev";
 
   if (isRemote) {
     const [run] = await app.db
@@ -311,10 +273,8 @@ export async function submitRun(
         access_token_id: accessTokenId,
         user_id: userId,
         source_type: "remote",
-        bundle_key: null,
-        bundle_hash: "remote",
         status: "queued",
-        test_spec_json: testSpecJson,
+        test_spec_json: callSpecJson,
         idempotency_key: hashedIdempotencyKey,
       })
       .returning();
@@ -323,15 +283,10 @@ export async function submitRun(
 
     await app.getRunQueue(userId).add("execute-run", {
       run_id: runId,
-      bundle_key: null,
-      bundle_hash: null,
-      lockfile_hash: null,
       adapter: resolvedAdapter,
-      test_spec: {
-        conversation_tests: conversationTests ?? null,
-        red_team_tests: redTeamTests ?? null,
+      call_spec: {
+        conversation_calls: conversationCalls ?? null,
       },
-      target_phone_number: targetPhoneNumber,
       voice_config: voiceConfig,
       start_command: cfg.start_command as string | undefined,
       health_endpoint: cfg.health_endpoint as string | undefined,
@@ -342,42 +297,70 @@ export async function submitRun(
     return { run_id: runId, status: "queued" };
   }
 
-  // Local WebSocket agent — relay mode
-  const relayToken = randomUUID();
-  const startCommand = cfg.start_command as string | undefined;
+  // Local agent via agent session — session must already be active
+  if (!agentSessionId) {
+    throw new SubmitRunConfigError(
+      "Non-remote runs require an agent_session_id. Start an agent session first with `npx vent-hq agent start`.",
+    );
+  }
+
+  // Verify the agent session exists, belongs to the user, and is active
+  const [agentSession] = await app.db
+    .select({ id: schema.agentSessions.id, status: schema.agentSessions.status })
+    .from(schema.agentSessions)
+    .where(
+      and(
+        eq(schema.agentSessions.id, agentSessionId),
+        eq(schema.agentSessions.user_id, userId),
+      ),
+    )
+    .limit(1);
+
+  if (!agentSession) {
+    throw new SubmitRunConfigError("Agent session not found", 404);
+  }
+  if (agentSession.status !== "active") {
+    throw new SubmitRunConfigError(
+      `Agent session is "${agentSession.status}" — it must be "active". Ensure the relay tunnel is connected.`,
+    );
+  }
+
+  const relayReady = await app.redis.get(`vent:relay-session:${agentSessionId}`);
+  if (!relayReady) {
+    throw new SubmitRunConfigError(
+      "Agent session relay is no longer connected. Start a new session with `npx vent-hq agent start`.",
+    );
+  }
 
   const [run] = await app.db
     .insert(schema.runs)
     .values({
       access_token_id: accessTokenId,
       user_id: userId,
-      source_type: "relay",
-      bundle_key: null,
-      bundle_hash: null,
+      source_type: "session",
       status: "queued",
-      test_spec_json: testSpecJson,
+      test_spec_json: callSpecJson,
       idempotency_key: hashedIdempotencyKey,
-      relay_token: relayToken,
+      agent_session_id: agentSessionId,
     })
     .returning();
 
   const runId = run!.id;
 
-  // Do NOT enqueue here — relay runs are enqueued by /internal/runs/:id/activate
-  // after the relay tunnel is connected. Enqueuing here causes duplicate job processing.
-
-  const agentPort = (cfg.agent_port as number | undefined) ?? 3001;
-
-  return {
+  // Enqueue immediately — session relay is already connected
+  await app.getRunQueue(userId).add("execute-run", {
     run_id: runId,
-    status: "queued",
-    relay_config: {
-      run_id: runId,
-      relay_token: relayToken,
-      api_url: apiUrl,
-      agent_port: agentPort,
-      start_command: startCommand ?? null,
-      health_endpoint: (cfg.health_endpoint as string) ?? "/health",
+    adapter: resolvedAdapter,
+    call_spec: {
+      conversation_calls: conversationCalls ?? null,
     },
-  };
+    voice_config: voiceConfig,
+    start_command: cfg.start_command as string | undefined,
+    health_endpoint: cfg.health_endpoint as string | undefined,
+    agent_url: agentUrl,
+    agent_session_id: agentSessionId,
+    platform_connection_id: platformConnectionId,
+  }, { jobId: runId });
+
+  return { run_id: runId, status: "queued" };
 }

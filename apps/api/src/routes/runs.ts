@@ -7,7 +7,7 @@ import { RunSubmitSchema, submitRun, SubmitRunConfigError, UsageLimitError } fro
 export async function runRoutes(app: FastifyInstance) {
   const accessTokenPreHandler = { preHandler: app.verifyAccessToken };
 
-  // --- Submit a run with full test config (used by CLI) ---
+  // --- Submit a run with full call config (used by CLI) ---
   app.post("/runs/submit", accessTokenPreHandler, async (request, reply) => {
     const parsed = RunSubmitSchema.safeParse(request.body);
     if (!parsed.success) {
@@ -27,6 +27,7 @@ export async function runRoutes(app: FastifyInstance) {
         userId: request.userId!,
         config: parsed.data.config,
         idempotencyKey: parsed.data.idempotency_key,
+        agentSessionId: parsed.data.agent_session_id,
       });
     } catch (err) {
       if (err instanceof UsageLimitError) {

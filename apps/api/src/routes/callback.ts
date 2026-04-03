@@ -44,8 +44,8 @@ export async function callbackRoutes(app: FastifyInstance) {
     return reply.send({ ok: true });
   });
 
-  // --- Per-test progress callback (from runner) ---
-  app.post("/internal/test-progress", async (request, reply) => {
+  // --- Per-call progress callback (from runner) ---
+  app.post("/internal/call-progress", async (request, reply) => {
     const secret = (request.headers as Record<string, string>)[RUNNER_CALLBACK_HEADER];
     const expectedSecret = process.env["RUNNER_CALLBACK_SECRET"];
 
@@ -57,8 +57,8 @@ export async function callbackRoutes(app: FastifyInstance) {
       run_id: string;
       completed: number;
       total: number;
-      test_type: "conversation" | "red_team";
-      test_name: string;
+      call_type: "conversation";
+      call_name: string;
       status: "pass" | "fail" | "completed" | "error";
       duration_ms: number;
       result?: Record<string, unknown>;
@@ -67,30 +67,27 @@ export async function callbackRoutes(app: FastifyInstance) {
     // Insert partial result into DB for incremental visibility via vent_get_run_status
     if (body.result) {
       try {
-        const isConversation = body.test_type === "conversation" || body.test_type === "red_team";
         await app.db.insert(schema.scenarioResults).values({
           run_id: body.run_id,
-          name: body.test_name,
-          status: body.status,
-          test_type: body.test_type,
+          name: body.call_name,
+          status: body.status === "pass" || body.status === "completed" ? "completed" : "error",
+          test_type: body.call_type,
           metrics_json: body.result,
-          trace_json: isConversation
-            ? (body.result as { transcript?: unknown }).transcript ?? []
-            : [],
+          trace_json: (body.result as { transcript?: unknown }).transcript ?? [],
         });
       } catch (err) {
         app.log.warn(
-          { run_id: body.run_id, test_name: body.test_name, error: err instanceof Error ? err.message : String(err) },
+          { run_id: body.run_id, call_name: body.call_name, error: err instanceof Error ? err.message : String(err) },
           "Failed to insert incremental scenario result"
         );
       }
     }
 
     // Broadcast to SSE subscribers (dashboard)
-    const progressMessage = `${body.test_name}: ${body.status} (${body.duration_ms}ms)`;
+    const progressMessage = `${body.call_name}: ${body.status} (${body.duration_ms}ms)`;
     const progressMetadata: Record<string, unknown> = {
-      test_name: body.test_name,
-      test_type: body.test_type,
+      call_name: body.call_name,
+      call_type: body.call_type,
       status: body.status,
       duration_ms: body.duration_ms,
       completed: body.completed,
@@ -106,7 +103,7 @@ export async function callbackRoutes(app: FastifyInstance) {
       .insert(schema.runEvents)
       .values({
         run_id: body.run_id,
-        event_type: "test_completed",
+        event_type: "call_completed",
         message: progressMessage,
         metadata_json: progressMetadata,
       })
@@ -115,90 +112,11 @@ export async function callbackRoutes(app: FastifyInstance) {
     broadcast(body.run_id, {
       id: progressEvent!.id,
       run_id: body.run_id,
-      event_type: "test_completed",
+      event_type: "call_completed",
       message: progressMessage,
       metadata_json: progressMetadata,
       created_at: progressEvent!.created_at.toISOString(),
     });
-
-    return reply.send({ ok: true });
-  });
-
-  // --- Run activation (called by relay client for local agents) ---
-  // Config is always pre-stored by vent_run_tests — this activates the run and queues the job.
-  app.post<{ Params: { id: string } }>("/internal/runs/:id/activate", async (request, reply) => {
-    const runId = request.params.id;
-    const body = request.body as Record<string, unknown>;
-
-    const [run] = await app.db
-      .select()
-      .from(schema.runs)
-      .where(eq(schema.runs.id, runId))
-      .limit(1);
-
-    if (!run) {
-      return reply.status(404).send({ error: "Run not found" });
-    }
-
-    if (run.status !== "queued") {
-      // Idempotent — job was already queued. Return 200 so relay client doesn't crash.
-      return reply.send({ status: run.status, run_id: runId, already_activated: true });
-    }
-
-    if (!run.test_spec_json) {
-      return reply.status(400).send({ error: "Run has no stored config — submit a run first" });
-    }
-
-    // Authenticate via relay token
-    const relayToken = body.relay_token as string | undefined;
-    if (!relayToken || relayToken !== run.relay_token) {
-      return reply.status(401).send({ error: "Invalid relay token" });
-    }
-
-    // Mark as activated BEFORE enqueuing — prevents duplicate jobs if activate is called twice
-    await app.db
-      .update(schema.runs)
-      .set({ status: "running" })
-      .where(eq(schema.runs.id, runId));
-
-    const spec = run.test_spec_json as Record<string, unknown>;
-
-    await app.getRunQueue(run.user_id).add("execute-run", {
-      run_id: runId,
-      bundle_key: null,
-      bundle_hash: null,
-      lockfile_hash: null,
-      adapter: spec.adapter as string,
-      test_spec: {
-        conversation_tests: spec.conversation_tests ?? null,
-        red_team_tests: spec.red_team_tests ?? null,
-      },
-      target_phone_number: spec.target_phone_number as string | undefined,
-      voice_config: spec.voice_config ?? { adapter: spec.adapter },
-      start_command: spec.start_command as string | undefined,
-      health_endpoint: spec.health_endpoint as string | undefined,
-      agent_url: spec.agent_url as string | undefined,
-      platform_connection_id: spec.platform_connection_id as string | undefined,
-      relay: true,
-    }, { jobId: runId });
-
-    return reply.send({ status: "queued", run_id: runId });
-  });
-
-  // --- Relay run complete notification (from worker to signal relay cleanup) ---
-  app.post("/internal/relay-complete", async (request, reply) => {
-    const secret = (request.headers as Record<string, string>)[RUNNER_CALLBACK_HEADER];
-    const expectedSecret = process.env["RUNNER_CALLBACK_SECRET"];
-
-    if (!expectedSecret || secret !== expectedSecret) {
-      return reply.status(401).send({ error: "Unauthorized" });
-    }
-
-    const body = request.body as { run_id: string };
-
-    // Import and call notifyRunComplete to clean up relay session
-    const { notifyRunComplete } = await import("./relay.js");
-    notifyRunComplete(body.run_id);
 
     return reply.send({ ok: true });
   });
@@ -217,30 +135,18 @@ export async function callbackRoutes(app: FastifyInstance) {
     // Atomic transaction: DELETE partials → INSERT final results → UPDATE run status.
     // Without a transaction, a long-poll can wake mid-operation and return incomplete data.
     await app.db.transaction(async (tx) => {
-      // Clear any partial results inserted during test-progress — final batch is authoritative
+      // Clear any partial results inserted during call-progress — final batch is authoritative
       await tx
         .delete(schema.scenarioResults)
         .where(eq(schema.scenarioResults.run_id, body.run_id));
 
-      // Store conversation test results
+      // Store conversation call results
       for (const result of body.conversation_results) {
         await tx.insert(schema.scenarioResults).values({
           run_id: body.run_id,
           name: result.name ?? `conversation:${result.caller_prompt.slice(0, 50)}`,
           status: result.status,
           test_type: "conversation",
-          metrics_json: result,
-          trace_json: result.transcript,
-        });
-      }
-
-      // Store red team test results
-      for (const result of body.red_team_results ?? []) {
-        await tx.insert(schema.scenarioResults).values({
-          run_id: body.run_id,
-          name: result.name ?? `red_team:${result.caller_prompt.slice(0, 50)}`,
-          status: result.status,
-          test_type: "red_team",
           metrics_json: result,
           trace_json: result.transcript,
         });
@@ -260,17 +166,13 @@ export async function callbackRoutes(app: FastifyInstance) {
     });
 
     // Broadcast run_complete to SSE subscribers (dashboard)
-    const redTeamResults = body.red_team_results ?? [];
-    const totalTests = body.conversation_results.length + redTeamResults.length;
-    const redTeamAgg = body.aggregate.red_team_tests;
-    const completeMessage = redTeamAgg
-      ? `${body.status}: ${redTeamAgg.passed}/${redTeamAgg.total} red team`
-      : `${body.status}: ${body.aggregate.conversation_tests.passed}/${body.aggregate.conversation_tests.total} conversation`;
+    const convAgg = body.aggregate.conversation_calls;
+    const completeMessage = `${body.status}: ${convAgg.passed}/${convAgg.total} conversation`;
     const completeMetadata = {
       status: body.status,
-      total_tests: totalTests,
-      passed_tests: body.aggregate.conversation_tests.passed,
-      failed_tests: body.aggregate.conversation_tests.failed,
+      total_calls: body.conversation_results.length,
+      passed_calls: convAgg.passed,
+      failed_calls: convAgg.failed,
       aggregate: body.aggregate,
     };
 
