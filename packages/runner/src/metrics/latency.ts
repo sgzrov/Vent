@@ -98,7 +98,7 @@ export function computeLatencyMetrics(turns: ConversationTurn[], connectLatencyM
 }
 
 /**
- * Compute harness overhead — TTS and STT timing from test infrastructure.
+ * Compute harness overhead — TTS and STT timing from call infrastructure.
  * These are Vent's own API call durations, not the agent's internal timings.
  */
 export function computeHarnessOverhead(turns: ConversationTurn[]): HarnessOverhead | undefined {

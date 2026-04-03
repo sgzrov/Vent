@@ -8,7 +8,7 @@
  */
 
 import type { AudioChannel } from "@vent/adapters";
-import type { AudioTestResult } from "@vent/shared";
+import type { AudioCallResult } from "@vent/shared";
 import { synthesize } from "@vent/voice";
 import { collectUntilEndOfTurn, transcribeAudio } from "./helpers.js";
 
@@ -24,10 +24,10 @@ const DROP_FACTOR = 0.05;
 const SPIKE_FACTOR = 3.0;
 const DROP_CONSECUTIVE_MIN = 2;
 
-export async function runAudioQualityTest(
+export async function runAudioQualityCall(
   channel: AudioChannel,
   config?: { prompt?: string },
-): Promise<AudioTestResult> {
+): Promise<AudioCallResult> {
   const prompt = config?.prompt ?? DEFAULT_PROMPT;
   const startTime = performance.now();
 
@@ -41,7 +41,7 @@ export async function runAudioQualityTest(
 
   if (agentAudio.length === 0) {
     return {
-      test_name: "audio_quality",
+      call_name: "audio_quality",
       status: "error",
       metrics: { response_received: false },
       transcriptions: { response: null },
@@ -161,7 +161,7 @@ export async function runAudioQualityTest(
     : 0;
 
   return {
-    test_name: "audio_quality",
+    call_name: "audio_quality",
     status: "completed",
     metrics: {
       duration_ms_audio: audioDurationMs,

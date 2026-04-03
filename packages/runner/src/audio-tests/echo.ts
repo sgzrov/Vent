@@ -11,7 +11,7 @@
  */
 
 import type { AudioChannel } from "@vent/adapters";
-import type { AudioTestResult } from "@vent/shared";
+import type { AudioCallResult } from "@vent/shared";
 import { synthesize } from "@vent/voice";
 import { collectUntilEndOfTurn, waitForSpeech, streamSilence, transcribeAudio } from "./helpers.js";
 
@@ -20,10 +20,10 @@ const DEFAULT_SILENCE_MS = 20000;
 const ECHO_WINDOW_MS = 3000;
 const RECOVERY_PROMPT = "Hello, are you still there? I had a quick question.";
 
-export async function runEchoTest(
+export async function runEchoCall(
   channel: AudioChannel,
   config?: { prompt?: string; silence_duration_ms?: number },
-): Promise<AudioTestResult> {
+): Promise<AudioCallResult> {
   const prompt = config?.prompt ?? DEFAULT_PROMPT;
   const silenceDurationMs = config?.silence_duration_ms ?? DEFAULT_SILENCE_MS;
   const startTime = performance.now();
@@ -71,7 +71,7 @@ export async function runEchoTest(
   const recoveryResponded = !recoveryTimedOut && recoveryResponseAudio.length > 0;
 
   return {
-    test_name: "echo",
+    call_name: "echo",
     status: "completed",
     metrics: {
       unprompted_utterances: unpromptedCount,

@@ -1,5 +1,5 @@
 /**
- * Conversation test executor — runs a full dynamic conversation loop.
+ * Conversation call executor — runs a full dynamic conversation loop.
  *
  * Flow:
  * 1. Caller LLM generates text from persona prompt
@@ -12,8 +12,8 @@
 
 import type { AudioChannel } from "@vent/adapters";
 import type {
-  ConversationTestSpec,
-  ConversationTestResult,
+  ConversationCallSpec,
+  ConversationCallResult,
   ConversationTurn,
   ConversationMetrics,
   ObservedToolCall,
@@ -48,10 +48,21 @@ function sinceStartMs(startTime: number): number {
   return Math.round(performance.now() - startTime);
 }
 
-export async function runConversationTest(
-  spec: ConversationTestSpec,
+function recordTurnAudio(
+  turnAudioData: TurnAudioData[],
+  audioStartTimestampMs: number,
+  data: Omit<TurnAudioData, "audioStartTimestampMs">,
+): void {
+  turnAudioData.push({
+    ...data,
+    audioStartTimestampMs: Math.round(audioStartTimestampMs),
+  });
+}
+
+export async function runConversationCall(
+  spec: ConversationCallSpec,
   channel: AudioChannel,
-): Promise<ConversationTestResult> {
+): Promise<ConversationCallResult> {
   const startTime = performance.now();
   const transcript: ConversationTurn[] = [];
   const ttfbValues: number[] = [];
@@ -119,6 +130,18 @@ export async function runConversationTest(
   const turnSignalQualities: AudioQualityMetrics[] = [];
   const audioActionResults: AudioActionResult[] = [];
   let agentText: string | null = null;
+
+  const resolveAgentAudioStartTimestampMs = (
+    turnEndTimestampMs: number,
+    audioDurationMs: number,
+    anchorTimestampMs?: number,
+    ttfbMs?: number,
+  ): number => {
+    if (anchorTimestampMs != null && ttfbMs != null) {
+      return Math.max(0, Math.round(anchorTimestampMs + ttfbMs));
+    }
+    return Math.max(0, Math.round(turnEndTimestampMs - audioDurationMs));
+  };
 
   // Track channel disconnect — when the agent hangs up, the call ends naturally.
   let channelDisconnected = false;
@@ -202,8 +225,13 @@ export async function runConversationTest(
           const agentTimestamp = performance.now() - startTime;
           const audioDurationMs = Math.round((agentAudio.length / 2 / 24000) * 1000);
           const speechSegments = batchVAD.analyze(agentAudio);
+          if (spec.prosody) agentAudioBuffers.push(Buffer.from(agentAudio));
           turnSignalQualities.push(analyzeAudioQuality(agentAudio, speechSegments));
-          turnAudioData.push({ role: "agent", audioDurationMs, speechSegments });
+          recordTurnAudio(turnAudioData, resolveAgentAudioStartTimestampMs(agentTimestamp, audioDurationMs), {
+            role: "agent",
+            audioDurationMs,
+            speechSegments,
+          });
           transcript.push({
             role: "agent",
             text: greetingText,
@@ -231,7 +259,11 @@ export async function runConversationTest(
           text: actionLabel,
           timestamp_ms: Math.round(callerTimestamp),
         });
-        turnAudioData.push({ role: "caller", audioDurationMs: 0 });
+        recordTurnAudio(turnAudioData, callerTimestamp, {
+          role: "caller",
+          audioDurationMs: 0,
+          callerDecisionMode: undefined,
+        });
 
         turnVAD.silenceThresholdMs = adaptiveThreshold.thresholdMs;
 
@@ -243,7 +275,11 @@ export async function runConversationTest(
         agentText = actionAgentText;
   
         const agentTimestamp = performance.now() - startTime;
-        turnAudioData.push({ role: "agent", audioDurationMs: 0 });
+        recordTurnAudio(turnAudioData, agentTimestamp, {
+          role: "agent",
+          audioDurationMs: 0,
+          speechSegments: [],
+        });
         transcript.push({
           role: "agent",
           text: actionAgentText,
@@ -347,7 +383,7 @@ export async function runConversationTest(
           const speechSegments = batchVAD.analyze(agentAudio);
           if (spec.prosody) agentAudioBuffers.push(Buffer.from(agentAudio));
           turnSignalQualities.push(analyzeAudioQuality(agentAudio, speechSegments));
-          turnAudioData.push({
+          recordTurnAudio(turnAudioData, resolveAgentAudioStartTimestampMs(agentTimestamp, agentAudioDurationMs), {
             role: "agent",
             audioDurationMs: agentAudioDurationMs,
             speechSegments,
@@ -369,7 +405,11 @@ export async function runConversationTest(
             `[turn-text] turn=${turn} caller=wait source=empty-audio chars=0 timedOut=${timedOut} ` +
             `firstChunk=${stats.firstChunkAt !== null} speechOnset=${stats.speechOnsetAt !== null}`
           );
-          turnAudioData.push({ role: "agent", audioDurationMs: 0 });
+          recordTurnAudio(turnAudioData, agentTimestamp, {
+            role: "agent",
+            audioDurationMs: 0,
+            speechSegments: [],
+          });
           transcript.push({
             role: "agent",
             text: "",
@@ -427,7 +467,11 @@ export async function runConversationTest(
         audio_duration_ms: audioDurationMs,
         tts_ms: ttsMs,
       });
-      turnAudioData.push({ role: "caller", audioDurationMs });
+      recordTurnAudio(turnAudioData, callerTimestamp, {
+        role: "caller",
+        audioDurationMs,
+        callerDecisionMode: callerDecision.mode,
+      });
 
       // Handle noise_on_caller: mix noise into caller audio before sending
       if (audioAction?.action === "noise_on_caller") {
@@ -456,8 +500,12 @@ export async function runConversationTest(
         channel.off("audio", feedSTT);
 
         agentText = actionAgentText;
-          const agentTimestamp = performance.now() - startTime;
-        turnAudioData.push({ role: "agent", audioDurationMs: 0 });
+        const agentTimestamp = performance.now() - startTime;
+        recordTurnAudio(turnAudioData, agentTimestamp, {
+          role: "agent",
+          audioDurationMs: 0,
+          speechSegments: [],
+        });
         transcript.push({
           role: "agent",
           text: actionAgentText,
@@ -476,8 +524,12 @@ export async function runConversationTest(
         channel.off("audio", feedSTT);
 
         agentText = actionAgentText;
-          const agentTimestamp = performance.now() - startTime;
-        turnAudioData.push({ role: "agent", audioDurationMs: 0 });
+        const agentTimestamp = performance.now() - startTime;
+        recordTurnAudio(turnAudioData, agentTimestamp, {
+          role: "agent",
+          audioDurationMs: 0,
+          speechSegments: [],
+        });
         transcript.push({
           role: "agent",
           text: actionAgentText,
@@ -548,14 +600,27 @@ export async function runConversationTest(
 
           const agentTimestamp = performance.now() - startTime;
           const audioDurationMs = Math.round((peekResult.audio.length / 2 / 24000) * 1000);
-          turnAudioData.push({ role: "agent", audioDurationMs });
+          const ttfbMs = peekResult.stats.firstChunkAt ? Math.max(0, peekResult.stats.firstChunkAt - sendTime) : undefined;
+          const ttfwMs = peekResult.stats.speechOnsetAt ? Math.max(0, peekResult.stats.speechOnsetAt - sendTime) : undefined;
+          const speechSegments = batchVAD.analyze(peekResult.audio);
+          if (spec.prosody) agentAudioBuffers.push(Buffer.from(peekResult.audio));
+          turnSignalQualities.push(analyzeAudioQuality(peekResult.audio, speechSegments));
+          recordTurnAudio(
+            turnAudioData,
+            resolveAgentAudioStartTimestampMs(agentTimestamp, audioDurationMs, callerTimestamp, ttfbMs),
+            {
+              role: "agent",
+              audioDurationMs,
+              speechSegments,
+            },
+          );
           transcript.push({
             role: "agent",
             text: agentText,
             timestamp_ms: Math.round(agentTimestamp),
             audio_duration_ms: audioDurationMs,
-            ttfb_ms: peekResult.stats.firstChunkAt ? Math.max(0, peekResult.stats.firstChunkAt - sendTime) : undefined,
-            ttfw_ms: peekResult.stats.speechOnsetAt ? Math.max(0, peekResult.stats.speechOnsetAt - sendTime) : undefined,
+            ttfb_ms: ttfbMs,
+            ttfw_ms: ttfwMs,
           });
           if (shouldStopAfterAgentReply) break;
           continue;
@@ -599,16 +664,29 @@ export async function runConversationTest(
           adaptiveThreshold.update(restStats);
 
           const agentTimestamp = performance.now() - startTime;
-          const totalAudioLen = peekResult.audio.length + restAudio.length;
-          const audioDurationMs = Math.round((totalAudioLen / 2 / 24000) * 1000);
-          turnAudioData.push({ role: "agent", audioDurationMs });
+          const combinedAudio = Buffer.concat([peekResult.audio, restAudio]);
+          const audioDurationMs = Math.round((combinedAudio.length / 2 / 24000) * 1000);
+          const ttfbMs = peekResult.stats.firstChunkAt ? Math.max(0, peekResult.stats.firstChunkAt - sendTime) : undefined;
+          const ttfwMs = peekResult.stats.speechOnsetAt ? Math.max(0, peekResult.stats.speechOnsetAt - sendTime) : undefined;
+          const speechSegments = batchVAD.analyze(combinedAudio);
+          if (spec.prosody) agentAudioBuffers.push(Buffer.from(combinedAudio));
+          turnSignalQualities.push(analyzeAudioQuality(combinedAudio, speechSegments));
+          recordTurnAudio(
+            turnAudioData,
+            resolveAgentAudioStartTimestampMs(agentTimestamp, audioDurationMs, callerTimestamp, ttfbMs),
+            {
+              role: "agent",
+              audioDurationMs,
+              speechSegments,
+            },
+          );
           transcript.push({
             role: "agent",
             text: agentText,
             timestamp_ms: Math.round(agentTimestamp),
             audio_duration_ms: audioDurationMs,
-            ttfb_ms: peekResult.stats.firstChunkAt ? Math.max(0, peekResult.stats.firstChunkAt - sendTime) : undefined,
-            ttfw_ms: peekResult.stats.speechOnsetAt ? Math.max(0, peekResult.stats.speechOnsetAt - sendTime) : undefined,
+            ttfb_ms: ttfbMs,
+            ttfw_ms: ttfwMs,
           });
           if (shouldStopAfterAgentReply) break;
           continue;
@@ -622,12 +700,28 @@ export async function runConversationTest(
         // Record partial agent turn (interrupted)
         const agentTimestamp = performance.now() - startTime;
         const preAudioDurationMs = Math.round((peekResult.audio.length / 2 / 24000) * 1000);
-        turnAudioData.push({ role: "agent", audioDurationMs: preAudioDurationMs });
+        const preTtfbMs = peekResult.stats.firstChunkAt ? Math.max(0, peekResult.stats.firstChunkAt - sendTime) : undefined;
+        const preTtfwMs = peekResult.stats.speechOnsetAt ? Math.max(0, peekResult.stats.speechOnsetAt - sendTime) : undefined;
+        const preSpeechSegments = batchVAD.analyze(peekResult.audio);
+        if (spec.prosody) agentAudioBuffers.push(Buffer.from(peekResult.audio));
+        turnSignalQualities.push(analyzeAudioQuality(peekResult.audio, preSpeechSegments));
+        recordTurnAudio(
+          turnAudioData,
+          resolveAgentAudioStartTimestampMs(agentTimestamp, preAudioDurationMs, callerTimestamp, preTtfbMs),
+          {
+            role: "agent",
+            audioDurationMs: preAudioDurationMs,
+            speechSegments: preSpeechSegments,
+            interrupted: true,
+          },
+        );
         transcript.push({
           role: "agent",
           text: partialAgentText,
           timestamp_ms: Math.round(agentTimestamp),
           audio_duration_ms: preAudioDurationMs,
+          ttfb_ms: preTtfbMs,
+          ttfw_ms: preTtfwMs,
           interrupted: true,
         });
 
@@ -640,13 +734,18 @@ export async function runConversationTest(
         sendTime = Date.now();
         await channel.sendAudio(interruptAudio, { raw: true });
 
-        const callerTimestamp = performance.now() - startTime;
+        const interruptCallerTimestamp = performance.now() - startTime;
         const interruptAudioDurationMs = Math.round((interruptAudio.length / 2 / 24000) * 1000);
-        turnAudioData.push({ role: "caller", audioDurationMs: interruptAudioDurationMs });
+        recordTurnAudio(turnAudioData, interruptCallerTimestamp, {
+          role: "caller",
+          audioDurationMs: interruptAudioDurationMs,
+          callerDecisionMode: "continue",
+          isInterruption: true,
+        });
         transcript.push({
           role: "caller",
           text: interruptText,
-          timestamp_ms: Math.round(callerTimestamp),
+          timestamp_ms: Math.round(interruptCallerTimestamp),
           caller_decision_mode: "continue",
           audio_duration_ms: interruptAudioDurationMs,
           is_interruption: true,
@@ -685,12 +784,27 @@ export async function runConversationTest(
         agentText = postAgentText;
         const postAgentTimestamp = performance.now() - startTime;
         const postAudioDurationMs = Math.round((postAudio.length / 2 / 24000) * 1000);
-        turnAudioData.push({ role: "agent", audioDurationMs: postAudioDurationMs });
+        const postTtfbMs = postStats.firstChunkAt ? Math.max(0, postStats.firstChunkAt - interruptTime) : undefined;
+        const postTtfwMs = postStats.speechOnsetAt ? Math.max(0, postStats.speechOnsetAt - interruptTime) : undefined;
+        const postSpeechSegments = batchVAD.analyze(postAudio);
+        if (spec.prosody) agentAudioBuffers.push(Buffer.from(postAudio));
+        turnSignalQualities.push(analyzeAudioQuality(postAudio, postSpeechSegments));
+        recordTurnAudio(
+          turnAudioData,
+          resolveAgentAudioStartTimestampMs(postAgentTimestamp, postAudioDurationMs, interruptCallerTimestamp, postTtfbMs),
+          {
+            role: "agent",
+            audioDurationMs: postAudioDurationMs,
+            speechSegments: postSpeechSegments,
+          },
+        );
         transcript.push({
           role: "agent",
           text: postAgentText,
           timestamp_ms: Math.round(postAgentTimestamp),
           audio_duration_ms: postAudioDurationMs,
+          ttfb_ms: postTtfbMs,
+          ttfw_ms: postTtfwMs,
         });
 
         if (shouldStopAfterAgentReply) break;
@@ -804,11 +918,15 @@ export async function runConversationTest(
         if (spec.prosody) agentAudioBuffers.push(Buffer.from(agentAudio));
         // Signal quality analysis on raw audio buffer
         turnSignalQualities.push(analyzeAudioQuality(agentAudio, speechSegments));
-        turnAudioData.push({
-          role: "agent",
-          audioDurationMs: agentAudioDurationMs,
-          speechSegments,
-        });
+        recordTurnAudio(
+          turnAudioData,
+          resolveAgentAudioStartTimestampMs(agentTimestamp, agentAudioDurationMs, callerTimestamp, turnTtfb),
+          {
+            role: "agent",
+            audioDurationMs: agentAudioDurationMs,
+            speechSegments,
+          },
+        );
 
         transcript.push({
           role: "agent",
@@ -828,7 +946,11 @@ export async function runConversationTest(
           `[turn-text] turn=${turn} source=empty-audio chars=0 timedOut=${timedOut} ` +
           `firstChunk=${stats.firstChunkAt !== null} speechOnset=${stats.speechOnsetAt !== null}`
         );
-        turnAudioData.push({ role: "agent", audioDurationMs: 0 });
+        recordTurnAudio(turnAudioData, agentTimestamp, {
+          role: "agent",
+          audioDurationMs: 0,
+          speechSegments: [],
+        });
         transcript.push({
           role: "agent",
           text: "",
