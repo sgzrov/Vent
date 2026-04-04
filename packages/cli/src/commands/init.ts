@@ -1,26 +1,15 @@
-import { loadAccessToken, saveAccessToken, validateAccessTokenFormat, API_BASE } from "../lib/config.js";
+import { loadAccessToken, saveAccessToken, API_BASE } from "../lib/config.js";
 import { detectGitHubToken } from "../lib/github.js";
 import { printError, printSuccess } from "../lib/output.js";
 import { installSkillsAndScaffold } from "../lib/setup.js";
 
-interface InitArgs {
-  accessToken?: string;
-}
-
-export async function initCommand(args: InitArgs): Promise<number> {
+export async function initCommand(): Promise<number> {
   const cwd = process.cwd();
 
   // 1. Check/save access token
-  let token = args.accessToken ?? (await loadAccessToken());
+  const token = await loadAccessToken();
 
-  if (args.accessToken) {
-    if (!validateAccessTokenFormat(args.accessToken)) {
-      printError("Invalid Vent access token. Tokens start with 'vent_'.");
-      return 2;
-    }
-    await saveAccessToken(args.accessToken);
-    printSuccess("Vent access token saved to ~/.vent/credentials", { force: true });
-  } else if (token) {
+  if (token) {
     printSuccess("Authenticated.", { force: true });
   } else {
     // No token — try GitHub identity first, then anonymous bootstrap

@@ -4,11 +4,10 @@ import { printError, printSuccess } from "../lib/output.js";
 
 interface StopArgs {
   runId: string;
-  accessToken?: string;
 }
 
 export async function stopCommand(args: StopArgs): Promise<number> {
-  const accessToken = args.accessToken ?? (await loadAccessToken());
+  const accessToken = await loadAccessToken();
   if (!accessToken) {
     printError("Not authenticated. Run `npx vent-hq init` first.");
     return 2;
