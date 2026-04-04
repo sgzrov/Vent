@@ -4,6 +4,36 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+catalogs:
+  default:
+    '@types/node':
+      specifier: ^20.0.0
+      version: 20.19.33
+    '@types/ws':
+      specifier: ^8.5.0
+      version: 8.18.1
+    bullmq:
+      specifier: ^5.30.0
+      version: 5.69.3
+    drizzle-orm:
+      specifier: ^0.38.0
+      version: 0.38.4
+    esbuild:
+      specifier: ^0.24.0
+      version: 0.24.2
+    tsx:
+      specifier: ^4.19.0
+      version: 4.21.0
+    typescript:
+      specifier: ^5.7.0
+      version: 5.9.3
+    ws:
+      specifier: ^8.18.0
+      version: 8.19.0
+    zod:
+      specifier: ^3.24.0
+      version: 3.25.76
+
 overrides:
   ioredis: 5.9.3
 
@@ -57,10 +87,10 @@ importers:
         specifier: ^8.6.0
         version: 8.6.0
       bullmq:
-        specifier: ^5.30.0
+        specifier: 'catalog:'
         version: 5.69.3
       drizzle-orm:
-        specifier: ^0.38.0
+        specifier: 'catalog:'
         version: 0.38.4(@types/react@19.2.14)(postgres@3.4.8)(react@19.2.4)
       fastify:
         specifier: ^5.2.0
@@ -72,17 +102,17 @@ importers:
         specifier: 5.9.3
         version: 5.9.3
       zod:
-        specifier: ^3.24.0
+        specifier: 'catalog:'
         version: 3.25.76
     devDependencies:
       esbuild:
-        specifier: ^0.24.0
+        specifier: 'catalog:'
         version: 0.24.2
       tsx:
-        specifier: ^4.19.0
+        specifier: 'catalog:'
         version: 4.21.0
       typescript:
-        specifier: ^5.7.0
+        specifier: 'catalog:'
         version: 5.9.3
 
   apps/dashboard:
@@ -143,7 +173,7 @@ importers:
         specifier: ^3.4.17
         version: 3.4.19(tsx@4.21.0)
       typescript:
-        specifier: ^5.7.0
+        specifier: 'catalog:'
         version: 5.9.3
 
   apps/worker:
@@ -164,20 +194,20 @@ importers:
         specifier: workspace:*
         version: link:../../packages/shared
       bullmq:
-        specifier: ^5.30.0
+        specifier: 'catalog:'
         version: 5.69.3
       ioredis:
         specifier: 5.9.3
         version: 5.9.3
     devDependencies:
       esbuild:
-        specifier: ^0.24.0
+        specifier: 'catalog:'
         version: 0.24.2
       tsx:
-        specifier: ^4.19.0
+        specifier: 'catalog:'
         version: 4.21.0
       typescript:
-        specifier: ^5.7.0
+        specifier: 'catalog:'
         version: 5.9.3
 
   packages/adapters:
@@ -207,17 +237,17 @@ importers:
         specifier: ^5.12.2
         version: 5.12.2
       ws:
-        specifier: ^8.18.0
+        specifier: 'catalog:'
         version: 8.19.0
     devDependencies:
       '@types/ws':
-        specifier: ^8.5.0
+        specifier: 'catalog:'
         version: 8.18.1
       tsx:
-        specifier: ^4.19.0
+        specifier: 'catalog:'
         version: 4.21.0
       typescript:
-        specifier: ^5.7.0
+        specifier: 'catalog:'
         version: 5.9.3
 
   packages/artifacts:
@@ -230,7 +260,7 @@ importers:
         version: 3.994.0
     devDependencies:
       typescript:
-        specifier: ^5.7.0
+        specifier: 'catalog:'
         version: 5.9.3
 
   packages/cli:
@@ -239,11 +269,11 @@ importers:
         specifier: ^1.1.0
         version: 1.1.0
       ws:
-        specifier: ^8.18.0
+        specifier: 'catalog:'
         version: 8.19.0
     devDependencies:
       '@types/ws':
-        specifier: ^8.5.0
+        specifier: 'catalog:'
         version: 8.18.1
       '@vent/relay-client':
         specifier: workspace:*
@@ -252,29 +282,29 @@ importers:
         specifier: workspace:*
         version: link:../shared
       esbuild:
-        specifier: ^0.24.0
+        specifier: 'catalog:'
         version: 0.24.2
 
   packages/db:
     dependencies:
       drizzle-orm:
-        specifier: ^0.38.0
+        specifier: 'catalog:'
         version: 0.38.4(@types/react@19.2.14)(postgres@3.4.8)(react@19.2.4)
       postgres:
         specifier: ^3.4.0
         version: 3.4.8
     devDependencies:
       '@types/node':
-        specifier: ^20.0.0
+        specifier: 'catalog:'
         version: 20.19.33
       drizzle-kit:
         specifier: ^0.30.0
         version: 0.30.6
       tsx:
-        specifier: ^4.19.0
+        specifier: 'catalog:'
         version: 4.21.0
       typescript:
-        specifier: ^5.7.0
+        specifier: 'catalog:'
         version: 5.9.3
 
   packages/platform-connections:
@@ -284,16 +314,16 @@ importers:
         version: link:../shared
     devDependencies:
       tsx:
-        specifier: ^4.19.0
+        specifier: 'catalog:'
         version: 4.21.0
       typescript:
-        specifier: ^5.7.0
+        specifier: 'catalog:'
         version: 5.9.3
 
   packages/relay-client:
     devDependencies:
       esbuild:
-        specifier: ^0.24.0
+        specifier: 'catalog:'
         version: 0.24.2
 
   packages/runner:
@@ -321,20 +351,20 @@ importers:
         version: 0.15.15
     devDependencies:
       tsx:
-        specifier: ^4.19.0
+        specifier: 'catalog:'
         version: 4.21.0
       typescript:
-        specifier: ^5.7.0
+        specifier: 'catalog:'
         version: 5.9.3
 
   packages/shared:
     dependencies:
       zod:
-        specifier: ^3.24.0
+        specifier: 'catalog:'
         version: 3.25.76
     devDependencies:
       typescript:
-        specifier: ^5.7.0
+        specifier: 'catalog:'
         version: 5.9.3
 
   packages/voice:
@@ -346,14 +376,14 @@ importers:
         specifier: workspace:*
         version: link:../shared
       ws:
-        specifier: ^8.18.0
+        specifier: 'catalog:'
         version: 8.19.0
     devDependencies:
       '@types/ws':
-        specifier: ^8.5.0
+        specifier: 'catalog:'
         version: 8.18.1
       typescript:
-        specifier: ^5.7.0
+        specifier: 'catalog:'
         version: 5.9.3
 
 packages:

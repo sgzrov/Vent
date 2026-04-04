@@ -16,12 +16,12 @@
     "@vent/platform-connections": "workspace:*",
     "@vent/runner": "workspace:*",
     "@vent/adapters": "workspace:*",
-    "bullmq": "^5.30.0",
-    "ioredis": "^5.4.0"
+    "bullmq": "catalog:",
+    "ioredis": "catalog:"
   },
   "devDependencies": {
-    "esbuild": "^0.24.0",
-    "tsx": "^4.19.0",
-    "typescript": "^5.7.0"
+    "esbuild": "catalog:",
+    "tsx": "catalog:",
+    "typescript": "catalog:"
   }
 }

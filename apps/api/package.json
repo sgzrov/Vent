@@ -21,16 +21,16 @@
     "@vent/platform-connections": "workspace:*",
     "@vent/shared": "workspace:*",
     "@workos-inc/node": "^8.6.0",
-    "bullmq": "^5.30.0",
-    "drizzle-orm": "^0.38.0",
+    "bullmq": "catalog:",
+    "drizzle-orm": "catalog:",
     "fastify": "^5.2.0",
     "fastify-plugin": "^5.0.0",
-    "ioredis": "^5.4.0",
-    "zod": "^3.24.0"
+    "ioredis": "catalog:",
+    "zod": "catalog:"
   },
   "devDependencies": {
-    "esbuild": "^0.24.0",
-    "tsx": "^4.19.0",
-    "typescript": "^5.7.0"
+    "esbuild": "catalog:",
+    "tsx": "catalog:",
+    "typescript": "catalog:"
   }
 }
