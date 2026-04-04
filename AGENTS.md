@@ -121,6 +121,7 @@ Each `vent run` executes a single call. Run N calls in parallel via separate she
 - `NEXT_PUBLIC_API_URL` — API URL for dashboard client-side requests
 - `NEXT_PUBLIC_WORKOS_REDIRECT_URI` — WorkOS OAuth callback URL
 - `RUNNER_CALLBACK_SECRET` — HMAC secret for worker→API callbacks
+- `RUNNER_PUBLIC_HOST`, `RUNNER_LISTEN_PORT` — Public SIP host/port for Bland/Twilio worker callbacks
 - `WORKOS_API_KEY`, `WORKOS_CLIENT_ID`, `WORKOS_COOKIE_PASSWORD` — WorkOS auth
 - `PLATFORM_CONNECTIONS_MASTER_KEY` — 32-byte hex key for encrypting platform credentials (`openssl rand -hex 32`)
 - `ANTHROPIC_API_KEY`, `DEEPGRAM_API_KEY`, `HUME_API_KEY` — AI/voice providers
