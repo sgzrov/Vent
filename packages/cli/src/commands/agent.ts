@@ -2,21 +2,17 @@ import * as fs from "node:fs/promises";
 import * as net from "node:net";
 import { apiFetch } from "../lib/api.js";
 import { loadAccessToken } from "../lib/config.js";
-import { debug, printError, printInfo, printSuccess, setVerbose } from "../lib/output.js";
+import { debug, printError, printInfo, printSuccess } from "../lib/output.js";
 import { startAgentSession, type RelayHandle } from "../lib/relay.js";
 import type { RelayDisconnectedInfo } from "@vent/relay-client";
 
 interface AgentStartArgs {
   config?: string;
   file?: string;
-  accessToken?: string;
-  json: boolean;
-  verbose?: boolean;
 }
 
 interface AgentStopArgs {
   sessionId: string;
-  accessToken?: string;
 }
 
 interface AgentSessionResponse {
@@ -29,9 +25,7 @@ interface AgentSessionResponse {
 }
 
 export async function agentStartCommand(args: AgentStartArgs): Promise<number> {
-  if (args.verbose) setVerbose(true);
-
-  const accessToken = args.accessToken ?? (await loadAccessToken());
+  const accessToken = await loadAccessToken();
   if (!accessToken) {
     printError("No Vent access token found. Set VENT_ACCESS_TOKEN, run `npx vent-hq login`, or pass --access-token.");
     return 2;
@@ -99,15 +93,12 @@ export async function agentStartCommand(args: AgentStartArgs): Promise<number> {
     const sessionData = {
       session_id: session.session_id,
       agent_port: session.agent_port,
-      run_example: `npx vent-hq run -f <suite.json> --session ${session.session_id} --call <name>`,
+      run_example: `npx vent-hq run -f <suite.json> --session ${session.session_id}`,
     };
 
-    if (args.json) {
-      process.stdout.write(JSON.stringify(sessionData) + "\n");
-    } else {
-      printSuccess(`Agent session ready: ${session.session_id}`, { force: true });
-      printInfo(`Run calls with --session ${session.session_id}`, { force: true });
-    }
+    process.stdout.write(JSON.stringify(sessionData) + "\n");
+    printSuccess(`Agent session ready: ${session.session_id}`, { force: true });
+    printInfo(`Run calls with --session ${session.session_id}`, { force: true });
 
     const exitCode = await waitForSessionExit(relay);
     await relay.cleanup();
@@ -124,7 +115,7 @@ export async function agentStartCommand(args: AgentStartArgs): Promise<number> {
 }
 
 export async function agentStopCommand(args: AgentStopArgs): Promise<number> {
-  const accessToken = args.accessToken ?? (await loadAccessToken());
+  const accessToken = await loadAccessToken();
   if (!accessToken) {
     printError("No Vent access token found. Set VENT_ACCESS_TOKEN, run `npx vent-hq login`, or pass --access-token.");
     return 2;

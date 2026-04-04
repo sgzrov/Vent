@@ -13,7 +13,7 @@ import {
   mergePlatformConfig,
   type EncryptedSecretsEnvelope,
 } from "@vent/platform-connections";
-import { executeCalls } from "@vent/runner/executor";
+import { executeCall } from "@vent/runner/executor";
 
 // ---------------------------------------------------------------------------
 // Event emission — writes to DB and notifies API for SSE broadcast
@@ -99,7 +99,7 @@ async function executeRemoteRun(db: Database, job: RunJob): Promise<void> {
   const adapterType = (job.adapter ?? "websocket") as AdapterType;
   const agentUrl = job.agent_url ?? "http://localhost:3001";
   const platform = await resolvePlatformConfig(db, job.platform_connection_id);
-  const callSpec = job.call_spec as CallSpec;
+  const callSpec = (job.call_spec as unknown as CallSpec).call;
 
   const channelConfig: AudioChannelConfig = {
     adapter: adapterType,
@@ -107,21 +107,12 @@ async function executeRemoteRun(db: Database, job: RunJob): Promise<void> {
     platform,
   };
 
-  const allSpecs = callSpec.conversation_calls ?? [];
-  const totalCalls = allSpecs.reduce(
-    (sum, t) => sum + ((t as { repeat?: number }).repeat ?? 1), 0
-  );
-  let completedCalls = 0;
-
   try {
-    const platformConcurrency = platform?.max_concurrency as number | undefined;
-    const { status, conversationResults, aggregate } = await executeCalls({
+    const { status, conversationResult, aggregate } = await executeCall({
       runId: job.run_id,
       callSpec,
       channelConfig,
-      concurrencyLimit: platformConcurrency,
       onCallComplete: async (result) => {
-        completedCalls++;
         const callName = result.name ?? "conversation";
 
         try {
@@ -133,8 +124,8 @@ async function executeRemoteRun(db: Database, job: RunJob): Promise<void> {
             },
             body: JSON.stringify({
               run_id: job.run_id,
-              completed: completedCalls,
-              total: totalCalls,
+              completed: 1,
+              total: 1,
               call_type: "conversation",
               call_name: callName,
               status: result.status,
@@ -158,7 +149,7 @@ async function executeRemoteRun(db: Database, job: RunJob): Promise<void> {
       body: JSON.stringify({
         run_id: job.run_id,
         status,
-        conversation_results: conversationResults,
+        conversation_result: conversationResult,
         aggregate,
       }),
     });
@@ -210,21 +201,14 @@ async function executeSessionRun(db: Database, job: RunJob, relayMachineId: stri
     relayHeaders,
   };
 
-  const callSpec = job.call_spec as CallSpec;
-  const allSpecs = callSpec.conversation_calls ?? [];
-  const totalCalls = allSpecs.reduce(
-    (sum, t) => sum + ((t as { repeat?: number }).repeat ?? 1), 0
-  );
-  let completedCalls = 0;
+  const callSpec = (job.call_spec as unknown as CallSpec).call;
 
   try {
-    const { status, conversationResults, aggregate } = await executeCalls({
+    const { status, conversationResult, aggregate } = await executeCall({
       runId: job.run_id,
       callSpec,
       channelConfig,
-      concurrencyLimit: undefined,
       onCallComplete: async (result) => {
-        completedCalls++;
         const callName = result.name ?? "conversation";
 
         try {
@@ -233,8 +217,8 @@ async function executeSessionRun(db: Database, job: RunJob, relayMachineId: stri
             headers: { "Content-Type": "application/json", [RUNNER_CALLBACK_HEADER]: callbackSecret },
             body: JSON.stringify({
               run_id: job.run_id,
-              completed: completedCalls,
-              total: totalCalls,
+              completed: 1,
+              total: 1,
               call_type: "conversation",
               call_name: callName,
               status: result.status,
@@ -255,7 +239,7 @@ async function executeSessionRun(db: Database, job: RunJob, relayMachineId: stri
       body: JSON.stringify({
         run_id: job.run_id,
         status,
-        conversation_results: conversationResults,
+        conversation_result: conversationResult,
         aggregate,
       }),
     });

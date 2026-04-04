@@ -1,12 +1,12 @@
 /**
- * Call execution logic — conversation and red team calls run in parallel with a concurrency limiter.
+ * Single call execution — runs one conversation call against a voice agent.
  * Audio quality analysis, latency drift, and echo detection are integrated
- * into each call (no standalone infrastructure probes).
+ * into the call (no standalone infrastructure probes).
  */
 
 import { randomUUID } from "node:crypto";
 import type {
-  CallSpec,
+  ConversationCallSpec,
   ConversationCallResult,
   RunAggregateV2,
 } from "@vent/shared";
@@ -18,30 +18,18 @@ export interface CallStartInfo {
   call_name: string;
 }
 
-export interface ExecuteCallsOpts {
-  callSpec: CallSpec;
+export interface ExecuteCallOpts {
+  callSpec: ConversationCallSpec;
   channelConfig: AudioChannelConfig;
   runId?: string;
-  concurrencyLimit?: number;
   onCallStart?: (info: CallStartInfo) => void;
   onCallComplete?: (result: ConversationCallResult) => void | Promise<void>;
 }
 
-export interface ExecuteCallsResult {
+export interface ExecuteCallResult {
   status: "pass" | "fail";
-  conversationResults: ConversationCallResult[];
+  conversationResult: ConversationCallResult;
   aggregate: RunAggregateV2;
-}
-
-/**
- * Circuit breaker state — shared across all concurrent workers.
- * Aborts the run after consecutive connection failures to avoid
- * N identical timeouts when the agent is unreachable.
- */
-interface ConcurrencyState {
-  aborted: boolean;
-  abortReason: string | null;
-  consecutiveConnectionFailures: number;
 }
 
 interface ActiveRecordingUpload {
@@ -211,72 +199,15 @@ async function startRecordingUpload(
   };
 }
 
-const CONNECTION_ERROR_PATTERNS = [
-  "ECONNREFUSED",
-  "ECONNRESET",
-  "ETIMEDOUT",
-  "EHOSTUNREACH",
-  "WebSocket",
-  "websocket",
-  "connect",
-  "Agent unreachable",
-];
-
-function isConnectionError(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message : String(err);
-  return CONNECTION_ERROR_PATTERNS.some((p) => msg.includes(p));
-}
-
-const CIRCUIT_BREAKER_THRESHOLD = 3;
-
-/**
- * Run a set of concurrency-limited tasks, returning results in completion order.
- * Supports circuit breaker — if state.aborted is set, remaining tasks are skipped.
- */
-async function runWithConcurrency<T>(
-  tasks: (() => Promise<T>)[],
-  limit: number,
-  state?: ConcurrencyState,
-  onAbort?: () => T,
-): Promise<T[]> {
-  const results: T[] = [];
-  let index = 0;
-
-  async function next(): Promise<void> {
-    while (index < tasks.length) {
-      if (state?.aborted && onAbort) {
-        const currentIndex = index++;
-        results[currentIndex] = onAbort();
-        continue;
-      }
-      const currentIndex = index++;
-      results[currentIndex] = await tasks[currentIndex]!();
-    }
-  }
-
-  const workers = Array.from({ length: Math.min(limit, tasks.length) }, () => next());
-  await Promise.all(workers);
-  return results;
-}
-
-export async function executeCalls(opts: ExecuteCallsOpts): Promise<ExecuteCallsResult> {
+export async function executeCall(opts: ExecuteCallOpts): Promise<ExecuteCallResult> {
   const {
-    callSpec,
+    callSpec: spec,
     channelConfig,
     runId,
-    concurrencyLimit: userConcurrency,
     onCallStart,
     onCallComplete,
   } = opts;
 
-  // Bland uses SIP (phone calls) instead of WebSocket/WebRTC. All calls route
-  // through a single Twilio number, and Bland drops later calls when 3+ are
-  // active on the same destination. Cap at 3 concurrent for reliability.
-  // To scale beyond 3, rotate Twilio destination numbers (number pool).
-  const isBland = channelConfig.adapter === "bland";
-  const concurrencyLimit = userConcurrency ?? (isBland ? 3 : 10);
-
-  const callSpecs = callSpec.conversation_calls ?? [];
   const notifyCallComplete = async (result: ConversationCallResult) => {
     if (!onCallComplete) return;
     try {
@@ -286,18 +217,12 @@ export async function executeCalls(opts: ExecuteCallsOpts): Promise<ExecuteCalls
     }
   };
 
-  // Expand calls by repeat count for statistical confidence
-  const allCalls = callSpecs.flatMap((spec) => {
-    const repeatCount = spec.repeat ?? 1;
-    return Array.from({ length: repeatCount }, () => spec);
-  });
-
   // Pre-flight health check — only for relay/local agent runs.
   // Platform adapters (vapi, retell, elevenlabs, bland) don't need this —
   // it would waste a real API call + credits just to verify connectivity.
   // The first real call will fail with a clear error if config is wrong.
   const isPlatformAdapter = ["vapi", "retell", "elevenlabs", "bland", "livekit"].includes(channelConfig.adapter);
-  if (allCalls.length > 0 && !isPlatformAdapter) {
+  if (!isPlatformAdapter) {
     const probeChannel = createAudioChannel(channelConfig);
     try {
       await probeChannel.connect();
@@ -336,8 +261,8 @@ export async function executeCalls(opts: ExecuteCallsOpts): Promise<ExecuteCalls
       };
       await notifyCallComplete(failResult);
       return {
-        status: "fail" as const,
-        conversationResults: [failResult],
+        status: "fail",
+        conversationResult: failResult,
         aggregate: {
           conversation_calls: { total: 1, passed: 0, failed: 1 },
           total_duration_ms: 0,
@@ -346,145 +271,92 @@ export async function executeCalls(opts: ExecuteCallsOpts): Promise<ExecuteCalls
     }
   }
 
-  // Circuit breaker state — shared across concurrent workers
-  const circuitState: ConcurrencyState = {
-    aborted: false,
-    abortReason: null,
-    consecutiveConnectionFailures: 0,
+  // Execute the single call
+  const callName = spec.name ?? `conversation:${spec.caller_prompt.slice(0, 50)}`;
+  onCallStart?.({ call_name: callName });
+  console.log(`  Conversation: ${spec.caller_prompt.slice(0, 60)}...`);
+
+  const perCallChannelConfig: AudioChannelConfig = {
+    ...channelConfig,
+    runId,
+    callName,
   };
+  const channel = createAudioChannel(perCallChannelConfig);
+  const recordingUpload = await startRecordingUpload(channel, spec.name, spec.caller_prompt, runId)
+    .catch((err) => {
+      console.warn(`recording upload bootstrap failed: ${(err as Error).message}`);
+      return null;
+    });
+  const start = Date.now();
 
-  const tasks = allCalls.map((spec) => async () => {
-    const callName = spec.name ?? `conversation:${spec.caller_prompt.slice(0, 50)}`;
-    onCallStart?.({ call_name: callName });
-    console.log(`  Conversation: ${spec.caller_prompt.slice(0, 60)}...`);
+  let result: ConversationCallResult;
 
-    const perCallChannelConfig: AudioChannelConfig = {
-      ...channelConfig,
-      runId,
-      callName,
+  try {
+    // Per-call timeout: scales with max_turns to accommodate agents that
+    // use tool calls (each turn can take 15-20s with STT → LLM → tools → TTS).
+    // Minimum 120s, plus 25s per turn beyond the baseline 4 turns.
+    const CALL_TIMEOUT_MS = Math.max(120_000, (spec.max_turns ?? 10) * 25_000);
+    const callResult = await Promise.race([
+      (async () => {
+        await channel.connect();
+        return await runConversationCall(spec, channel);
+      })(),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(
+          `Call "${callName}" timed out after ${CALL_TIMEOUT_MS / 1000}s. ` +
+          `The agent may have connected but not produced audio.`
+        )), CALL_TIMEOUT_MS)
+      ),
+    ]);
+    result = callResult;
+    await attachRecordingUrl(result, channel, perCallChannelConfig, recordingUpload, runId);
+    console.log(`    Status: ${result.status} (${result.duration_ms}ms)`);
+    console.log(JSON.stringify({
+      event: "call_complete", call_name: callName,
+      status: result.status, duration_ms: result.duration_ms,
+      channel: { bytes_sent: channel.stats.bytesSent, bytes_received: channel.stats.bytesReceived, errors: channel.stats.errorEvents },
+    }));
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    console.error(`    ${callName}: error — ${errorMsg}`);
+
+    result = {
+      name: spec.name,
+      caller_prompt: spec.caller_prompt,
+      status: "error",
+      transcript: [],
+      duration_ms: Date.now() - start,
+      metrics: { mean_ttfb_ms: 0 },
+      error: errorMsg,
     };
-    const channel = createAudioChannel(perCallChannelConfig);
-    const recordingUpload = await startRecordingUpload(channel, spec.name, spec.caller_prompt, runId)
-      .catch((err) => {
-        console.warn(`recording upload bootstrap failed: ${(err as Error).message}`);
-        return null;
-      });
-    const start = Date.now();
-    try {
-      // Per-call timeout: scales with max_turns to accommodate agents that
-      // use tool calls (each turn can take 15-20s with STT → LLM → tools → TTS).
-      // Minimum 120s, plus 25s per turn beyond the baseline 4 turns.
-      const CALL_TIMEOUT_MS = Math.max(120_000, (spec.max_turns ?? 10) * 25_000);
-      const callResult = await Promise.race([
-        (async () => {
-          await channel.connect();
-          return await runConversationCall(spec, channel);
-        })(),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error(
-            `Call "${callName}" timed out after ${CALL_TIMEOUT_MS / 1000}s. ` +
-            `The agent may have connected but not produced audio.`
-          )), CALL_TIMEOUT_MS)
-        ),
-      ]);
-      const result = callResult;
-      await attachRecordingUrl(result, channel, perCallChannelConfig, recordingUpload, runId);
-      // Successful connection — reset circuit breaker counter
-      circuitState.consecutiveConnectionFailures = 0;
-      console.log(`    Status: ${result.status} (${result.duration_ms}ms)`);
-      console.log(JSON.stringify({
-        event: "call_complete", call_name: callName,
-        status: result.status, duration_ms: result.duration_ms,
-        channel: { bytes_sent: channel.stats.bytesSent, bytes_received: channel.stats.bytesReceived, errors: channel.stats.errorEvents },
-      }));
-      await notifyCallComplete(result);
-      return result;
-    } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      console.error(`    ${callName}: error — ${errorMsg}`);
-
-      // Circuit breaker: track consecutive connection errors
-      if (isConnectionError(err)) {
-        circuitState.consecutiveConnectionFailures++;
-        if (circuitState.consecutiveConnectionFailures >= CIRCUIT_BREAKER_THRESHOLD) {
-          circuitState.aborted = true;
-          circuitState.abortReason = `Run aborted after ${CIRCUIT_BREAKER_THRESHOLD} consecutive connection failures: ${errorMsg}`;
-          console.error(`Circuit breaker tripped: ${circuitState.abortReason}`);
-        }
-      } else {
-        // Non-connection error (eval/logic failure) — reset counter
-        circuitState.consecutiveConnectionFailures = 0;
-      }
-
-      const result: ConversationCallResult = {
-        name: spec.name,
-        caller_prompt: spec.caller_prompt,
-        status: "error",
-        transcript: [],
-        duration_ms: Date.now() - start,
-        metrics: { mean_ttfb_ms: 0 },
-        error: errorMsg,
-      };
-      await attachRecordingUrl(result, channel, perCallChannelConfig, recordingUpload, runId);
-      console.log(JSON.stringify({
-        event: "call_complete", call_name: callName,
-        status: "error", duration_ms: result.duration_ms, error: errorMsg,
-      }));
-      await notifyCallComplete(result);
-      return result;
-    } finally {
-      await channel.disconnect().catch(() => {});
-    }
-  });
-
-  if (tasks.length > 0) {
-    console.log(`Running ${tasks.length} conversation calls (concurrency: ${concurrencyLimit})...`);
+    await attachRecordingUrl(result, channel, perCallChannelConfig, recordingUpload, runId);
+    console.log(JSON.stringify({
+      event: "call_complete", call_name: callName,
+      status: "error", duration_ms: result.duration_ms, error: errorMsg,
+    }));
+  } finally {
+    await channel.disconnect().catch(() => {});
   }
 
-  // Build an abort result factory for the circuit breaker
-  const makeAbortResult = (): ConversationCallResult => ({
-    name: "aborted",
-    caller_prompt: "Skipped — circuit breaker tripped",
-    status: "error",
-    transcript: [],
-    duration_ms: 0,
-    metrics: { mean_ttfb_ms: 0 },
-    error: circuitState.abortReason ?? "Run aborted",
-  });
+  await notifyCallComplete(result);
 
-  const results = tasks.length > 0
-    ? await runWithConcurrency(tasks, concurrencyLimit, circuitState, makeAbortResult)
-    : [];
+  const passed = result.status === "completed" ? 1 : 0;
+  const failed = result.status === "error" ? 1 : 0;
+  const costUsd = result.call_metadata?.cost_usd;
 
-  // =====================================================
-  // Aggregate results
-  // =====================================================
-  const completed = results.filter((r) => r.status === "completed").length;
-  const errored = results.filter((r) => r.status === "error").length;
-  const totalDurationMs = results.reduce((sum, r) => sum + r.duration_ms, 0);
-
-  // Sum platform costs across all calls
-  const totalCostUsd = results.reduce((sum, r) => {
-    const cost = r.call_metadata?.cost_usd;
-    return cost != null ? sum + cost : sum;
-  }, 0);
-
-  const callCounts = { total: results.length, passed: completed, failed: errored };
   const aggregate: RunAggregateV2 = {
-    conversation_calls: callCounts,
-    total_duration_ms: totalDurationMs,
-    ...(totalCostUsd > 0 ? { total_cost_usd: totalCostUsd } : {}),
+    conversation_calls: { total: 1, passed, failed },
+    total_duration_ms: result.duration_ms,
+    ...(costUsd != null && costUsd > 0 ? { total_cost_usd: costUsd } : {}),
   };
 
-  const status = errored === 0 ? "pass" : "fail";
+  const status = failed === 0 ? "pass" : "fail";
 
-  console.log(
-    `Run complete: ${status} (conversation: ${completed}/${results.length})`,
-  );
+  console.log(`Run complete: ${status}`);
 
   return {
     status,
-    conversationResults: results,
+    conversationResult: result,
     aggregate,
   };
 }

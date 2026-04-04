@@ -97,8 +97,6 @@ export interface ConversationCallSpec {
   caller_audio?: CallerAudioEffects;
   /** ISO 639-1 language code for multilingual calls (e.g., "es", "fr", "de"). Caller speaks this language, STT transcribes it, judge evaluates in it. */
   language?: string;
-  /** Number of times to repeat this call for statistical confidence. Default 1. */
-  repeat?: number;
 }
 
 // ============================================================
@@ -306,7 +304,7 @@ export interface ProsodyWarning {
 }
 
 export interface CallSpec {
-  conversation_calls?: ConversationCallSpec[];
+  call: ConversationCallSpec;
 }
 
 export interface CallDiagnostics {
@@ -596,7 +594,7 @@ export interface RunAggregateV2 {
 export interface RunnerCallbackPayloadV2 {
   run_id: string;
   status: "pass" | "fail";
-  conversation_results: ConversationCallResult[];
+  conversation_result: ConversationCallResult;
   aggregate: RunAggregateV2;
   error_text?: string;
 }

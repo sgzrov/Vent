@@ -48,32 +48,12 @@ const red = (s: string) => (isTTY ? `\x1b[31m${s}\x1b[0m` : s);
 const yellow = (s: string) => (isTTY ? `\x1b[33m${s}\x1b[0m` : s);
 const blue = (s: string) => (isTTY ? `\x1b[34m${s}\x1b[0m` : s);
 
-export function printEvent(event: SSEEvent, jsonMode: boolean): void {
-  if (jsonMode) {
-    stdoutSync(JSON.stringify(event) + "\n");
-    return;
-  }
-
+export function printEvent(event: SSEEvent): void {
   // Non-TTY (coding agents): don't write individual events to stdout.
   // Coding agents read all stdout at once when the process exits.
-  // Instead, printSummary writes one clean summary JSON at the end.
-  // Suppress stderr progress too — coding agents (Claude Code, Cursor) merge
-  // stdout+stderr, so any stderr noise pollutes the agent's context window.
-  if (!isTTY) {
-    if (_verbose) {
-      const meta = (event.metadata_json ?? {}) as Record<string, unknown>;
-      if (event.event_type === "call_completed") {
-        const name = (meta.call_name as string) ?? "call";
-        const status = (meta.status as string) ?? "unknown";
-        const durationMs = meta.duration_ms as number | undefined;
-        const duration = durationMs != null ? (durationMs / 1000).toFixed(1) + "s" : "";
-        process.stderr.write(`  ${status === "completed" || status === "pass" ? "✔" : "✘"} ${name} ${duration}\n`);
-      }
-    }
-    return;
-  }
+  // printSummary writes one clean summary JSON at the end.
+  if (!isTTY) return;
 
-  // TTY: formatted output
   const meta = (event.metadata_json ?? {}) as Record<string, unknown>;
 
   switch (event.event_type) {
@@ -147,7 +127,6 @@ export function printSummary(
   callResults: SSEEvent[],
   runComplete: Record<string, unknown>,
   runId: string,
-  jsonMode: boolean,
 ): void {
   // Build call results summary — pass through the full FormattedConversationResult
   // so coding agents have complete context on latency, behavior, transcript, etc.
@@ -176,9 +155,8 @@ export function printSummary(
     calls: allCalls,
   };
 
-  // Non-TTY (coding agents) or --json: write single summary JSON to stdout.
-  // Uses stdoutSync to bypass Node.js async pipe buffering.
-  if (jsonMode || !isTTY) {
+  // Non-TTY (coding agents): write single summary JSON to stdout.
+  if (!isTTY) {
     stdoutSync(JSON.stringify(summaryData, null, 2) + "\n");
     return;
   }

@@ -47,6 +47,111 @@ export async function runRoutes(app: FastifyInstance) {
     return reply.status(201).send(result);
   });
 
+  // --- Stream run events (SSE) ---
+  app.get<{ Params: { id: string } }>("/runs/:id/stream", accessTokenPreHandler, async (request, reply) => {
+    const { id } = request.params;
+
+    const [run] = await app.db
+      .select({ id: schema.runs.id, status: schema.runs.status })
+      .from(schema.runs)
+      .where(and(eq(schema.runs.id, id), eq(schema.runs.user_id, request.userId!)))
+      .limit(1);
+
+    if (!run) return reply.status(404).send({ error: "Run not found" });
+
+    reply.raw.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    });
+
+    const write = (event: Record<string, unknown>) => {
+      reply.raw.write(`data: ${JSON.stringify(event)}\n\n`);
+    };
+
+    // Replay historical events from DB
+    const history = await app.db
+      .select()
+      .from(schema.runEvents)
+      .where(eq(schema.runEvents.run_id, id))
+      .orderBy(schema.runEvents.created_at);
+
+    let alreadyComplete = false;
+    for (const evt of history) {
+      write({
+        id: evt.id,
+        run_id: evt.run_id,
+        event_type: evt.event_type,
+        message: evt.message,
+        metadata_json: evt.metadata_json,
+        created_at: evt.created_at.toISOString(),
+      });
+      if (evt.event_type === "run_complete" || evt.event_type === "run_cancelled") {
+        alreadyComplete = true;
+      }
+    }
+
+    if (alreadyComplete || ["pass", "fail", "cancelled"].includes(run.status)) {
+      reply.raw.end();
+      return;
+    }
+
+    // Subscribe to live events via Redis pub/sub
+    const sub = app.redis.duplicate();
+    const channel = `vent:run-events:${id}`;
+    await sub.subscribe(channel);
+
+    sub.on("message", (_ch: string, message: string) => {
+      try {
+        const event = JSON.parse(message);
+        write(event);
+        if (event.event_type === "run_complete" || event.event_type === "run_cancelled") {
+          sub.unsubscribe(channel);
+          sub.disconnect();
+          reply.raw.end();
+        }
+      } catch { /* ignore malformed */ }
+    });
+
+    const heartbeat = setInterval(() => {
+      reply.raw.write(": heartbeat\n\n");
+    }, 30_000);
+
+    request.raw.on("close", () => {
+      clearInterval(heartbeat);
+      sub.unsubscribe(channel).catch(() => {});
+      sub.disconnect();
+    });
+  });
+
+  // --- Get run status (JSON) ---
+  app.get<{ Params: { id: string } }>("/runs/:id", accessTokenPreHandler, async (request, reply) => {
+    const [run] = await app.db
+      .select()
+      .from(schema.runs)
+      .where(and(eq(schema.runs.id, request.params.id), eq(schema.runs.user_id, request.userId!)))
+      .limit(1);
+
+    if (!run) return reply.status(404).send({ error: "Run not found" });
+
+    const results = await app.db
+      .select()
+      .from(schema.scenarioResults)
+      .where(eq(schema.scenarioResults.run_id, run.id));
+
+    return reply.send({
+      id: run.id,
+      status: run.status,
+      created_at: run.created_at,
+      started_at: run.started_at,
+      finished_at: run.finished_at,
+      duration_ms: run.duration_ms,
+      error_text: run.error_text,
+      aggregate: run.aggregate_json,
+      results: results.map((r) => r.metrics_json),
+    });
+  });
+
   // --- Stop/cancel a run ---
   app.post<{ Params: { id: string } }>(
     "/runs/:id/stop",
