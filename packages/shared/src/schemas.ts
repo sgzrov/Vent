@@ -66,18 +66,11 @@ export const ConversationCallSpecSchema = z.object({
   caller_audio: CallerAudioEffectsSchema.optional(),
   /** ISO 639-1 language code for multilingual calls (e.g., "es", "fr", "de"). Caller speaks this language, STT transcribes it, judge evaluates in it. */
   language: z.string().min(2).max(5).optional(),
-  /** Number of times to repeat this call for statistical confidence (1-10). Default 1. */
-  repeat: z.number().int().min(1).max(10).default(1),
 });
 
-export const CallSpecSchema = z
-  .object({
-    conversation_calls: z.array(ConversationCallSpecSchema),
-  })
-  .refine(
-    (d) => (d.conversation_calls?.length ?? 0) > 0,
-    { message: "conversation_calls must contain at least one call" }
-  );
+export const CallSpecSchema = z.object({
+  call: ConversationCallSpecSchema,
+});
 
 export const AdapterTypeSchema = z.enum(["websocket", "livekit", "vapi", "retell", "elevenlabs", "bland"]);
 export const PlatformProviderSchema = z.enum(["bland", "livekit", "vapi", "retell", "elevenlabs"]);
@@ -454,7 +447,7 @@ export const RunAggregateV2Schema = z.object({
 export const RunnerCallbackV2Schema = z.object({
   run_id: z.string().uuid(),
   status: z.enum(["pass", "fail"]),
-  conversation_results: z.array(ConversationCallResultSchema).default([]),
+  conversation_result: ConversationCallResultSchema,
   aggregate: RunAggregateV2Schema,
   error_text: z.string().optional(),
 });

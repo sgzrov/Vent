@@ -140,17 +140,16 @@ export async function callbackRoutes(app: FastifyInstance) {
         .delete(schema.scenarioResults)
         .where(eq(schema.scenarioResults.run_id, body.run_id));
 
-      // Store conversation call results
-      for (const result of body.conversation_results) {
-        await tx.insert(schema.scenarioResults).values({
-          run_id: body.run_id,
-          name: result.name ?? `conversation:${result.caller_prompt.slice(0, 50)}`,
-          status: result.status,
-          test_type: "conversation",
-          metrics_json: result,
-          trace_json: result.transcript,
-        });
-      }
+      // Store call result
+      const result = body.conversation_result;
+      await tx.insert(schema.scenarioResults).values({
+        run_id: body.run_id,
+        name: result.name ?? `conversation:${result.caller_prompt.slice(0, 50)}`,
+        status: result.status,
+        test_type: "conversation",
+        metrics_json: result,
+        trace_json: result.transcript,
+      });
 
       // Update run status LAST — this is what triggers long-poll/SSE listeners to wake up
       await tx
@@ -170,7 +169,7 @@ export async function callbackRoutes(app: FastifyInstance) {
     const completeMessage = `${body.status}: ${convAgg.passed}/${convAgg.total} conversation`;
     const completeMetadata = {
       status: body.status,
-      total_calls: body.conversation_results.length,
+      total_calls: 1,
       passed_calls: convAgg.passed,
       failed_calls: convAgg.failed,
       aggregate: body.aggregate,

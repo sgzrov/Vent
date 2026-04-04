@@ -53,7 +53,7 @@ export const RunSubmitConfigSchema = z.object({
     platform_connection_id: z.string().uuid().optional(),
     platform: z.never().optional(),
   }),
-  conversation_calls: z.array(ConversationCallSpecSchema).min(1, "conversation_calls must contain at least one call"),
+  call: ConversationCallSpecSchema,
 }).superRefine((d, ctx) => {
   const adapter = d.connection.adapter;
   const platformConnectionId = d.connection.platform_connection_id;
@@ -102,21 +102,16 @@ export function buildCallSpec(
   const agentUrl = cfg.agent_url as string | undefined;
   const voiceConfig = { adapter };
 
-  // Merge root-level caller_audio as default onto conversation calls
+  // Merge root-level caller_audio as default onto the call spec
   const callerAudio = cfg.caller_audio as Record<string, unknown> | undefined;
-  let conversationCalls = cfg.conversation_calls as Record<string, unknown>[] | null | undefined;
-  if (callerAudio && Array.isArray(conversationCalls)) {
-    conversationCalls = conversationCalls.map((call) => {
-      if (call.caller_audio === undefined) {
-        return { ...call, caller_audio: callerAudio };
-      }
-      return call;
-    });
+  let call = cfg.call as Record<string, unknown> | null | undefined;
+  if (callerAudio && call && call.caller_audio === undefined) {
+    call = { ...call, caller_audio: callerAudio };
   }
 
   return {
     callSpecJson: {
-      conversation_calls: conversationCalls ?? null,
+      call: call ?? null,
       adapter,
       voice_config: voiceConfig,
       start_command: cfg.start_command ?? null,
@@ -130,7 +125,7 @@ export function buildCallSpec(
     agentUrl,
     voiceConfig,
 
-    conversationCalls: conversationCalls ?? null,
+    call: call ?? null,
     isRemote: PLATFORM_ADAPTERS.has(adapter) || !!agentUrl,
   };
 }
@@ -258,7 +253,7 @@ export async function submitRun(
     agentUrl,
     voiceConfig,
 
-    conversationCalls,
+    call,
     isRemote,
   } = buildCallSpec(cfg, {
     platform_connection_id: platformConnectionId,
@@ -285,7 +280,7 @@ export async function submitRun(
       run_id: runId,
       adapter: resolvedAdapter,
       call_spec: {
-        conversation_calls: conversationCalls ?? null,
+        call: call ?? null,
       },
       voice_config: voiceConfig,
       start_command: cfg.start_command as string | undefined,
@@ -352,7 +347,7 @@ export async function submitRun(
     run_id: runId,
     adapter: resolvedAdapter,
     call_spec: {
-      conversation_calls: conversationCalls ?? null,
+      call: call ?? null,
     },
     voice_config: voiceConfig,
     start_command: cfg.start_command as string | undefined,
