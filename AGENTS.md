@@ -76,44 +76,6 @@ Each `vent run` executes a single call. Run N calls in parallel via separate she
 5. API broadcasts events via Redis pub/sub → SSE to CLI
 6. Results stored and returned to the coding agent
 
-### Key Files
-
-| What                       | Where                                            |
-|----------------------------|--------------------------------------------------|
-| DB schema                  | `packages/db/src/schema.ts`                      |
-| All types                  | `packages/shared/src/types.ts`                   |
-| All Zod schemas            | `packages/shared/src/schemas.ts`                 |
-| API routes                 | `apps/api/src/routes/*.ts`                       |
-| Auth middleware             | `apps/api/src/plugins/auth.ts`                   |
-| Queue middleware            | `apps/api/src/plugins/queue.ts`                  |
-| Run submission logic        | `apps/api/src/lib/run-submit.ts`                 |
-| Relay multiplexer           | `apps/api/src/routes/relay.ts`                   |
-| Job processor               | `apps/worker/src/jobs/run-executor.ts`           |
-| CLI entry                   | `packages/cli/src/index.ts`                      |
-| CLI run command             | `packages/cli/src/commands/run.ts`               |
-| Skill files (embedded)      | `packages/cli/src/skills/*.md`                   |
-| Platform credential crypto  | `packages/platform-connections/src/index.ts`     |
-| Result formatting           | `packages/shared/src/format-result.ts`           |
-
-### Database
-- **ORM:** Drizzle with PostgreSQL (`postgres` driver)
-- **Tables:** runs, scenarioResults, accessTokens, platformConnections, artifacts, deviceSessions, agentSessions, runEvents
-- **Migrations:** Sequential SQL files in `packages/db/drizzle/`
-- **Auto-migrate on deploy:** fly.toml release_command runs `pnpm --filter @vent/db migrate`
-
-### Build System
-- **Bundler:** esbuild (custom `scripts/bundle.mjs` per app/package)
-- **API/Worker:** CommonJS output targeting Node 20
-- **CLI/Relay:** ESM output (.mjs) with code splitting
-- **WASM:** ten-vad voice activity detection assets copied into dist/
-
-### Deployment
-- **Platform:** Fly.io (3 apps: vent-api, vent-worker, vent-dashboard)
-- **API:** 2 min machines, 512MB, shared CPU. Health check at `/health`
-- **Worker:** 1 machine, 2GB, performance CPU. No auto-stop
-- **Dashboard:** 1 min machine, 256MB, standalone Next.js
-- **CI/CD:** GitHub Actions → Changesets → npm publish for CLI
-
 ## Environment Variables
 - `DATABASE_URL` — PostgreSQL connection string
 - `REDIS_URL` — Redis/Upstash for BullMQ + pub/sub
