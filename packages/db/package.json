@@ -11,13 +11,13 @@
     "migrate": "tsx src/migrate.ts"
   },
   "dependencies": {
-    "drizzle-orm": "^0.38.0",
+    "drizzle-orm": "catalog:",
     "postgres": "^3.4.0"
   },
   "devDependencies": {
-    "@types/node": "^20.0.0",
+    "@types/node": "catalog:",
     "drizzle-kit": "^0.30.0",
-    "tsx": "^4.19.0",
-    "typescript": "^5.7.0"
+    "tsx": "catalog:",
+    "typescript": "catalog:"
   }
 }

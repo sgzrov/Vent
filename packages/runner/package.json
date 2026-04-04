@@ -22,7 +22,7 @@
     "hume": "^0.15.15"
   },
   "devDependencies": {
-    "tsx": "^4.19.0",
-    "typescript": "^5.7.0"
+    "tsx": "catalog:",
+    "typescript": "catalog:"
   }
 }
