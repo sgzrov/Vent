@@ -31,23 +31,19 @@ One command. No email, no browser, no human interaction needed. You get 10 free 
 | `npx vent-hq init` | First-time setup (creates account + installs skills) |
 | `npx vent-hq agent start -f .vent/suite.<adapter>.json` | Start one shared local agent session (required for `start_command`) |
 | `npx vent-hq agent stop <session-id>` | Close a shared local agent session |
-| `npx vent-hq run -f .vent/suite.<adapter>.json --list` | List call names from suite |
-| `npx vent-hq run -f .vent/suite.<adapter>.json --call <name>` | Run a single call by name |
-| `npx vent-hq run -f .vent/suite.<adapter>.json --call <name> --submit` | Submit a single call, return immediately with run_id |
-| `npx vent-hq run --config '{...}'` | Run from inline JSON (one-off, no file needed) |
+| `npx vent-hq run -f .vent/suite.<adapter>.json` | Run a call from suite file (auto-selects if only one call) |
+| `npx vent-hq run -f .vent/suite.<adapter>.json --call <name>` | Run a specific named call |
 | `npx vent-hq stop <run-id>` | Cancel a queued or running call |
-| `npx vent-hq status <run-id> --json` | Poll results for a submitted run (--submit only) |
+| `npx vent-hq status <run-id>` | Check results of a previous run |
 
 
 ## Critical Rules
 
-1. **One call per command** — Always use `--call <name>` to run a single call. Never run the full suite in one command.
-2. **Set timeout on shell calls** — Calls take 30-120s but can reach 5 minutes. Always set a 300-second (5 min) timeout on shell commands that run calls.
-3. **Handle backgrounded commands** — If a call command gets moved to background by the system, wait for it to complete before proceeding. Never end your response without delivering call results.
-4. **Output format** — In non-TTY mode (when run by an agent), every SSE event is written to stdout as a JSON line. Results are always in stdout.
-5. **This skill is self-contained** — The full config schema is below. Do NOT re-read this file.
-6. **Always analyze results** — The run command outputs complete JSON with full transcript, latency, and tool calls. Analyze this output directly — do NOT run `vent status` afterwards, the data is already there.
-7. **ENFORCE concurrency limits** — Before running ANY suite, count the total concurrent calls (number of calls × repeat). If this exceeds the platform's limit, REDUCE the call count or split into multiple runs. Default limits if unknown: LiveKit=5, Vapi=10, Bland=10. Calls that exceed the limit will hang forever waiting for agents that never connect. This is NOT optional.
+1. **Set timeout on shell calls** — Calls take 30-120s but can reach 5 minutes. Always set a 300-second (5 min) timeout on shell commands that run calls.
+2. **Handle backgrounded commands** — If a call command gets moved to background by the system, wait for it to complete before proceeding. Never end your response without delivering call results.
+3. **Output format** — In non-TTY mode (when run by an agent), every SSE event is written to stdout as a JSON line. Results are always in stdout.
+4. **This skill is self-contained** — The full config schema is below. Do NOT re-read this file.
+5. **Always analyze results** — The run command outputs complete JSON with full transcript, latency, and tool calls. Analyze this output directly — do NOT run `vent status` afterwards, the data is already there.
 
 ## Workflow
 
@@ -68,43 +64,33 @@ If `.vent/` contains more than one suite file, **always check which adapter each
 
 A matching `.vent/suite.<adapter>.json` already exists? Just re-run it. No need to recreate.
 
-### Remote runs (`agent_url` or platform-direct adapter) — submit + poll per call
+### Run calls
 
-1. List calls: `npx vent-hq run -f .vent/suite.<adapter>.json --list`
-2. Submit each call individually:
+1. If the suite uses `start_command`, start the shared local session first:
    ```
-   npx vent-hq run -f .vent/suite.<adapter>.json --call greeting-and-hours --submit
-   npx vent-hq run -f .vent/suite.<adapter>.json --call book-cleaning --submit
+   npx vent-hq agent start -f .vent/suite.<adapter>.json
    ```
-3. Collect all run_ids, then poll each:
-   `npx vent-hq status <run-id> --json`
-4. If status is `"running"`, wait 30 seconds and check again.
-5. When complete, correlate any failures with the codebase and fix.
-6. **Compare with previous run** — Vent saves full result JSON to `.vent/runs/` after every run. Read the second-most-recent JSON in `.vent/runs/` and compare against the current run: status flips, TTFW p50/p95 changes >20%, tool call count drops, cost increases >30%, transcript divergence. Correlate with `git diff` between the two runs' git SHAs. Skip if no previous run exists.
 
-### Local agents (start_command) — shared session + one call per command
+2. Run calls:
+   ```
+   # suite with one call (auto-selects)
+   npx vent-hq run -f .vent/suite.<adapter>.json
 
-When config uses `start_command`, start the relay once and reuse it across every call:
+   # suite with multiple calls — pick one by name
+   npx vent-hq run -f .vent/suite.<adapter>.json --call happy-path
 
-1. Start the shared session in its own terminal:
-   `npx vent-hq agent start -f .vent/suite.<adapter>.json`
-2. Copy the printed `session_id`.
-3. List calls: `npx vent-hq run -f .vent/suite.<adapter>.json --list`
-4. Run each call as its own command, reusing that session:
-   `npx vent-hq run -f .vent/suite.<adapter>.json --session <session-id> --call <name>`
-5. Read results after each, fix failures.
-6. When finished, stop the session:
-   `npx vent-hq agent stop <session-id>`
+   # local start_command — add --session
+   npx vent-hq run -f .vent/suite.<adapter>.json --call happy-path --session <session-id>
+   ```
 
-### Quick one-off call (hosted agent)
+3. To run multiple calls from the same suite, run each as a separate command:
+   ```
+   npx vent-hq run -f .vent/suite.vapi.json --call happy-path
+   npx vent-hq run -f .vent/suite.vapi.json --call edge-case
+   ```
 
-For a single call against a hosted agent without creating a file:
-
-```bash
-npx vent-hq run --config '{"connection":{"adapter":"websocket","agent_url":"wss://your-agent.example.com/ws"},"conversation_calls":[{"name":"quick-check","caller_prompt":"You are a customer calling to ask about business hours.","max_turns":4}]}'
-```
-
-> **Note:** Local agents using `start_command` require a session. Use `npx vent-hq agent start -f <suite.json>` first, then pass `--session <id>`.
+4. Analyze each result, identify failures, correlate with the codebase, and fix.
+5. **Compare with previous run** — Vent saves full result JSON to `.vent/runs/` after every run. Read the second-most-recent JSON in `.vent/runs/` and compare against the current run: status flips, TTFW p50/p95 changes >20%, tool call count drops, cost increases >30%, transcript divergence. Correlate with `git diff` between the two runs' git SHAs. Skip if no previous run exists.
 
 ## Connection
 
@@ -130,24 +116,19 @@ All text frames are optional — audio-only agents work fine with VAD-based turn
 
 ## Full Config Schema
 
-- **HARD CONCURRENCY LIMITS — NEVER EXCEED** — Each call is a real concurrent call. If you create more calls than the platform allows, excess calls hang forever (agents never connect). Before running, count: total_concurrent = number_of_calls × max(repeat, 1). If total_concurrent > platform limit, REDUCE calls or split into sequential runs.
-  | Platform | Default limit (assume if unknown) | Ask user for tier |
-  |----------|----------------------------------|-------------------|
-  | LiveKit | **5** | Build=5, Ship=20, Scale=50+ |
-  | Vapi | **10** | Starter=10, Growth=50, Enterprise=100+ |
-  | Bland | **3** (phone-based, 10s between calls) | Max 3 concurrent. Bland uses phone calls routed through one Twilio number — Bland drops calls when 4+ target the same number. Scaling beyond 3 requires a Twilio number pool (not yet implemented). |
-  | ElevenLabs | **5** | Ask user |
-  | Retell | **5** | Ask user |
-  | websocket (custom) | No platform limit | — |
-  If the existing suite file has more calls than the limit, run with `--call` to pick a subset, or split into multiple sequential runs. Do NOT just run the full suite and hope for the best.
 - ALL calls MUST reference the agent's real context (system prompt, tools, knowledge base) from the codebase.
 
 <vent_run>
 {
   "connection": { ... },
-  "conversation_calls": [{ ... }]
+  "calls": {
+    "happy-path": { ... },
+    "edge-case": { ... }
+  }
 }
 </vent_run>
+
+One suite file per platform/adapter. `connection` is declared once, `calls` is a named map of call specs. Each key becomes the call name. Run one call at a time with `--call <name>`.
 
 <config_connection>
 {
@@ -268,7 +249,7 @@ max_concurrency: Free/Build=5, Ship=20, Scale=50+. Ask the user which tier they'
 </config_connection>
 
 
-<conversation_calls>
+<call_config>
 <tool_call_capture>
 vapi/retell/elevenlabs/bland: automatic via platform API (no user code needed).
 WebSocket/WebRTC: user's agent must emit tool calls:
@@ -284,79 +265,86 @@ All fields optional. Send one per agent response. Without this, component_latenc
 When modifying a WebSocket agent's code, add this text frame after TTS completes to enable component latency reporting.
 </component_timing>
 
-<config_conversation_calls>
+<config_call>
+Each call in the `calls` map. The key is the call name (e.g. `"reschedule-appointment"`, not `"call-1"`).
 {
-  "conversation_calls": [
-    {
-      "name": "required — descriptive call name (e.g. reschedule-appointment, not call-1)",
       "caller_prompt": "required — caller persona and behavior (name -> goal -> emotion -> conditional behavior)",
-      "max_turns": "required — default 6",
-      "silence_threshold_ms": "optional — end-of-turn threshold ms (default 800, 200-10000). 800-1200 FAQ, 2000-3000 tool calls, 3000-5000 complex reasoning.",
-      "persona": "optional — caller behavior controls",
-      {
-        "pace": "slow | normal | fast",
-        "clarity": "clear | vague | rambling",
-        "disfluencies": "true | false",
-        "cooperation": "cooperative | reluctant | hostile",
-        "emotion": "neutral | cheerful | confused | frustrated | skeptical | rushed",
-        "interruption_style": "low (~3/10 turns) | high (~7/10 turns)",
-        "memory": "reliable | unreliable",
-        "intent_clarity": "clear | indirect | vague",
-        "confirmation_style": "explicit | vague"
-      },
-      "audio_actions": "optional — per-turn audio stress calls",
-      [
-        { "action": "interrupt", "at_turn": "N", "prompt": "what caller says" },
-        { "action": "silence", "at_turn": "N", "duration_ms": "1000-30000" },
-        { "action": "inject_noise", "at_turn": "N", "noise_type": "babble | white | pink", "snr_db": "0-40" },
-        { "action": "split_sentence", "at_turn": "N", "split": { "part_a": "...", "part_b": "...", "pause_ms": "500-5000" } },
-        { "action": "noise_on_caller", "at_turn": "N" }
-      ],
-      "prosody": "optional — Hume emotion analysis (default false)",
-      "caller_audio": "optional — omit for clean audio",
-      {
-        "noise": { "type": "babble | white | pink", "snr_db": "0-40" },
-        "speed": "0.5-2.0 (1.0 = normal)",
-        "speakerphone": "true | false",
-        "mic_distance": "close | normal | far",
-        "clarity": "0.0-1.0 (1.0 = perfect)",
-        "accent": "american | british | australian | filipino | spanish_mexican | spanish_peninsular | spanish_colombian | spanish_argentine | german | french | italian | dutch | japanese",
-        "packet_loss": "0.0-0.3",
-        "jitter_ms": "0-100"
-      },
-      "language": "optional — ISO 639-1: en, es, fr, de, it, nl, ja",
-      "repeat": "optional — run N times (1-10, default 1: increase to 2-3 for non-deterministic calls like barge-in, noise, tool calls)"
+    "max_turns": "required — default 6",
+    "silence_threshold_ms": "optional — end-of-turn threshold ms (default 800, 200-10000). 800-1200 FAQ, 2000-3000 tool calls, 3000-5000 complex reasoning.",
+    "persona": "optional — caller behavior controls",
+    {
+      "pace": "slow | normal | fast",
+      "clarity": "clear | vague | rambling",
+      "disfluencies": "true | false",
+      "cooperation": "cooperative | reluctant | hostile",
+      "emotion": "neutral | cheerful | confused | frustrated | skeptical | rushed",
+      "interruption_style": "low (~3/10 turns) | high (~7/10 turns)",
+      "memory": "reliable | unreliable",
+      "intent_clarity": "clear | indirect | vague",
+      "confirmation_style": "explicit | vague"
+    },
+    "audio_actions": "optional — per-turn audio stress calls",
+    [
+      { "action": "interrupt", "at_turn": "N", "prompt": "what caller says" },
+      { "action": "silence", "at_turn": "N", "duration_ms": "1000-30000" },
+      { "action": "inject_noise", "at_turn": "N", "noise_type": "babble | white | pink", "snr_db": "0-40" },
+      { "action": "split_sentence", "at_turn": "N", "split": { "part_a": "...", "part_b": "...", "pause_ms": "500-5000" } },
+      { "action": "noise_on_caller", "at_turn": "N" }
+    ],
+    "prosody": "optional — Hume emotion analysis (default false)",
+    "caller_audio": "optional — omit for clean audio",
+    {
+      "noise": { "type": "babble | white | pink", "snr_db": "0-40" },
+      "speed": "0.5-2.0 (1.0 = normal)",
+      "speakerphone": "true | false",
+      "mic_distance": "close | normal | far",
+      "clarity": "0.0-1.0 (1.0 = perfect)",
+      "accent": "american | british | australian | filipino | spanish_mexican | spanish_peninsular | spanish_colombian | spanish_argentine | german | french | italian | dutch | japanese",
+      "packet_loss": "0.0-0.3",
+      "jitter_ms": "0-100"
+    },
+    "language": "optional — ISO 639-1: en, es, fr, de, it, nl, ja"
+}
+
+<examples_call>
+<simple_suite_example>
+{
+  "connection": {
+    "adapter": "vapi",
+    "platform": { "provider": "vapi" }
+  },
+  "calls": {
+    "reschedule-appointment": {
+      "caller_prompt": "You are Maria, calling to reschedule her dentist appointment from Thursday to next Tuesday. She's in a hurry and wants this done quickly.",
+      "max_turns": 8
+    },
+    "cancel-appointment": {
+      "caller_prompt": "You are Tom, calling to cancel his appointment for Friday. He's calm and just wants confirmation.",
+      "max_turns": 6
     }
-  ]
+  }
 }
+</simple_suite_example>
 
-<examples_conversation_calls>
-<simple_conversation_test_example>
+<advanced_call_example>
+A call entry with advanced options (persona, audio actions, prosody):
 {
-  "name": "reschedule-appointment-happy-path",
-  "caller_prompt": "You are Maria, calling to reschedule her dentist appointment from Thursday to next Tuesday. She's in a hurry and wants this done quickly.",
-  "max_turns": 8
+  "noisy-interruption-booking": {
+    "caller_prompt": "You are James, an impatient customer calling from a loud coffee shop to book a plumber for tomorrow morning. You interrupt the agent mid-sentence when they start listing availability — you just want the earliest slot.",
+    "max_turns": 12,
+    "persona": { "pace": "fast", "cooperation": "reluctant", "emotion": "rushed", "interruption_style": "high" },
+    "audio_actions": [
+      { "action": "interrupt", "at_turn": 3, "prompt": "Just give me the earliest one!" },
+      { "action": "inject_noise", "at_turn": 1, "noise_type": "babble", "snr_db": 15 }
+    ],
+    "caller_audio": { "noise": { "type": "babble", "snr_db": 20 }, "speed": 1.3 },
+    "prosody": true
+  }
 }
-</simple_conversation_test_example>
+</advanced_call_example>
 
-<advanced_conversation_test_example>
-{
-  "name": "noisy-interruption-booking",
-  "caller_prompt": "You are James, an impatient customer calling from a loud coffee shop to book a plumber for tomorrow morning. You interrupt the agent mid-sentence when they start listing availability — you just want the earliest slot.",
-  "max_turns": 12,
-  "persona": { "pace": "fast", "cooperation": "reluctant", "emotion": "rushed", "interruption_style": "high" },
-  "audio_actions": [
-    { "action": "interrupt", "at_turn": 3, "prompt": "Just give me the earliest one!" },
-    { "action": "inject_noise", "at_turn": 1, "noise_type": "babble", "snr_db": 15 }
-  ],
-  "caller_audio": { "noise": { "type": "babble", "snr_db": 20 }, "speed": 1.3 },
-  "prosody": true,
-  "repeat": 3
-}
-</advanced_conversation_test_example>
-
-</examples_conversation_calls>
-</config_conversation_calls>
+</examples_call>
+</config_call>
 
 <output_conversation_test>
 {
@@ -459,7 +447,7 @@ When the transcript contains `interrupted: true` / `is_interruption: true` turns
 
 Report these alongside standard metrics when interruption calls run.
 </output_conversation_test>
-</conversation_calls>
+</call_config>
 
 
 ## Exit Codes

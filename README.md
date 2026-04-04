@@ -18,11 +18,10 @@ This will:
 | Command | Purpose |
 |---------|---------|
 | `vent init` | Set up Vent in your project (auth + skill files + test scaffold) |
-| `vent run -f .vent/suite.json` | Run tests, stream results |
-| `vent run -f .vent/suite.json --submit` | Submit tests, return immediately with run_id |
-| `vent status <run-id> --json` | Check results for a previous run |
-| `vent login` | Save Vent access token (for CI/scripts) |
-| `vent docs` | Print full config schema reference |
+| `vent run -f .vent/suite.json` | Run a call, block until results |
+| `vent run -f .vent/suite.json --call <name>` | Run a specific named call |
+| `vent status <run-id>` | Check results of a previous run |
+| `vent login` | Authenticate via browser |
 
 ## What You Can Test
 
@@ -42,17 +41,16 @@ Supports 6 adapters: WebSocket (`websocket`), LiveKit/WebRTC (`livekit`), Vapi, 
     "start_command": "npm run start",
     "agent_port": 3001
   },
-  "conversation_tests": [
-    {
-      "name": "reschedule-appointment",
+  "calls": {
+    "reschedule-appointment": {
       "caller_prompt": "You are Maria, calling to reschedule her dentist appointment from Thursday to next Tuesday.",
       "max_turns": 8
     }
-  ]
+  }
 }
 ```
 
-Run `vent docs` for the full schema — includes all adapter configs, persona controls, audio actions, load testing, and more.
+One suite file per adapter. `connection` declared once, `calls` is a named map. Run `vent run -f suite.json --call reschedule-appointment`.
 
 ## Platform Credentials
 
