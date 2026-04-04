@@ -2,9 +2,7 @@ node_modules/
 dist/
 .next/
 .turbo/
-.env
-.env.local
-.env.*.local
+.env*
 *.tsbuildinfo
 .DS_Store
 coverage/
