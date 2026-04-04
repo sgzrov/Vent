@@ -11,107 +11,133 @@ CONDUCTOR_REPO_ROOT="${CONDUCTOR_ROOT:+$CONDUCTOR_ROOT/repos/$REPO_NAME}"
 
 cd "$PROJECT_ROOT"
 
-echo "==> Setting up Vent workspace in $PROJECT_ROOT"
+STEP_STARTED=0
+
+step() {
+  if [ "$STEP_STARTED" -eq 1 ]; then
+    printf '\n'
+  fi
+  STEP_STARTED=1
+  printf '==> %s\n' "$1"
+}
+
+info() {
+  printf '  - %s\n' "$1"
+}
 
 # ── 1. Copy env files ─────────────────────────────────────────────────────────
 
-copy_env_file() {
+file_mtime() {
   local filename="$1"
-
-  # Already exists (e.g. Conductor copied it or previous run)
-  if [ -f "$filename" ]; then
-    echo "    $filename already exists, keeping it"
-    return
+  if stat -f "%m" "$filename" >/dev/null 2>&1; then
+    stat -f "%m" "$filename"
+  else
+    stat -c "%Y" "$filename"
   fi
+}
 
-  # Priority 1: Conductor root repo (repos/<name>/.env)
+find_latest_env_source() {
+  local filename="$1"
+  local candidates=()
+  local sibling=""
+  local best=""
+  local best_mtime=0
+  local candidate=""
+  local candidate_mtime=0
+
   if [ -n "$CONDUCTOR_REPO_ROOT" ] && [ -f "$CONDUCTOR_REPO_ROOT/$filename" ]; then
-    cp "$CONDUCTOR_REPO_ROOT/$filename" "$filename"
-    echo "    Copied $filename from $CONDUCTOR_REPO_ROOT (Conductor root repo)"
-    return
+    candidates+=("$CONDUCTOR_REPO_ROOT/$filename")
   fi
 
-  # Priority 1b: Any Conductor repo (handles repo renames)
-  if [ -n "$CONDUCTOR_ROOT" ] && [ -d "$CONDUCTOR_ROOT/repos" ]; then
-    for repo in "$CONDUCTOR_ROOT/repos"/*/; do
-      repo="${repo%/}"
-      if [ "$repo" != "$CONDUCTOR_REPO_ROOT" ] && [ -f "$repo/$filename" ]; then
-        cp "$repo/$filename" "$filename"
-        echo "    Copied $filename from $repo (Conductor repo)"
-        return
+  if [ -d "$WORKSPACES_DIR" ]; then
+    for sibling in "$WORKSPACES_DIR"/*/; do
+      sibling="${sibling%/}"
+      if [ "$sibling" != "$PROJECT_ROOT" ] && [ -f "$sibling/$filename" ]; then
+        candidates+=("$sibling/$filename")
       fi
     done
   fi
 
-  # Priority 2: Any sibling Conductor workspace that has it
-  for sibling in "$WORKSPACES_DIR"/*/; do
-    sibling="${sibling%/}"
-    if [ "$sibling" != "$PROJECT_ROOT" ] && [ -f "$sibling/$filename" ]; then
-      cp "$sibling/$filename" "$filename"
-      echo "    Copied $filename from $sibling (sibling workspace)"
-      return
+  for candidate in "${candidates[@]}"; do
+    candidate_mtime="$(file_mtime "$candidate")"
+    if [ -z "$best" ] || [ "$candidate_mtime" -gt "$best_mtime" ]; then
+      best="$candidate"
+      best_mtime="$candidate_mtime"
     fi
   done
 
-  # Priority 3: Home directory
-  if [ -f "$HOME/$filename" ]; then
-    cp "$HOME/$filename" "$filename"
-    echo "    Copied $filename from $HOME (home directory)"
-    return
+  printf '%s\n' "$best"
+}
+
+sync_env_file() {
+  local filename="$1"
+  local shared_copy=""
+  local current_mtime=0
+  local shared_mtime=0
+
+  if [ -z "$CONDUCTOR_REPO_ROOT" ] || [ ! -f "$filename" ]; then
+    return 0
   fi
 
-  # Last resort: create from example
-  if [ -f ".env.example" ]; then
-    cp .env.example "$filename"
-    echo "    WARNING: Created $filename from .env.example (fill in your secrets!)"
+  shared_copy="$CONDUCTOR_REPO_ROOT/$filename"
+  mkdir -p "$CONDUCTOR_REPO_ROOT"
+
+  if [ ! -f "$shared_copy" ]; then
+    cp "$filename" "$shared_copy"
+    info "$filename: saved shared copy"
+    return 0
+  fi
+
+  if cmp -s "$filename" "$shared_copy"; then
+    info "$filename: shared copy already current"
+    return 0
+  fi
+
+  current_mtime="$(file_mtime "$filename")"
+  shared_mtime="$(file_mtime "$shared_copy")"
+  if [ "$current_mtime" -ge "$shared_mtime" ]; then
+    cp "$filename" "$shared_copy"
+    info "$filename: refreshed shared copy"
   else
-    echo "    ERROR: No $filename source found and no .env.example available"
+    info "$filename: kept newer shared copy"
   fi
 }
 
-copy_env_file ".env"
+ensure_env_file() {
+  local filename="$1"
+  local source=""
 
-# ── 2. Install dependencies ─────────────────────────────────────────────────
+  if [ -f "$filename" ]; then
+    info "$filename: keeping workspace copy"
+    sync_env_file "$filename"
+    return 0
+  fi
 
-echo "==> Installing dependencies..."
+  source="$(find_latest_env_source "$filename")"
+  if [ -z "$source" ]; then
+    echo ""
+    printf 'ERROR: No saved %s found for this Conductor repo\n' "$filename" >&2
+    if [ -n "$CONDUCTOR_REPO_ROOT" ]; then
+      printf '  Add a real %s to %s or another workspace under %s\n' "$filename" "$CONDUCTOR_REPO_ROOT/$filename" "$WORKSPACES_DIR" >&2
+    else
+      printf '  Add a real %s to another workspace\n' "$filename" >&2
+    fi
+    exit 1
+  fi
+
+  cp "$source" "$filename"
+  info "$filename: copied from $source"
+  sync_env_file "$filename"
+}
+
+step "Transfer env"
+ensure_env_file ".env"
+
+step "Install dependencies"
 pnpm install
 
-# ── 3. Build all packages ───────────────────────────────────────────────────
-
-echo "==> Building all packages..."
+step "Build project"
 pnpm build
 
-# ── 4. Create .context directory ─────────────────────────────────────────────
-
-if [ ! -d ".context" ]; then
-  mkdir -p .context
-  touch .context/notes.md .context/todos.md
-  echo "    Created .context/ directory"
-else
-  echo "    .context/ already exists, skipping"
-fi
-
-# ── 5. Check voice testing env vars ────────────────────────────────────────
-
-echo "==> Checking voice testing keys..."
-VOICE_MISSING=()
-for key in ELEVENLABS_API_KEY DEEPGRAM_API_KEY; do
-  val="$(grep "^${key}=" .env 2>/dev/null | cut -d= -f2- || true)"
-  if [ -z "$val" ]; then
-    VOICE_MISSING+=("$key")
-  fi
-done
-
-if [ ${#VOICE_MISSING[@]} -gt 0 ]; then
-  echo "    Missing voice keys in .env (needed for voice adapters):"
-  for key in "${VOICE_MISSING[@]}"; do
-    echo "      - $key"
-  done
-  echo "    Voice testing will not work until these are set."
-else
-  echo "    Core voice keys present (ElevenLabs, Deepgram)"
-fi
-
-echo ""
-echo "==> Setup complete!"
-echo "    Worktree is ready at $PROJECT_ROOT"
+step "Done"
+info "Workspace ready"
