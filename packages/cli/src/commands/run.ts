@@ -1,9 +1,8 @@
 import * as fs from "node:fs/promises";
-import { writeFileSync } from "node:fs";
 import { apiFetch, ApiError, ensurePlatformConnection } from "../lib/api.js";
 import { deviceAuthFlow } from "../lib/auth.js";
 import { streamRunEvents } from "../lib/sse.js";
-import { printEvent, printError, printInfo, printSummary, debug, setVerbose } from "../lib/output.js";
+import { printEvent, printError, printInfo, printSummary, debug } from "../lib/output.js";
 import { loadAccessToken, saveAccessToken } from "../lib/config.js";
 import { saveRunHistory } from "../lib/run-history.js";
 import { resolveRemotePlatformConfig } from "../lib/platform-connections.js";
@@ -12,67 +11,71 @@ import type { SSEEvent } from "../lib/sse.js";
 const isTTY = process.stdout.isTTY;
 
 interface RunArgs {
-  config?: string;
-  file?: string;
+  file: string;
   call?: string;
   session?: string;
-  accessToken?: string;
-  json: boolean;
-  submit: boolean;
-  verbose?: boolean;
 }
 
 export async function runCommand(args: RunArgs): Promise<number> {
-  if (args.verbose) setVerbose(true);
-  debug(`start args=${JSON.stringify({ file: args.file, call: args.call, session: args.session, json: args.json, submit: args.submit })}`);
+  debug(`start args=${JSON.stringify({ file: args.file, session: args.session })}`);
 
   // 1. Resolve Vent access token
-  const accessToken = args.accessToken ?? (await loadAccessToken());
+  const accessToken = await loadAccessToken();
   if (!accessToken) {
     printError("No Vent access token found. Set VENT_ACCESS_TOKEN, run `npx vent-hq login`, or pass --access-token.");
     return 2;
   }
   debug(`access-token resolved (${accessToken.slice(0, 8)}…)`);
 
-  // 2. Parse config
+  // 2. Parse suite file and extract call
   let config: unknown;
   try {
-    if (args.file) {
-      debug(`reading config file: ${args.file}`);
-      const raw = await fs.readFile(args.file, "utf-8");
-      config = JSON.parse(raw);
-      debug(`config parsed — keys: ${Object.keys(config as Record<string, unknown>).join(", ")}`);
-    } else if (args.config) {
-      config = JSON.parse(args.config);
-      debug("config parsed from --config flag");
-    } else {
-      printError("Provide --config '{...}' or -f <file>.");
+    debug(`reading suite file: ${args.file}`);
+    const raw = await fs.readFile(args.file, "utf-8");
+    const suite = JSON.parse(raw) as {
+      connection?: unknown;
+      calls?: Record<string, unknown>;
+    };
+    debug(`suite parsed — keys: ${Object.keys(suite).join(", ")}`);
+
+    if (!suite.connection) {
+      printError("Suite file must have a `connection` object.");
       return 2;
     }
+    if (!suite.calls || typeof suite.calls !== "object" || Object.keys(suite.calls).length === 0) {
+      printError("Suite file must have a `calls` map with at least one named call.");
+      return 2;
+    }
+
+    const callNames = Object.keys(suite.calls);
+    let callName: string;
+
+    if (args.call) {
+      if (!suite.calls[args.call]) {
+        printError(`Call "${args.call}" not found. Available: ${callNames.join(", ")}`);
+        return 2;
+      }
+      callName = args.call;
+    } else if (callNames.length === 1) {
+      callName = callNames[0]!;
+    } else {
+      printError(`Suite has ${callNames.length} calls. Use --call <name> to pick one: ${callNames.join(", ")}`);
+      return 2;
+    }
+
+    debug(`selected call: ${callName}`);
+    const call = { ...(suite.calls[callName] as Record<string, unknown>), name: callName };
+    config = { connection: suite.connection, call };
   } catch (err) {
-    printError(`Invalid config JSON: ${(err as Error).message}`);
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      printError(`File not found: ${args.file}`);
+      return 2;
+    }
+    printError(`Invalid suite JSON: ${(err as Error).message}`);
     return 2;
   }
 
-  // 2b. Filter to single call if --call is set
-  if (args.call) {
-    const cfg = config as { conversation_calls?: Array<{ name?: string }> };
-    const convCalls = cfg.conversation_calls ?? [];
-    if (convCalls.length === 0) {
-      printError("--call requires conversation_calls in config.");
-      return 2;
-    }
-    const convMatch = convCalls.filter((t, i) => (t.name ?? `call-${i}`) === args.call);
-    if (convMatch.length === 0) {
-      const available = convCalls.map((t, i) => t.name ?? `call-${i}`).join(", ");
-      printError(`Call "${args.call}" not found. Available: ${available}`);
-      return 2;
-    }
-    cfg.conversation_calls = convMatch;
-    debug(`filtered to call: ${args.call}`);
-  }
-
-  // 2c. Resolve remote platform credentials from local env and keep them local to the CLI.
+  // 2b. Resolve remote platform credentials from local env and keep them local to the CLI.
   // The CLI will upsert a saved platform connection and submit only the resulting ID.
   let resolvedRemotePlatform = null;
   try {
@@ -80,24 +83,6 @@ export async function runCommand(args: RunArgs): Promise<number> {
   } catch (err) {
     printError((err as Error).message);
     return 2;
-  }
-
-  // 2d. Enforce platform concurrency limits
-  const adapterForLimit = (config as { connection?: { adapter?: string } }).connection?.adapter;
-  const platformProvider = resolvedRemotePlatform?.provider;
-  const defaultLimits: Record<string, number> = { livekit: 5, vapi: 10, bland: 10, elevenlabs: 5, retell: 5 };
-  const providerKey = platformProvider ?? adapterForLimit;
-  const concurrencyLimit = providerKey ? defaultLimits[providerKey] : undefined;
-  if (concurrencyLimit) {
-    const convCalls = (config as { conversation_calls?: Array<{ repeat?: number }> }).conversation_calls ?? [];
-    const totalConcurrent = convCalls.reduce((sum, t) => sum + (t.repeat ?? 1), 0);
-    if (totalConcurrent > concurrencyLimit) {
-      printError(
-        `Too many concurrent calls (${totalConcurrent}) for ${providerKey} (limit: ${concurrencyLimit}). ` +
-        `Reduce call count or use --call to run a subset. Calls exceeding the limit will hang forever.`
-      );
-      return 2;
-    }
   }
 
   const connection = config as {
@@ -209,19 +194,7 @@ export async function runCommand(args: RunArgs): Promise<number> {
   debug(`run created: ${run_id} status=${submitResult.status}`);
   printInfo(`Run ${run_id} created.`);
 
-  // 4. Handle --submit (fire-and-forget)
-  if (args.submit) {
-    process.stdout.write(
-      JSON.stringify({
-        run_id,
-        status: submitResult.status,
-        check: `npx vent-hq status ${run_id} --json`,
-      }) + "\n"
-    );
-    return 0;
-  }
-
-  // 5. Stream results
+  // 4. Stream results
   debug(`connecting to SSE stream for run ${run_id}…`);
   printInfo(`Streaming results for run ${run_id}…`);
   const abortController = new AbortController();
@@ -242,7 +215,7 @@ export async function runCommand(args: RunArgs): Promise<number> {
       eventCount++;
       const meta = (event.metadata_json ?? {}) as Record<string, unknown>;
       debug(`event #${eventCount}: type=${event.event_type} meta_keys=[${Object.keys(meta).join(",")}] message="${event.message ?? ""}"`);
-      printEvent(event, args.json);
+      printEvent(event);
 
       if (event.event_type === "call_completed") {
         callResults.push(event);
@@ -270,26 +243,13 @@ export async function runCommand(args: RunArgs): Promise<number> {
     process.off("SIGTERM", onSignal);
   }
 
-  // 6. Print summary
+  // 5. Print summary
   debug(`summary: callResults=${callResults.length} runComplete=${!!runCompleteData} exitCode=${exitCode}`);
   if (runCompleteData) {
-    printSummary(callResults, runCompleteData, run_id, args.json);
-  } else if (!isTTY) {
-    // Fallback: if SSE stream ended without run_complete, still write something to stdout
-    // so coding agents don't see empty output / "undefined"
-    try {
-      writeFileSync(1, JSON.stringify({
-        run_id,
-        status: exitCode === 0 ? "pass" : "error",
-        error: "Stream ended without run_complete event",
-        check: `npx vent-hq status ${run_id} --json`,
-      }) + "\n");
-    } catch {
-      process.stdout.write(JSON.stringify({ run_id, status: "error" }) + "\n");
-    }
+    printSummary(callResults, runCompleteData, run_id);
   }
 
-  // 7. Save run history locally
+  // 6. Save run history locally
   if (runCompleteData) {
     const savedPath = await saveRunHistory(run_id, callResults, runCompleteData);
     if (savedPath) {

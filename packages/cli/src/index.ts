@@ -14,10 +14,10 @@ const USAGE = `Usage: vent-hq <command> [options]
 Commands:
   init         Set up Vent (auth + skill files + call scaffold)
   agent        Manage a shared local agent session
-  run          Run voice calls
+  run          Run a call from a suite file
   stop         Cancel a queued or running call
   status       Check status of a previous run
-  login        Save Vent access token (for re-auth or CI/scripts)
+  login        Authenticate via browser
   logout       Remove saved credentials
 Options:
   --help    Show help
@@ -25,18 +25,12 @@ Options:
 
 Run 'npx vent-hq <command> --help' for command-specific help.`;
 
-const RUN_USAGE = `Usage: vent-hq run [options]
+const RUN_USAGE = `Usage: vent-hq run -f <suite.json> [options]
 
 Options:
-  --config, -c   Call config as JSON string
-  --file, -f     Path to config JSON file
-  --call, -t     Run a single call by name (from suite file)
-  --session, -s  Reuse an existing local agent session
-  --list         List call names from suite file
-  --access-token Vent access token (overrides env/credentials)
-  --json         Output NDJSON instead of colored text
-  --submit       Submit and return immediately (print run_id, don't wait for results)
-  --verbose      Show debug logs (SSE, relay, internal events)`;
+  --file, -f     Path to suite JSON file (required)
+  --call         Name of the call to run (required if suite has multiple calls)
+  --session, -s  Reuse an existing local agent session`;
 
 const AGENT_USAGE = `Usage: vent-hq agent <command> [options]
 
@@ -47,19 +41,11 @@ Commands:
 Start options:
   --config, -c   Config JSON string with a connection block
   --file, -f     Path to config JSON file
-  --access-token Vent access token (overrides env/credentials)
-  --json         Output session info as JSON
-  --verbose      Show relay debug logs
 
 Stop options:
-  vent-hq agent stop <session-id> [--access-token <token>]`;
+  vent-hq agent stop <session-id>`;
 
-const STATUS_USAGE = `Usage: vent-hq status <run-id> [options]
-
-Options:
-  --access-token Vent access token (overrides env/credentials)
-  --json         Output raw JSON
-  --stream       Stream live results instead of fetching current state`;
+const STATUS_USAGE = `Usage: vent-hq status <run-id>`;
 
 async function main(): Promise<number> {
   loadDotenv();
@@ -83,14 +69,7 @@ async function main(): Promise<number> {
 
   switch (command) {
     case "init": {
-      const { values } = parseArgs({
-        args: commandArgs,
-        options: {
-          "access-token": { type: "string" },
-        },
-        strict: true,
-      });
-      return initCommand({ accessToken: values["access-token"] });
+      return initCommand();
     }
 
     case "run": {
@@ -101,54 +80,23 @@ async function main(): Promise<number> {
       const { values } = parseArgs({
         args: commandArgs,
         options: {
-          config: { type: "string", short: "c" },
           file: { type: "string", short: "f" },
-          call: { type: "string", short: "n" },
+          call: { type: "string" },
           session: { type: "string", short: "s" },
-          list: { type: "boolean", default: false },
-          "access-token": { type: "string" },
-          json: { type: "boolean", default: false },
-          submit: { type: "boolean", default: false },
-          "no-stream": { type: "boolean", default: false },
-          verbose: { type: "boolean", default: false },
         },
         strict: true,
       });
 
-      // --list: print call names and exit
-      if (values.list) {
-        let config: { conversation_calls?: Array<{ name?: string }> };
-        try {
-          if (values.file) {
-            const fs = await import("node:fs/promises");
-            const raw = await fs.readFile(values.file, "utf-8");
-            config = JSON.parse(raw);
-          } else if (values.config) {
-            config = JSON.parse(values.config);
-          } else {
-            printError("--list requires --config or --file.");
-            return 2;
-          }
-        } catch (err) {
-          printError(`Invalid config JSON: ${(err as Error).message}`);
-          return 2;
-        }
-        const convCalls = config!.conversation_calls ?? [];
-        for (let i = 0; i < convCalls.length; i++) {
-          console.log(convCalls[i]!.name ?? `call-${i}`);
-        }
-        return 0;
+      if (!values.file) {
+        printError("Missing --file (-f). Provide a suite JSON file.");
+        console.log(RUN_USAGE);
+        return 2;
       }
 
       return runCommand({
-        config: values.config,
         file: values.file,
         call: values.call,
         session: values.session,
-        accessToken: values["access-token"],
-        json: values.json!,
-        submit: values.submit! || values["no-stream"]!,
-        verbose: values.verbose!,
       });
     }
 
@@ -165,18 +113,12 @@ async function main(): Promise<number> {
           options: {
             config: { type: "string", short: "c" },
             file: { type: "string", short: "f" },
-            "access-token": { type: "string" },
-            json: { type: "boolean", default: false },
-            verbose: { type: "boolean", default: false },
           },
           strict: true,
         });
         return agentStartCommand({
           config: values.config,
           file: values.file,
-          accessToken: values["access-token"],
-          json: values.json!,
-          verbose: values.verbose!,
         });
       }
 
@@ -186,17 +128,7 @@ async function main(): Promise<number> {
           console.log(AGENT_USAGE);
           return 2;
         }
-        const { values } = parseArgs({
-          args: commandArgs.slice(2),
-          options: {
-            "access-token": { type: "string" },
-          },
-          strict: true,
-        });
-        return agentStopCommand({
-          sessionId,
-          accessToken: values["access-token"],
-        });
+        return agentStopCommand({ sessionId });
       }
 
       printError(`Unknown agent subcommand: ${subcommand}`);
@@ -210,47 +142,27 @@ async function main(): Promise<number> {
         return 0;
       }
       const runId = commandArgs[0]!;
-      const { values } = parseArgs({
-        args: commandArgs.slice(1),
-        options: {
-          "access-token": { type: "string" },
-          json: { type: "boolean", default: false },
-          stream: { type: "boolean", default: false },
-        },
-        strict: true,
-      });
-      return statusCommand({
-        runId,
-        accessToken: values["access-token"],
-        json: values.json!,
-        stream: values.stream!,
-      });
+      return statusCommand({ runId });
     }
 
     case "stop": {
       const runId = commandArgs[0];
       if (!runId || commandArgs.includes("--help")) {
-        console.log("Usage: vent-hq stop <run-id> [--access-token <token>]");
+        console.log("Usage: vent-hq stop <run-id>");
         return runId ? 0 : 2;
       }
-      const { values: stopValues } = parseArgs({
-        args: commandArgs.slice(1),
-        options: { "access-token": { type: "string" } },
-        strict: true,
-      });
-      return stopCommand({ runId, accessToken: stopValues["access-token"] });
+      return stopCommand({ runId });
     }
 
     case "login": {
       const { values } = parseArgs({
         args: commandArgs,
         options: {
-          "access-token": { type: "string" },
           status: { type: "boolean", default: false },
         },
         strict: true,
       });
-      return loginCommand({ accessToken: values["access-token"], status: values.status! });
+      return loginCommand({ status: values.status! });
     }
 
     case "logout": {
