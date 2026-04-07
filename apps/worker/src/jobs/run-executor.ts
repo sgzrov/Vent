@@ -38,6 +38,7 @@ async function emitEvent(
         [RUNNER_CALLBACK_HEADER]: secret,
       },
       body: JSON.stringify({ run_id: runId, event_type: eventType, message, metadata_json: metadata }),
+      signal: AbortSignal.timeout(10_000),
     });
   } catch {
     // Best-effort — don't fail the run if event emission fails
@@ -132,6 +133,7 @@ async function executeRemoteRun(db: Database, job: RunJob): Promise<void> {
               duration_ms: result.duration_ms,
               result: formatConversationResult(result),
             }),
+            signal: AbortSignal.timeout(15_000),
           });
           if (!res.ok) console.warn(`call-progress POST failed (${res.status}) for ${callName}`);
         } catch (err) {
@@ -152,6 +154,7 @@ async function executeRemoteRun(db: Database, job: RunJob): Promise<void> {
         conversation_result: conversationResult,
         aggregate,
       }),
+      signal: AbortSignal.timeout(30_000),
     });
 
     if (!response.ok) {
@@ -225,6 +228,7 @@ async function executeSessionRun(db: Database, job: RunJob, relayMachineId: stri
               duration_ms: result.duration_ms,
               result: formatConversationResult(result),
             }),
+            signal: AbortSignal.timeout(15_000),
           });
           if (!res.ok) console.warn(`call-progress POST failed (${res.status}) for ${callName}`);
         } catch (err) {
@@ -242,6 +246,7 @@ async function executeSessionRun(db: Database, job: RunJob, relayMachineId: stri
         conversation_result: conversationResult,
         aggregate,
       }),
+      signal: AbortSignal.timeout(30_000),
     });
 
     if (!response.ok) {
