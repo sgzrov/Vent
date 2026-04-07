@@ -20,7 +20,6 @@ import {
 import {
   collectUntilEndOfTurn,
   waitForSpeech,
-  streamSilence,
   transcribeAudio,
 } from "../audio-tests/helpers.js";
 import type { VoiceActivityDetector, StreamingTranscriber } from "@vent/voice";
@@ -45,8 +44,6 @@ export async function executeAudioAction(
   switch (action.action) {
     case "interrupt":
       return executeInterrupt(action, ctx);
-    case "silence":
-      return executeSilence(action, ctx);
     case "inject_noise":
       return executeInjectNoise(action, ctx);
     case "split_sentence":
@@ -139,66 +136,6 @@ async function executeInterrupt(
 }
 
 /**
- * Silence: stream silence instead of caller utterance, count unprompted agent utterances.
- * Doubles as echo detection — if unprompted_utterance_count > 0, agent is likely
- * hearing its own TTS output via a feedback loop.
- */
-async function executeSilence(
-  action: AudioAction,
-  ctx: ActionContext,
-): Promise<{ result: AudioActionResult; agentText: string }> {
-  const durationMs = action.duration_ms ?? 8000;
-  const ECHO_WINDOW_MS = 3000;
-
-  // Stream silence to keep the connection alive
-  const silencePromise = streamSilence(ctx.channel, durationMs);
-
-  const silenceStart = Date.now();
-  let unpromptedCount = 0;
-  const unpromptedTexts: string[] = [];
-
-  // Count distinct unprompted utterances during the silence window
-  while (Date.now() - silenceStart < durationMs) {
-    const remaining = durationMs - (Date.now() - silenceStart);
-    if (remaining < ECHO_WINDOW_MS) break;
-
-    const { timedOut } = await waitForSpeech(ctx.channel, Math.min(ECHO_WINDOW_MS, remaining));
-    if (timedOut) break;
-
-    unpromptedCount++;
-
-    // Drain the unprompted utterance
-    ctx.transcriber.resetForNextTurn();
-    const feedSTT = (chunk: Buffer) => ctx.transcriber.feedAudio(chunk);
-    ctx.channel.on("audio", feedSTT);
-
-    await collectUntilEndOfTurn(ctx.channel, { timeoutMs: 10000, vad: ctx.vad });
-
-    ctx.channel.off("audio", feedSTT);
-    const { text } = await ctx.transcriber.finalize();
-    if (text) unpromptedTexts.push(text);
-  }
-
-  await silencePromise;
-
-  const agentText = unpromptedTexts.join(" ");
-
-  return {
-    result: {
-      at_turn: action.at_turn,
-      action: "silence",
-      metrics: {
-        agent_prompted: unpromptedCount > 0,
-        unprompted_utterance_count: unpromptedCount,
-        silence_duration_ms: durationMs,
-      },
-      transcriptions: { agent_prompt_text: agentText || null },
-    },
-    agentText,
-  };
-}
-
-/**
  * Inject noise: during agent speech, send noise audio into the channel.
  * Checks for false barge-in (agent falsely stops because of noise).
  */
@@ -228,7 +165,7 @@ async function executeInjectNoise(
     : generateBabbleNoise;
   const noise = noiseGenerator(noiseDurationMs);
 
-  // Send noise while agent is speaking (raw: skip anti-echo measures)
+  // Send noise while agent is speaking (raw: skip send guards)
   await ctx.channel.sendAudio(noise, { raw: true });
 
   // Collect rest of agent response
