@@ -9,8 +9,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "clean": "rm -rf dist",
-    "test": "tsx --test src/audio-tests/helpers.test.ts"
+    "clean": "rm -rf dist"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",
@@ -22,7 +21,6 @@
     "hume": "^0.15.15"
   },
   "devDependencies": {
-    "tsx": "catalog:",
     "typescript": "catalog:"
   }
 }
