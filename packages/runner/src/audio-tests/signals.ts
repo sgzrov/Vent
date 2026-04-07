@@ -3,16 +3,6 @@
  * All audio is 16-bit signed PCM, 24kHz mono.
  */
 
-const SAMPLE_RATE = 24000;
-
-/**
- * Generate silence as PCM 16-bit buffer.
- */
-export function generateSilence(durationMs: number): Buffer {
-  const numSamples = Math.floor((SAMPLE_RATE * durationMs) / 1000);
-  return Buffer.alloc(numSamples * 2);
-}
-
 /**
  * Compute RMS energy of a PCM 16-bit buffer.
  */
