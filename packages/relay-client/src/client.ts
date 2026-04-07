@@ -145,10 +145,10 @@ export class RelayClient {
     }
   }
 
-  private sendBinaryFrame(connId: string, payload: Uint8Array): void {
+  private sendDataFrame(connId: string, payload: Uint8Array, frameType: number): void {
     if (!this.controlWs || this.controlWs.readyState !== WebSocket.OPEN) return;
     const header = new Uint8Array(37);
-    header[0] = 0x01;
+    header[0] = frameType;
     const connIdBytes = new TextEncoder().encode(connId);
     header.set(connIdBytes, 1);
     const frame = new Uint8Array(37 + payload.byteLength);
@@ -159,16 +159,23 @@ export class RelayClient {
 
   private setupControlHandlers(ws: WebSocket): void {
     ws.addEventListener("message", (event) => {
-      // Binary message: data frame from server (runner audio for a conn_id)
+      // Binary message: data frame from server (runner data for a conn_id)
       if (event.data instanceof ArrayBuffer) {
         const data = new Uint8Array(event.data);
-        if (data.length < 37 || data[0] !== 0x01) return;
+        if (data.length < 37) return;
+        const frameType = data[0];
+        if (frameType !== 0x01 && frameType !== 0x02) return;
         const connId = new TextDecoder().decode(data.subarray(1, 37));
         const payload = data.subarray(37);
 
         const conn = this.localConnections.get(connId);
         if (conn?.local.readyState === WebSocket.OPEN) {
-          conn.local.send(payload);
+          if (frameType === 0x02) {
+            // Text frame: forward as string so local agent receives a text WS message
+            conn.local.send(new TextDecoder().decode(payload));
+          } else {
+            conn.local.send(payload);
+          }
         }
         return;
       }
@@ -226,12 +233,13 @@ export class RelayClient {
         this.localConnections.set(connId, { local: localWs, connId });
       });
 
-      // Forward local agent audio to server via binary frame on control WS
+      // Forward local agent messages to server, preserving text/binary distinction
       localWs.addEventListener("message", (event) => {
-        const payload = event.data instanceof ArrayBuffer
-          ? new Uint8Array(event.data)
-          : new TextEncoder().encode(event.data as string);
-        this.sendBinaryFrame(connId, payload);
+        if (event.data instanceof ArrayBuffer) {
+          this.sendDataFrame(connId, new Uint8Array(event.data), 0x01);
+        } else {
+          this.sendDataFrame(connId, new TextEncoder().encode(event.data as string), 0x02);
+        }
       });
 
       let cleaned = false;

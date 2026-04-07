@@ -26,7 +26,7 @@ try {
 interface RunnerConnection {
   runner: WebSocket;
   connId: string;
-  buffered: Buffer[];
+  buffered: Array<{ payload: Buffer; frameType: number }>;
   ready: boolean;
 }
 
@@ -59,20 +59,25 @@ const redisPub = new IORedis(redisUrl, { maxRetriesPerRequest: null });
 // Binary framing helpers
 // ---------------------------------------------------------------------------
 
-function sendDataFrame(session: RelaySession, connId: string, payload: Buffer): void {
+const FRAME_BINARY = 0x01;
+const FRAME_TEXT = 0x02;
+
+function sendDataFrame(session: RelaySession, connId: string, payload: Buffer, frameType = FRAME_BINARY): void {
   if (session.controlWs.readyState !== session.controlWs.OPEN) return;
   const header = Buffer.alloc(37);
-  header[0] = 0x01;
+  header[0] = frameType;
   header.write(connId, 1, 36, "ascii");
   const frame = Buffer.concat([header, payload]);
   session.controlWs.send(frame, { binary: true });
 }
 
-function parseDataFrame(data: Buffer): { connId: string; payload: Buffer } | null {
-  if (data.length < 37 || data[0] !== 0x01) return null;
+function parseDataFrame(data: Buffer): { connId: string; payload: Buffer; isText: boolean } | null {
+  if (data.length < 37) return null;
+  const type = data[0];
+  if (type !== FRAME_BINARY && type !== FRAME_TEXT) return null;
   const connId = data.toString("ascii", 1, 37);
   const payload = data.subarray(37);
-  return { connId, payload };
+  return { connId, payload, isText: type === FRAME_TEXT };
 }
 
 // ---------------------------------------------------------------------------
@@ -300,7 +305,7 @@ async function relayRoutes(app: FastifyInstance) {
         if (!frame) return;
         const conn = session.connections.get(frame.connId);
         if (conn && conn.runner.readyState === conn.runner.OPEN) {
-          conn.runner.send(frame.payload, { binary: true });
+          conn.runner.send(frame.payload, { binary: !frame.isText });
         }
       } else {
         // Text frame: control message from CLI
@@ -311,8 +316,8 @@ async function relayRoutes(app: FastifyInstance) {
             if (conn) {
               conn.ready = true;
               // Flush buffered runner data
-              for (const buf of conn.buffered) {
-                sendDataFrame(session, msg.conn_id, buf);
+              for (const { payload, frameType } of conn.buffered) {
+                sendDataFrame(session, msg.conn_id, payload, frameType);
               }
               conn.buffered = [];
               app.log.info({ sessionKey, connId: msg.conn_id }, "relay/control: open_ack received, flushed buffer");
@@ -404,10 +409,11 @@ async function relayRoutes(app: FastifyInstance) {
 
     // Forward runner data to CLI over control WS (multiplexed)
     let bufferedBytes = 0;
-    socket.on("message", (data: Buffer) => {
+    socket.on("message", (data: Buffer, isBinary: boolean) => {
       const payload = Buffer.from(data);
+      const frameType = isBinary ? FRAME_BINARY : FRAME_TEXT;
       if (conn.ready) {
-        sendDataFrame(session, connId, payload);
+        sendDataFrame(session, connId, payload, frameType);
       } else {
         bufferedBytes += payload.length;
         if (bufferedBytes > MAX_BUFFER_BYTES) {
@@ -415,7 +421,7 @@ async function relayRoutes(app: FastifyInstance) {
           socket.close(4413, "Buffer limit exceeded");
           return;
         }
-        conn.buffered.push(payload);
+        conn.buffered.push({ payload, frameType });
       }
     });
 
