@@ -187,9 +187,7 @@ function extractSegments(
       consecutiveVoice = 0;
 
       if (inSpeech) {
-        probSum += probs[i]!;
-        probCount++;
-
+        // Don't include silence frames in meanProbability — only count voiced frames
         if (consecutiveSilence >= SPEECH_OFFSET_FRAMES) {
           // End segment at the frame before the silence run started
           const segmentEndFrame = i - SPEECH_OFFSET_FRAMES;

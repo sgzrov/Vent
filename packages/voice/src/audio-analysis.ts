@@ -23,6 +23,11 @@ const CLICK_THRESHOLD = 20000;
 const DROP_FACTOR = 0.05;
 const SPIKE_FACTOR = 3.0;
 const DROP_CONSECUTIVE_MIN = 2;
+const F0_MIN_HZ = 80;
+const F0_MAX_HZ = 400;
+const F0_MIN_LAG = Math.floor(SAMPLE_RATE / F0_MAX_HZ); // 60 samples → 400 Hz
+const F0_MAX_LAG = Math.floor(SAMPLE_RATE / F0_MIN_HZ); // 300 samples → 80 Hz
+const F0_VOICING_THRESHOLD = 0.3;
 
 // ============================================================
 // Types
@@ -107,6 +112,7 @@ export function analyzeAudioQuality(
     energyConsistency = meanSpeechRms > 0 ? Math.max(0, 1 - stddev / meanSpeechRms) : 0;
 
     let consecutiveDrops = 0;
+    let inDrop = false;
     for (let i = 1; i < windowRms.length - 1; i++) {
       const prev = windowRms[i - 1]!;
       const curr = windowRms[i]!;
@@ -116,13 +122,18 @@ export function analyzeAudioQuality(
       if (isSpeechRegion) {
         if (curr < meanSpeechRms * DROP_FACTOR) {
           consecutiveDrops++;
-          if (consecutiveDrops >= DROP_CONSECUTIVE_MIN) suddenDrops++;
+          if (consecutiveDrops >= DROP_CONSECUTIVE_MIN && !inDrop) {
+            suddenDrops++;
+            inDrop = true;
+          }
         } else {
           consecutiveDrops = 0;
+          inDrop = false;
         }
         if (curr > meanSpeechRms * SPIKE_FACTOR) suddenSpikes++;
       } else {
         consecutiveDrops = 0;
+        inDrop = false;
       }
     }
   }
@@ -156,23 +167,50 @@ export function analyzeAudioQuality(
       ? Math.round(20 * Math.log10(meanSpeechRms / noiseFloorRms) * 10) / 10
       : -1;
 
-  // 5. F0 estimation via zero-crossing rate on speech regions
-  let zeroCrossings = 0;
-  let speechSampleCount = 0;
+  // 5. F0 estimation via autocorrelation on speech regions
+  const f0Estimates: number[] = [];
   for (let w = 0; w < windowCount; w++) {
     if (windowRms[w]! < SILENCE_RMS_THRESHOLD) continue;
     const offset = w * WINDOW_SAMPLES;
-    for (let i = 1; i < WINDOW_SAMPLES; i++) {
-      const prev = buffer.readInt16LE((offset + i - 1) * 2);
-      const curr = buffer.readInt16LE((offset + i) * 2);
-      if ((prev >= 0 && curr < 0) || (prev < 0 && curr >= 0)) zeroCrossings++;
-      speechSampleCount++;
+
+    // Autocorrelation at lag 0 (energy)
+    let r0 = 0;
+    for (let i = 0; i < WINDOW_SAMPLES; i++) {
+      const s = buffer.readInt16LE((offset + i) * 2);
+      r0 += s * s;
+    }
+    if (r0 === 0) continue;
+
+    // Find the lag with the highest autocorrelation in [F0_MIN_LAG, F0_MAX_LAG]
+    let bestLag = 0;
+    let bestR = -Infinity;
+    const lagEnd = Math.min(F0_MAX_LAG, WINDOW_SAMPLES - 1);
+    for (let lag = F0_MIN_LAG; lag <= lagEnd; lag++) {
+      let r = 0;
+      for (let i = 0; i < WINDOW_SAMPLES - lag; i++) {
+        r += buffer.readInt16LE((offset + i) * 2) * buffer.readInt16LE((offset + i + lag) * 2);
+      }
+      if (r > bestR) {
+        bestR = r;
+        bestLag = lag;
+      }
+    }
+
+    // Voicing confidence: reject if peak is too weak relative to energy
+    if (bestLag > 0 && bestR / r0 > F0_VOICING_THRESHOLD) {
+      f0Estimates.push(SAMPLE_RATE / bestLag);
     }
   }
-  const f0Hz =
-    speechSampleCount > 0
-      ? Math.round((zeroCrossings / 2) * (SAMPLE_RATE / speechSampleCount))
-      : 0;
+
+  // Median F0 — robust to octave errors
+  let f0Hz = 0;
+  if (f0Estimates.length > 0) {
+    f0Estimates.sort((a, b) => a - b);
+    const mid = Math.floor(f0Estimates.length / 2);
+    f0Hz = f0Estimates.length % 2 === 1
+      ? Math.round(f0Estimates[mid]!)
+      : Math.round((f0Estimates[mid - 1]! + f0Estimates[mid]!) / 2);
+  }
 
   return {
     clipping_ratio: Math.round(clippingRatio * 10000) / 10000,
