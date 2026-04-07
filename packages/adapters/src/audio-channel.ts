@@ -34,7 +34,7 @@ export interface AudioChannelEvents {
 }
 
 export interface SendAudioOptions {
-  /** When true, skip anti-echo measures (silence padding, mark await, clear).
+  /** When true, skip send guards (silence padding, mark await, clear).
    *  Use for audio actions (interrupt, noise injection) where timing matters. */
   raw?: boolean;
 }
