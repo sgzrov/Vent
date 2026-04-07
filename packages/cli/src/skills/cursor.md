@@ -32,9 +32,64 @@ One command. No email, no browser, no human interaction needed. You get 10 free 
 | `npx vent-hq agent start -f .vent/suite.<adapter>.json` | Start one shared local agent session (required for `start_command`) |
 | `npx vent-hq agent stop <session-id>` | Close a shared local agent session |
 | `npx vent-hq run -f .vent/suite.<adapter>.json` | Run a call from suite file (auto-selects if only one call) |
+| `npx vent-hq run -f .vent/suite.<adapter>.json --verbose` | Include debug fields in the result JSON |
 | `npx vent-hq run -f .vent/suite.<adapter>.json --call <name>` | Run a specific named call |
 | `npx vent-hq stop <run-id>` | Cancel a queued or running call |
 | `npx vent-hq status <run-id>` | Check results of a previous run |
+| `npx vent-hq status <run-id> --verbose` | Re-print a run with debug fields included |
+
+## When To Use `--verbose`
+
+Default output is enough for most work. It already includes:
+- transcript
+- latency
+- transcript quality (`wer` / `cer`)
+- audio analysis
+- tool calls
+- summary cost / recording / transfers
+
+Use `--verbose` only when you need debugging detail that is not in the default result:
+- per-turn debug fields: timestamps, caller decision mode, silence pad, STT confidence, platform transcript
+- raw signal analysis: `debug.signal_quality`
+- harness timings: `debug.harness_overhead`
+- raw prosody payload and warnings
+- raw provider warnings
+- per-turn component latency arrays
+- raw observed tool-call timeline
+- provider-specific metadata in `debug.provider_metadata`
+
+Trigger `--verbose` when:
+- transcript accuracy looks wrong and you need to inspect `platform_transcript`
+- latency is bad and you need per-turn/component breakdowns
+- interruptions/barge-in behavior looks wrong
+- tool-call execution looks inconsistent or missing
+- the provider returned warnings/errors or you need provider-native artifacts
+
+Skip `--verbose` when:
+- you only need pass/fail, transcript, latency, tool calls, recording, or summary
+- you are doing quick iteration on prompt wording and the normal result already explains the failure
+
+## Normalization Contract
+
+Vent always returns one normalized result shape on `stdout` across adapters. Treat these as the stable categories:
+- `transcript`
+- `latency`
+- `transcript_quality`
+- `audio_analysis`
+- `tool_calls`
+- `component_latency`
+- `call_metadata`
+- `warnings`
+- `audio_actions`
+- `emotion`
+
+Source-of-truth policy:
+- Vent computes transcript, latency, and audio-quality metrics itself.
+- Hosted adapters choose the best source per category, usually provider post-call data for tool calls, call metadata, transfers, provider transcripts, and recordings.
+- Realtime provider events are fallback or enrichment only when post-call data is missing, delayed, weaker for that category, or provider-specific.
+- `LiveKit` helper events are the provider-native path for rich in-agent observability.
+- `websocket`/custom agents are realtime-native but still map into the same normalized categories.
+- Keep adapter-specific details in `call_metadata.provider_metadata` or `debug.provider_metadata`, not in new top-level fields.
 
 
 ## Critical Rules
@@ -43,7 +98,7 @@ One command. No email, no browser, no human interaction needed. You get 10 free 
 2. **Handle backgrounded commands** — If a call command gets moved to background by the system, wait for it to complete before proceeding. Never end your response without delivering call results.
 3. **Output format** — In non-TTY mode (when run by an agent), every SSE event is written to stdout as a JSON line. Results are always in stdout.
 4. **This skill is self-contained** — The full config schema is below. Do NOT re-read this file.
-5. **Always analyze results** — The run command outputs complete JSON with full transcript, latency, and tool calls. Analyze this output directly — do NOT run `vent status` afterwards, the data is already there.
+5. **Always analyze results** — The run command outputs complete JSON with full transcript, latency, and tool calls. Use `--verbose` only when the default result is not enough to explain the failure. Analyze this output directly — do NOT run `vent status` afterwards unless you are re-checking a past run.
 
 ## Workflow
 
@@ -109,6 +164,12 @@ When using `adapter: "websocket"`, Vent communicates with the agent over a singl
 | `speech-update` | `{"type":"speech-update","status":"started"\|"stopped"}` | Enables platform-assisted turn detection (more accurate than VAD alone) |
 | `tool_call` | `{"type":"tool_call","name":"...","arguments":{...},"result":...,"successful":bool,"duration_ms":number}` | Reports tool calls for observability |
 | `vent:timing` | `{"type":"vent:timing","stt_ms":number,"llm_ms":number,"tts_ms":number}` | Reports component latency breakdown per turn |
+| `vent:session` | `{"type":"vent:session","platform":"custom","provider_call_id":"...","provider_session_id":"..."}` | Reports stable provider/session identifiers |
+| `vent:call-metadata` | `{"type":"vent:call-metadata","call_metadata":{...}}` | Reports post-call metadata such as cost, recordings, variables, and provider-specific artifacts |
+| `vent:transcript` | `{"type":"vent:transcript","role":"caller"\|"agent","text":"...","turn_index":0}` | Reports platform/native transcript text for caller or agent |
+| `vent:transfer` | `{"type":"vent:transfer","destination":"...","status":"attempted"\|"completed"}` | Reports transfer attempts and outcomes |
+| `vent:debug-url` | `{"type":"vent:debug-url","label":"log","url":"https://..."}` | Reports provider debug/deep-link URLs |
+| `vent:warning` | `{"type":"vent:warning","message":"...","code":"..."}` | Reports provider/runtime warnings worth preserving in run metadata |
 
 Vent sends `{"type":"end-call"}` to the agent when the test is done.
 
@@ -265,6 +326,41 @@ All fields optional. Send one per agent response. Without this, component_latenc
 When modifying a WebSocket agent's code, add this text frame after TTS completes to enable component latency reporting.
 </component_timing>
 
+<metadata_capture>
+WebSocket and LiveKit/WebRTC agents can also emit richer observability metadata:
+  {"type":"vent:session","platform":"custom","provider_call_id":"call_123","provider_session_id":"session_abc"}
+  {"type":"vent:call-metadata","call_metadata":{"recording_url":"https://...","cost_usd":0.12,"provider_debug_urls":{"log":"https://..."}}}
+  {"type":"vent:debug-url","label":"trace","url":"https://..."}
+  {"type":"vent:session-report","report":{"room_name":"room-123","events":[...],"metrics":[...]}}
+  {"type":"vent:metrics","event":"metrics_collected","metric_type":"eou","metrics":{"speechId":"speech_123","endOfUtteranceDelayMs":420}}
+  {"type":"vent:function-tools-executed","event":"function_tools_executed","hasAgentHandoff":true,"tool_calls":[{"name":"lookup_customer","arguments":{"id":"123"}}]}
+  {"type":"vent:conversation-item","event":"conversation_item_added","item":{"type":"agent_handoff","newAgentId":"billing-agent"}}
+  {"type":"vent:session-usage","usage":{"llm":{"promptTokens":123,"completionTokens":45}}}
+Transport:
+  WebSocket — send JSON text frames with these payloads. WebSocket agents may also emit {"type":"vent:transcript","role":"caller","text":"I need to reschedule","turn_index":0} when they have native transcript text.
+  WebRTC/LiveKit — publishData() or sendText() on the matching "vent:*" topic, e.g. topic "vent:call-metadata" with the JSON body above.
+For LiveKit, transcript and timing stay authoritative from native room signals (`lk.transcription`, `lk.agent.state`). Do not emit `vent:transcript` from LiveKit agents.
+For LiveKit Node agents, prefer the first-party helper instead of manual forwarding:
+```ts
+import { instrumentLiveKitAgent } from "@vent-hq/livekit";
+
+const vent = instrumentLiveKitAgent({
+  ctx,
+  session,
+});
+```
+This helper must run inside the LiveKit agent runtime with the existing Agents SDK `session` and `ctx` objects. It is the Vent integration layer on top of the Agents SDK, not a replacement for it.
+Install it with `npm install @vent-hq/livekit` after the package is published to the `vent-hq` npm org. Until then, use the workspace package from this repo.
+This automatically publishes only the in-agent-only LiveKit signals: `metrics_collected`, `function_tools_executed`, `conversation_item_added`, and a session report on close/shutdown.
+Do not use it to mirror room-visible signals like transcript, agent state timing, or room/session ID — Vent already gets those from LiveKit itself.
+For LiveKit inside-agent forwarding, prefer sending the raw LiveKit event payloads on:
+  `vent:metrics`
+  `vent:function-tools-executed`
+  `vent:conversation-item`
+  `vent:session-usage`
+Use these metadata events when the agent runtime already knows native IDs, recordings, warnings, debug links, session reports, metrics events, or handoff artifacts. This gives custom and LiveKit agents parity with hosted adapters without needing a LiveKit Cloud connector.
+</metadata_capture>
+
 <config_call>
 Each call in the `calls` map. The key is the call name (e.g. `"reschedule-appointment"`, not `"call-1"`).
 {
@@ -278,7 +374,7 @@ Each call in the `calls` map. The key is the call name (e.g. `"reschedule-appoin
       "disfluencies": "true | false",
       "cooperation": "cooperative | reluctant | hostile",
       "emotion": "neutral | cheerful | confused | frustrated | skeptical | rushed",
-      "interruption_style": "low (~3/10 turns) | high (~7/10 turns)",
+      "interruption_style": "optional preplanned interrupt tendency: low | high. If set, Vent may pre-plan a caller cut-in before the agent turn starts. It does NOT make a mid-turn interrupt LLM call.",
       "memory": "reliable | unreliable",
       "intent_clarity": "clear | indirect | vague",
       "confirmation_style": "explicit | vague"
@@ -286,7 +382,6 @@ Each call in the `calls` map. The key is the call name (e.g. `"reschedule-appoin
     "audio_actions": "optional — per-turn audio stress calls",
     [
       { "action": "interrupt", "at_turn": "N", "prompt": "what caller says" },
-      { "action": "silence", "at_turn": "N", "duration_ms": "1000-30000" },
       { "action": "inject_noise", "at_turn": "N", "noise_type": "babble | white | pink", "snr_db": "0-40" },
       { "action": "split_sentence", "at_turn": "N", "split": { "part_a": "...", "part_b": "...", "pause_ms": "500-5000" } },
       { "action": "noise_on_caller", "at_turn": "N" }
@@ -305,6 +400,12 @@ Each call in the `calls` map. The key is the call name (e.g. `"reschedule-appoin
     },
     "language": "optional — ISO 639-1: en, es, fr, de, it, nl, ja"
 }
+
+Interruption rules:
+- `audio_actions: [{ "action": "interrupt", ... }]` is the deterministic per-turn interrupt test. Prefer this for evaluation.
+- `persona.interruption_style` is only a preplanned caller tendency. If used, Vent decides before the agent response starts whether this turn may cut in.
+- Vent no longer pauses mid-turn to ask a second LLM whether to interrupt.
+- For production-faithful testing, prefer explicit `audio_actions.interrupt` over persona interruption.
 
 <examples_call>
 <simple_suite_example>
@@ -361,6 +462,9 @@ A call entry with advanced options (persona, audio actions, prosody):
     { "role": "agent", "text": "Sure, the earliest is 9 AM tomorrow.", "ttfb_ms": 220, "ttfw_ms": 260, "audio_duration_ms": 2100 }
   ],
   "latency": {
+    "response_time_ms": 890, "response_time_source": "ttfw",
+    "p50_response_time_ms": 850, "p90_response_time_ms": 1100, "p95_response_time_ms": 1400, "p99_response_time_ms": 1550,
+    "first_response_time_ms": 1950,
     "mean_ttfw_ms": 890, "p50_ttfw_ms": 850, "p95_ttfw_ms": 1400, "p99_ttfw_ms": 1550,
     "first_turn_ttfw_ms": 1950, "total_silence_ms": 4200, "mean_turn_gap_ms": 380,
     "drift_slope_ms_per_turn": -45.2, "mean_silence_pad_ms": 128, "mouth_to_ear_est_ms": 1020
@@ -376,10 +480,13 @@ A call entry with advanced options (persona, audio actions, prosody):
     "words_per_minute": 148
   },
   "audio_analysis": {
+    "caller_talk_time_ms": 12400,
+    "agent_talk_time_ms": 28500,
     "agent_speech_ratio": 0.72,
+    "talk_ratio_vad": 0.69,
     "interruption_rate": 0.25,
     "interruption_count": 1,
-    "barge_in_recovery_time_ms": 280,
+    "agent_overtalk_after_barge_in_ms": 280,
     "agent_interrupting_user_rate": 0.0,
     "agent_interrupting_user_count": 0,
     "missed_response_windows": 0,
@@ -393,20 +500,27 @@ A call entry with advanced options (persona, audio actions, prosody):
     "names": ["check_availability", "book_appointment"],
     "observed": [{ "name": "check_availability", "arguments": { "date": "2026-03-12" }, "result": { "slots": ["09:00", "10:00"] }, "successful": true, "latency_ms": 280, "turn_index": 3 }]
   },
+  "component_latency": {
+    "mean_stt_ms": 120, "mean_llm_ms": 450, "mean_tts_ms": 80,
+    "p95_stt_ms": 180, "p95_llm_ms": 620, "p95_tts_ms": 110,
+    "mean_speech_duration_ms": 2100,
+    "bottleneck": "llm"
+  },
   "call_metadata": {
     "platform": "vapi",
-    "recording_url": "https://example.com/recording"
+    "cost_usd": 0.08,
+    "recording_url": "https://example.com/recording",
+    "ended_reason": "customer_ended_call",
+    "transfers": []
   },
   "warnings": [],
-  "audio_actions": [
-    { "at_turn": 5, "action": "silence", "metrics": { "agent_prompted": false, "unprompted_utterance_count": 0, "silence_duration_ms": 8000 } }
-  ],
+  "audio_actions": [],
   "emotion": {
     "naturalness": 0.72, "mean_calmness": 0.65, "mean_confidence": 0.58, "peak_frustration": 0.08, "emotion_trajectory": "stable"
   }
 }
 
-All fields optional except name, status, caller_prompt, duration_ms, transcript. Fields appear only when relevant analysis ran (e.g., emotion requires prosody: true).
+Always present: name, status, caller_prompt, duration_ms, error, transcript, tool_calls, warnings, audio_actions. Nullable when analysis didn't run: latency, transcript_quality, audio_analysis, component_latency, call_metadata, emotion (requires prosody: true), debug (requires --verbose).
 
 ### Result presentation
 
@@ -419,7 +533,7 @@ When you report a conversation result to the user, always include:
 
 Use metrics to support the summary, not as the whole answer. Do not dump raw numbers without interpretation.
 
-When `call_metadata.transfer_attempted` is present, explicitly say whether the transfer only appeared attempted or was mechanically verified as completed. If `call_metadata.transfers[*].verification` is present, use it to mention second-leg observation, connect latency, transcript/context summary, and whether context passing was verified.
+When `call_metadata.transfer_attempted` is present, explicitly say whether the transfer only appeared attempted or was mechanically verified as completed (`call_metadata.transfer_completed`). Use `call_metadata.transfers[]` to report transfer type, destination, status, and sources.
 
 ### Judging guidance
 
@@ -442,7 +556,7 @@ When the transcript contains `interrupted: true` / `is_interruption: true` turns
 |--------|----------------|--------|
 | **Recovery rate** | For each interrupted turn: does the post-interrupt agent response acknowledge or address the interruption? | >90% |
 | **Context retention** | After the interruption, does the agent remember pre-interrupt conversation state? | >95% |
-| **Barge-in recovery time** | Use `audio_analysis.barge_in_recovery_time_ms` when available. Lower is better because it measures how long the agent kept speaking after the caller cut in. | <500ms acceptable |
+| **Agent overtalk after barge-in** | Use `audio_analysis.agent_overtalk_after_barge_in_ms` when available. Lower is better because it measures how long the agent kept speaking after the caller cut in. | <500ms acceptable |
 | **Agent interrupting user rate** | Use `audio_analysis.agent_interrupting_user_rate` and the transcript to see whether the agent starts speaking before the caller finished. | 0 ideal |
 
 Report these alongside standard metrics when interruption calls run.
