@@ -30,7 +30,8 @@ const RUN_USAGE = `Usage: vent-hq run -f <suite.json> [options]
 Options:
   --file, -f     Path to suite JSON file (required)
   --call         Name of the call to run (required if suite has multiple calls)
-  --session, -s  Reuse an existing local agent session`;
+  --session, -s  Reuse an existing local agent session
+  --verbose, -v  Include verbose fields in the result JSON`;
 
 const AGENT_USAGE = `Usage: vent-hq agent <command> [options]
 
@@ -45,7 +46,7 @@ Start options:
 Stop options:
   vent-hq agent stop <session-id>`;
 
-const STATUS_USAGE = `Usage: vent-hq status <run-id>`;
+const STATUS_USAGE = `Usage: vent-hq status <run-id> [--verbose]`;
 
 async function main(): Promise<number> {
   loadDotenv();
@@ -83,6 +84,7 @@ async function main(): Promise<number> {
           file: { type: "string", short: "f" },
           call: { type: "string" },
           session: { type: "string", short: "s" },
+          verbose: { type: "boolean", short: "v", default: false },
         },
         strict: true,
       });
@@ -97,6 +99,7 @@ async function main(): Promise<number> {
         file: values.file,
         call: values.call,
         session: values.session,
+        verbose: values.verbose,
       });
     }
 
@@ -141,8 +144,20 @@ async function main(): Promise<number> {
         console.log(STATUS_USAGE);
         return 0;
       }
-      const runId = commandArgs[0]!;
-      return statusCommand({ runId });
+      const { values, positionals } = parseArgs({
+        args: commandArgs,
+        options: {
+          verbose: { type: "boolean", short: "v", default: false },
+        },
+        allowPositionals: true,
+        strict: true,
+      });
+      const runId = positionals[0];
+      if (!runId) {
+        console.log(STATUS_USAGE);
+        return 2;
+      }
+      return statusCommand({ runId, verbose: values.verbose });
     }
 
     case "stop": {
