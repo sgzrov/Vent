@@ -1,11 +1,9 @@
 import { z } from "zod";
-import { AUDIO_CALL_NAMES, AUDIO_ACTION_TYPES } from "./types.js";
+import { AUDIO_ACTION_TYPES } from "./types.js";
 
 // ============================================================
 // V2 Schemas — Dynamic voice agent calls
 // ============================================================
-
-export const AudioCallNameSchema = z.enum(AUDIO_CALL_NAMES);
 
 export const AudioActionSchema = z.object({
   at_turn: z.number().int().min(0),
@@ -84,6 +82,7 @@ export const ObservedToolCallSchema = z.object({
   arguments: z.record(z.unknown()),
   result: z.unknown().optional(),
   successful: z.boolean().optional(),
+  provider_tool_type: z.string().optional(),
   timestamp_ms: z.number().optional(),
   latency_ms: z.number().optional(),
   turn_index: z.number().int().min(0).optional(),
@@ -200,20 +199,6 @@ export const AudioAnalysisWarningSchema = z.object({
 });
 
 
-export const CallDiagnosticsSchema = z.object({
-  error_origin: z.enum(["platform", "agent"]).nullable(),
-  error_detail: z.string().nullable(),
-  timing: z.object({
-    channel_connect_ms: z.number(),
-  }),
-  channel: z.object({
-    connected: z.boolean(),
-    error_events: z.array(z.string()),
-    audio_bytes_sent: z.number(),
-    audio_bytes_received: z.number(),
-  }),
-});
-
 export const ConversationTurnSchema = z.object({
   role: z.enum(["caller", "agent"]),
   text: z.string(),
@@ -230,6 +215,7 @@ export const ConversationTurnSchema = z.object({
     stt_ms: z.number().optional(),
     llm_ms: z.number().optional(),
     tts_ms: z.number().optional(),
+    speech_duration_ms: z.number().optional(),
   }).optional(),
   platform_transcript: z.string().optional(),
   interrupted: z.boolean().optional(),
@@ -247,7 +233,8 @@ export const HallucinationEventSchema = z.object({
 });
 
 export const TranscriptMetricsSchema = z.object({
-  wer: z.number().min(0).max(1).optional(),
+  wer: z.number().min(0).optional(),
+  cer: z.number().min(0).optional(),
   hallucination_events: z.array(HallucinationEventSchema).optional(),
   repetition_score: z.number().min(0).max(1).optional(),
   reprompt_count: z.number().int().min(0).optional(),
@@ -285,7 +272,7 @@ export const AudioAnalysisMetricsSchema = z.object({
   talk_ratio_vad: z.number(),
   interruption_rate: z.number().min(0).max(1),
   interruption_count: z.number().int().min(0),
-  barge_in_recovery_time_ms: z.number().min(0).optional(),
+  agent_overtalk_after_barge_in_ms: z.number().min(0).optional(),
   agent_interrupting_user_rate: z.number().min(0).max(1),
   agent_interrupting_user_count: z.number().int().min(0),
   missed_response_windows: z.number().int().min(0),
@@ -372,6 +359,12 @@ export const CostBreakdownSchema = z.object({
   llm_completion_tokens: z.number().int().optional(),
 });
 
+export const ProviderWarningSchema = z.object({
+  message: z.string().optional(),
+  code: z.string().optional(),
+  detail: z.unknown().optional(),
+});
+
 export const CallTransferSchema = z.object({
   type: z.string(),
   destination: z.string().optional(),
@@ -382,16 +375,17 @@ export const CallTransferSchema = z.object({
 
 export const CallMetadataSchema = z.object({
   platform: z.string(),
+  provider_call_id: z.string().optional(),
+  provider_session_id: z.string().optional(),
   ended_reason: z.string().optional(),
-  duration_s: z.number().optional(),
   cost_usd: z.number().optional(),
   cost_breakdown: CostBreakdownSchema.optional(),
-  recording_url: z.string().nullable().optional(),
-  summary: z.string().nullable().optional(),
-  success_evaluation: z.string().nullable().optional(),
-  user_sentiment: z.string().nullable().optional(),
-  call_successful: z.boolean().optional(),
+  recording_url: z.string().optional(),
+  recording_variants: z.record(z.string()).optional(),
+  provider_debug_urls: z.record(z.string()).optional(),
   variables: z.record(z.unknown()).optional(),
+  provider_warnings: z.array(ProviderWarningSchema).optional(),
+  provider_metadata: z.record(z.unknown()).optional(),
   transfers: z.array(CallTransferSchema).optional(),
 });
 
@@ -408,16 +402,6 @@ export const ConversationMetricsSchema = z.object({
   prosody_warnings: z.array(ProsodyWarningSchema).optional(),
   harness_overhead: HarnessOverheadSchema.optional(),
   component_latency: ComponentLatencyMetricsSchema.optional(),
-});
-
-export const AudioCallResultSchema = z.object({
-  call_name: AudioCallNameSchema,
-  status: z.enum(["completed", "error"]),
-  metrics: z.record(z.union([z.number(), z.boolean(), z.array(z.number())])),
-  transcriptions: z.record(z.union([z.string(), z.array(z.string()), z.null()])),
-  duration_ms: z.number(),
-  error: z.string().optional(),
-  diagnostics: CallDiagnosticsSchema.optional(),
 });
 
 export const ConversationCallResultSchema = z.object({

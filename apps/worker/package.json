@@ -17,6 +17,7 @@
     "@vent/runner": "workspace:*",
     "@vent/adapters": "workspace:*",
     "bullmq": "catalog:",
+    "drizzle-orm": "catalog:",
     "ioredis": "catalog:"
   },
   "devDependencies": {

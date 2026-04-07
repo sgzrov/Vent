@@ -51,9 +51,11 @@ interface VapiCallMessage {
   message?: string;
   toolCalls?: Array<{
     id?: string;
+    type?: string;
     function: {
       name: string;
       arguments: string;
+      type?: string;
     };
   }>;
   toolCallId?: string;
@@ -66,27 +68,48 @@ interface VapiCallResponse {
   status: string;
   endedReason?: string;
   duration?: number;
+  monitor?: {
+    listenUrl?: string;
+    controlUrl?: string;
+  };
   costBreakdown?: {
     stt?: number;
     llm?: number;
     tts?: number;
     transport?: number;
     vapi?: number;
+    chat?: number;
     total?: number;
     llmPromptTokens?: number;
     llmCompletionTokens?: number;
+    ttsCharacters?: number;
+    analysisCostBreakdown?: Record<string, unknown>;
   };
   analysis?: {
     summary?: string;
     successEvaluation?: string;
+    structuredData?: Record<string, unknown>;
+    structuredDataMulti?: Array<Record<string, unknown>>;
   };
   artifact?: {
     messages?: VapiCallMessage[];
+    messagesOpenAIFormatted?: unknown[];
     transcript?: string;
     recording?: unknown;
     recordingUrl?: string;
+    stereoRecordingUrl?: string;
+    videoRecordingUrl?: string;
+    pcapUrl?: string;
+    logUrl?: string;
+    nodes?: unknown[];
+    variableValues?: Record<string, unknown>;
+    performanceMetrics?: Record<string, unknown>;
+    structuredOutputs?: Record<string, unknown>;
+    scorecards?: Record<string, unknown>;
   };
 }
+
+type VapiToolCall = NonNullable<VapiCallMessage["toolCalls"]>[number];
 
 /** Per-turn timing from WebSocket text frame events */
 interface TurnTiming {
@@ -192,6 +215,7 @@ export class VapiAudioChannel extends BaseAudioChannel {
   async connect(): Promise<void> {
     const connectStart = Date.now();
     this.connectTimestamp = connectStart;
+    this.enableRecordingCapture();
     this.turnTimings = [];
     this.currentTurnIndex = -1;
     this.awaitingLlmFirstToken = false;
@@ -489,7 +513,6 @@ export class VapiAudioChannel extends BaseAudioChannel {
       case "assistant-speaks-first-with-model-generated-message":
         return "agent";
       case "assistant-waits-for-user":
-      case "user-speaks-first":
         return "caller";
       default:
         return "agent";
@@ -598,25 +621,27 @@ export class VapiAudioChannel extends BaseAudioChannel {
       const cb = report.costBreakdown as VapiCallResponse["costBreakdown"] | undefined;
       const analysis = report.analysis as VapiCallResponse["analysis"] | undefined;
       const artifact = report.artifact as VapiCallResponse["artifact"] | undefined;
+      const metadataTransfers = extractVapiTransfers(report);
       return {
         platform: "vapi",
+        provider_call_id: typeof report.id === "string" ? report.id : this.callId ?? undefined,
         ended_reason: report.endedReason as string | undefined,
-        duration_s: report.duration as number | undefined,
         cost_usd: cb?.total,
-        cost_breakdown: cb ? {
-          stt_usd: cb.stt,
-          llm_usd: cb.llm,
-          tts_usd: cb.tts,
-          transport_usd: cb.transport,
-          platform_usd: cb.vapi,
-          total_usd: cb.total,
-          llm_prompt_tokens: cb.llmPromptTokens,
-          llm_completion_tokens: cb.llmCompletionTokens,
-        } : undefined,
-        recording_url: getRecordingUrl(artifact?.recording),
-        summary: analysis?.summary,
-        success_evaluation: analysis?.successEvaluation,
-        transfers: this.formatTransfers(),
+        cost_breakdown: buildVapiCostBreakdown(cb),
+        recording_url: getPrimaryRecordingUrl(artifact),
+        recording_variants: buildVapiRecordingVariants(artifact),
+        provider_debug_urls: buildVapiDebugUrls({
+          artifact,
+          monitor: report.monitor as VapiCallResponse["monitor"] | undefined,
+        }),
+        variables: artifact?.variableValues,
+        provider_metadata: {
+          ...buildVapiProviderMetadata({ analysis, artifact, costBreakdown: cb }),
+          duration_s: report.duration as number | undefined,
+          summary: analysis?.summary,
+          success_evaluation: analysis?.successEvaluation,
+        },
+        transfers: mergeTransfers(this.formatTransfers(), metadataTransfers),
       };
     }
 
@@ -624,25 +649,24 @@ export class VapiAudioChannel extends BaseAudioChannel {
     if (!data) return null;
 
     const cb = data.costBreakdown;
+    const metadataTransfers = extractVapiTransfers(data as unknown as Record<string, unknown>);
     return {
       platform: "vapi",
+      provider_call_id: data.id || this.callId || undefined,
       ended_reason: data.endedReason,
-      duration_s: data.duration,
       cost_usd: cb?.total,
-      cost_breakdown: cb ? {
-        stt_usd: cb.stt,
-        llm_usd: cb.llm,
-        tts_usd: cb.tts,
-        transport_usd: cb.transport,
-        platform_usd: cb.vapi,
-        total_usd: cb.total,
-        llm_prompt_tokens: cb.llmPromptTokens,
-        llm_completion_tokens: cb.llmCompletionTokens,
-      } : undefined,
-      recording_url: getRecordingUrl(data.artifact?.recording),
-      summary: data.analysis?.summary,
-      success_evaluation: data.analysis?.successEvaluation,
-      transfers: this.formatTransfers(),
+      cost_breakdown: buildVapiCostBreakdown(cb),
+      recording_url: getPrimaryRecordingUrl(data.artifact),
+      recording_variants: buildVapiRecordingVariants(data.artifact),
+      provider_debug_urls: buildVapiDebugUrls(data),
+      variables: data.artifact?.variableValues,
+      provider_metadata: {
+        ...buildVapiProviderMetadata(data),
+        duration_s: data.duration,
+        summary: data.analysis?.summary,
+        success_evaluation: data.analysis?.successEvaluation,
+      },
+      transfers: mergeTransfers(this.formatTransfers(), metadataTransfers),
     };
   }
 
@@ -688,7 +712,7 @@ export class VapiAudioChannel extends BaseAudioChannel {
         destination,
         status: resolveVapiTransferStatus(t.type, detail, destination),
         sources: ["platform_event"],
-        timestamp_ms: t.timestamp,
+        timestamp_ms: t.timestamp - this.connectTimestamp,
       };
     });
   }
@@ -1124,6 +1148,11 @@ export class VapiAudioChannel extends BaseAudioChannel {
               call: {
                 name: String(fn.name ?? ""),
                 arguments: args,
+                provider_tool_type: typeof tc.type === "string"
+                  ? tc.type
+                  : typeof fn.type === "string"
+                    ? fn.type
+                    : undefined,
                 timestamp_ms: now - this.connectTimestamp,
               },
             });
@@ -1169,7 +1198,8 @@ export class VapiAudioChannel extends BaseAudioChannel {
       }
 
       case "transfer-destination-request":
-      case "transfer-update": {
+      case "transfer-update":
+      case "handoff-destination-request": {
         this.transfers.push({ type, timestamp: now, detail: msg });
         break;
       }
@@ -1238,6 +1268,11 @@ export class VapiAudioChannel extends BaseAudioChannel {
             arguments: args,
             result: parsedResult,
             successful: hasResult,
+            provider_tool_type: typeof tc.type === "string"
+              ? tc.type
+              : typeof tc.function.type === "string"
+                ? tc.function.type
+                : undefined,
             timestamp_ms: timestampMs,
             latency_ms: timestampMs != null && resultTimestampMs != null ? resultTimestampMs - timestampMs : undefined,
           });
@@ -1272,17 +1307,15 @@ export function extractVapiTransfers(data: Record<string, unknown>): CallTransfe
     for (const msg of messages) {
       if ((msg.role !== "tool_calls" && msg.role !== "tool-call") || !msg.toolCalls) continue;
       for (const tc of msg.toolCalls) {
-        const name = tc.function.name.toLowerCase();
-        if (name !== "transfercall" && name !== "transfer_call") continue;
+        if (!isVapiTransferToolCall(tc)) continue;
         let args: Record<string, unknown> = {};
         try { args = JSON.parse(tc.function.arguments) as Record<string, unknown>; } catch {}
-        const dest = args.destination as Record<string, unknown> | undefined;
-        const destination = (dest?.number ?? dest?.sipUri ?? args.number ?? args.sipUri) as string | undefined;
+        const destination = extractVapiTransferDestination(args);
         const resultEntry = tc.id ? resultMap.get(tc.id) : undefined;
         const status = resolveVapiToolTransferStatus(resultEntry, endedReason);
         const timestampMs = msg.secondsFromStart != null ? msg.secondsFromStart * 1000 : undefined;
         transfers.push({
-          type: "transferCall",
+          type: normalizeVapiTransferType(tc),
           destination,
           status,
           sources: ["platform_metadata"],
@@ -1301,6 +1334,131 @@ export function extractVapiTransfers(data: Record<string, unknown>): CallTransfe
   }
 
   return transfers.length > 0 ? transfers : undefined;
+}
+
+function isVapiTransferToolCall(toolCall: VapiToolCall): boolean {
+  const name = toolCall.function.name.toLowerCase();
+  const toolType = typeof toolCall.type === "string" ? toolCall.type.toLowerCase() : undefined;
+  const functionType = typeof toolCall.function.type === "string" ? toolCall.function.type.toLowerCase() : undefined;
+  return name === "transfercall"
+    || name === "transfer_call"
+    || name === "handoff"
+    || toolType === "handoff"
+    || functionType === "handoff";
+}
+
+function normalizeVapiTransferType(toolCall: VapiToolCall): string {
+  const name = toolCall.function.name.toLowerCase();
+  const toolType = typeof toolCall.type === "string" ? toolCall.type.toLowerCase() : undefined;
+  const functionType = typeof toolCall.function.type === "string" ? toolCall.function.type.toLowerCase() : undefined;
+  if (name === "handoff" || toolType === "handoff" || functionType === "handoff") {
+    return "handoff";
+  }
+  return "transferCall";
+}
+
+function extractVapiTransferDestination(args: Record<string, unknown>): string | undefined {
+  const destination = args.destination;
+  if (typeof destination === "string") return destination;
+  if (destination && typeof destination === "object") {
+    const value = destination as Record<string, unknown>;
+    if (typeof value.number === "string") return value.number;
+    if (typeof value.sipUri === "string") return value.sipUri;
+    if (typeof value.assistantName === "string") return value.assistantName;
+    if (typeof value.assistantId === "string") return value.assistantId;
+    if (typeof value.squadName === "string") return value.squadName;
+    if (typeof value.squadId === "string") return value.squadId;
+  }
+  if (typeof args.number === "string") return args.number;
+  if (typeof args.sipUri === "string") return args.sipUri;
+  if (typeof args.assistantName === "string") return args.assistantName;
+  if (typeof args.assistantId === "string") return args.assistantId;
+  if (typeof args.squadName === "string") return args.squadName;
+  if (typeof args.squadId === "string") return args.squadId;
+  return undefined;
+}
+
+function mergeTransfers(
+  existing: CallTransfer[] | undefined,
+  incoming: CallTransfer[] | undefined,
+): CallTransfer[] | undefined {
+  if ((!existing || existing.length === 0) && (!incoming || incoming.length === 0)) {
+    return undefined;
+  }
+
+  const merged: CallTransfer[] = [];
+  for (const transfer of [...(existing ?? []), ...(incoming ?? [])]) {
+    const priorIndex = merged.findIndex((candidate) => shouldMergeTransfer(candidate, transfer));
+    if (priorIndex === -1) {
+      merged.push({
+        ...transfer,
+        sources: [...new Set(transfer.sources)],
+      });
+      continue;
+    }
+    const prior = merged[priorIndex]!;
+    merged[priorIndex] = {
+      ...pickPreferredTransfer(prior, transfer),
+      sources: [...new Set([...prior.sources, ...transfer.sources])],
+      destination: prior.destination ?? transfer.destination,
+      timestamp_ms: minDefined(prior.timestamp_ms, transfer.timestamp_ms),
+    };
+  }
+
+  return merged;
+}
+
+function shouldMergeTransfer(a: CallTransfer, b: CallTransfer): boolean {
+  if (normalizeTransferFamily(a.type) !== normalizeTransferFamily(b.type)) {
+    return false;
+  }
+
+  const destinationMatches =
+    a.destination === b.destination
+    || a.destination == null
+    || b.destination == null;
+  if (!destinationMatches) {
+    return false;
+  }
+
+  const aTime = a.timestamp_ms;
+  const bTime = b.timestamp_ms;
+  if (aTime == null || bTime == null) {
+    return true;
+  }
+
+  return Math.abs(aTime - bTime) <= 5_000;
+}
+
+function normalizeTransferFamily(type: string): string {
+  const normalized = type.trim().toLowerCase();
+  if (normalized.includes("handoff")) return "handoff";
+  return "transfer";
+}
+
+function pickPreferredTransfer(a: CallTransfer, b: CallTransfer): CallTransfer {
+  return transferStatusRank(b.status) > transferStatusRank(a.status) ? b : a;
+}
+
+function transferStatusRank(status: CallTransfer["status"]): number {
+  switch (status) {
+    case "completed":
+      return 4;
+    case "failed":
+      return 3;
+    case "cancelled":
+      return 2;
+    case "attempted":
+      return 1;
+    default:
+      return 0;
+  }
+}
+
+function minDefined(a: number | undefined, b: number | undefined): number | undefined {
+  if (a == null) return b;
+  if (b == null) return a;
+  return Math.min(a, b);
 }
 
 function resolveVapiToolTransferStatus(
@@ -1475,6 +1633,83 @@ function getRecordingUrl(recording: unknown): string | undefined {
   }
 
   return undefined;
+}
+
+function buildVapiCostBreakdown(costBreakdown: VapiCallResponse["costBreakdown"] | undefined): CallMetadata["cost_breakdown"] {
+  if (!costBreakdown) return undefined;
+  return {
+    stt_usd: costBreakdown.stt,
+    llm_usd: costBreakdown.llm,
+    tts_usd: costBreakdown.tts,
+    transport_usd: costBreakdown.transport,
+    platform_usd: costBreakdown.vapi,
+    total_usd: costBreakdown.total,
+    llm_prompt_tokens: costBreakdown.llmPromptTokens,
+    llm_completion_tokens: costBreakdown.llmCompletionTokens,
+  };
+}
+
+function getPrimaryRecordingUrl(artifact: VapiCallResponse["artifact"] | undefined): string | undefined {
+  if (!artifact) return undefined;
+  return artifact.recordingUrl
+    ?? getRecordingUrl(artifact.recording)
+    ?? artifact.stereoRecordingUrl
+    ?? artifact.videoRecordingUrl;
+}
+
+function buildVapiRecordingVariants(artifact: VapiCallResponse["artifact"] | undefined): CallMetadata["recording_variants"] {
+  if (!artifact) return undefined;
+  return compactStringRecord({
+    primary: artifact.recordingUrl,
+    mono: getRecordingUrl(artifact.recording),
+    stereo: artifact.stereoRecordingUrl,
+    video: artifact.videoRecordingUrl,
+  });
+}
+
+function buildVapiDebugUrls(
+  data: Pick<VapiCallResponse, "artifact" | "monitor">,
+): CallMetadata["provider_debug_urls"] {
+  return compactStringRecord({
+    listen: data.monitor?.listenUrl,
+    control: data.monitor?.controlUrl,
+    log: data.artifact?.logUrl,
+    pcap: data.artifact?.pcapUrl,
+  });
+}
+
+function buildVapiProviderMetadata(
+  data: Pick<VapiCallResponse, "analysis" | "artifact" | "costBreakdown">,
+): CallMetadata["provider_metadata"] {
+  return compactUnknownRecord({
+    structured_data: data.analysis?.structuredData,
+    structured_data_multi: data.analysis?.structuredDataMulti,
+    messages_openai_formatted: data.artifact?.messagesOpenAIFormatted,
+    nodes: data.artifact?.nodes,
+    performance_metrics: data.artifact?.performanceMetrics,
+    structured_outputs: data.artifact?.structuredOutputs,
+    scorecards: data.artifact?.scorecards,
+    cost_breakdown_extra: data.costBreakdown ? compactUnknownRecord({
+      analysis_cost_breakdown: data.costBreakdown.analysisCostBreakdown,
+      chat_usd: data.costBreakdown.chat,
+      tts_characters: data.costBreakdown.ttsCharacters,
+    }) : undefined,
+  });
+}
+
+function compactStringRecord(record: Record<string, string | undefined>): Record<string, string> | undefined {
+  const compacted: Record<string, string> = {};
+  for (const [key, value] of Object.entries(record)) {
+    if (typeof value === "string" && value.length > 0) {
+      compacted[key] = value;
+    }
+  }
+  return Object.keys(compacted).length > 0 ? compacted : undefined;
+}
+
+function compactUnknownRecord(record: Record<string, unknown>): Record<string, unknown> | undefined {
+  const entries = Object.entries(record).filter(([, value]) => value != null);
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
 }
 
 function summarizeText(text: string, maxChars = 96): string {

@@ -18,7 +18,6 @@ await build({
     "@vent/shared": path.resolve(packages, "shared/src/index.ts"),
     "@vent/db": path.resolve(packages, "db/src/index.ts"),
     "@vent/voice": path.resolve(packages, "voice/src/index.ts"),
-    "@vent/adapters": path.resolve(packages, "adapters/src/index.ts"),
     "@vent/platform-connections": path.resolve(packages, "platform-connections/src/index.ts"),
     "@vent/artifacts": path.resolve(packages, "artifacts/src/index.ts"),
   },

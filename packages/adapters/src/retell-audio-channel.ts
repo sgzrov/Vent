@@ -35,7 +35,9 @@ import {
 } from "@livekit/rtc-node";
 import { resample } from "@vent/voice";
 import type { ObservedToolCall, CallMetadata, CallTransfer, ComponentLatency, CostBreakdown } from "@vent/shared";
-import { BaseAudioChannel } from "./audio-channel.js";
+import { BaseAudioChannel, type SendAudioOptions } from "./audio-channel.js";
+
+const RAW_INTERRUPT_TRAILING_SILENCE_MS = 160;
 
 export interface RetellAudioChannelConfig {
   apiKey: string;
@@ -70,6 +72,9 @@ export class RetellAudioChannel extends BaseAudioChannel {
   // Real-time agent text from DataChannel "update" events
   private agentTextBuffer = "";
   private lastAgentContent = "";
+  private realtimeUserTranscripts: string[] = [];
+  private lastUserContent = "";
+  private realtimeToolCallEntries = new Map<string, Record<string, unknown>>();
 
   constructor(config: RetellAudioChannelConfig) {
     super();
@@ -83,6 +88,7 @@ export class RetellAudioChannel extends BaseAudioChannel {
 
   async connect(): Promise<void> {
     const connectStart = Date.now();
+    this.enableRecordingCapture();
 
     // Create web call — access_token has 30s TTL, must connect immediately
     const webCall = await this.client.call.createWebCall({
@@ -111,6 +117,11 @@ export class RetellAudioChannel extends BaseAudioChannel {
     });
     this.collecting = true;
     this.connectTimestamp = Date.now();
+    this.agentTextBuffer = "";
+    this.lastAgentContent = "";
+    this.realtimeUserTranscripts = [];
+    this.lastUserContent = "";
+    this.realtimeToolCallEntries.clear();
 
     // ── DataChannel listener for Retell JSON events ──────────────
     this.room.on(
@@ -158,22 +169,7 @@ export class RetellAudioChannel extends BaseAudioChannel {
 
     // ── Wait for agent audio track ───────────────────────────────
     const agentReady = await new Promise<boolean>((resolve) => {
-      const timer = setTimeout(() => resolve(false), RetellAudioChannel.AGENT_READY_TIMEOUT);
-
-      // Check if already subscribed
-      for (const p of this.room!.remoteParticipants.values()) {
-        if (p.identity === RetellAudioChannel.SERVER_IDENTITY) {
-          for (const pub of p.trackPublications.values()) {
-            if (pub.track && pub.kind === TrackKind.KIND_AUDIO) {
-              clearTimeout(timer);
-              resolve(true);
-              return;
-            }
-          }
-        }
-      }
-
-      // Wait for subscription
+      // Define listener first so timeout cleanup can reference it
       const onTrackSubscribed = (_t: RemoteTrack, pub: RemoteTrackPublication, participant: RemoteParticipant) => {
         if (participant.identity === RetellAudioChannel.SERVER_IDENTITY && pub.kind === TrackKind.KIND_AUDIO) {
           clearTimeout(timer);
@@ -181,6 +177,26 @@ export class RetellAudioChannel extends BaseAudioChannel {
           resolve(true);
         }
       };
+
+      const timer = setTimeout(() => {
+        this.room?.off(RoomEvent.TrackSubscribed, onTrackSubscribed);
+        resolve(false);
+      }, RetellAudioChannel.AGENT_READY_TIMEOUT);
+
+      // Check if already subscribed
+      for (const p of this.room!.remoteParticipants.values()) {
+        if (p.identity === RetellAudioChannel.SERVER_IDENTITY) {
+          for (const pub of p.trackPublications.values()) {
+            if (pub.track && pub.kind === TrackKind.KIND_AUDIO) {
+              clearTimeout(timer);
+              this.room?.off(RoomEvent.TrackSubscribed, onTrackSubscribed);
+              resolve(true);
+              return;
+            }
+          }
+        }
+      }
+
       this.room!.on(RoomEvent.TrackSubscribed, onTrackSubscribed);
     });
 
@@ -238,11 +254,14 @@ export class RetellAudioChannel extends BaseAudioChannel {
 
   // ── Audio I/O ──────────────────────────────────────────────────
 
-  sendAudio(pcm: Buffer): void {
+  sendAudio(pcm: Buffer, opts?: SendAudioOptions): void {
     if (!this.audioSource || !this.collecting) return;
+    const raw = opts?.raw ?? false;
 
     if (this.comfortNoiseActive) {
       this.stopComfortNoise();
+    } else if (raw) {
+      this.audioSource.clearQueue();
     }
 
     this._stats.bytesSent += pcm.length;
@@ -271,9 +290,12 @@ export class RetellAudioChannel extends BaseAudioChannel {
           await audioSource.captureFrame(frame);
         }
 
-        // 500ms trailing silence for agent VAD end-of-turn detection
+        // Keep a short silence tail on raw interrupts so the agent still sees
+        // end-of-user-turn without the full normal-turn delay.
         if (!this.collecting || !this.audioSource) return;
-        const silenceSamples = Math.floor(sampleRate * 0.5);
+        const silenceSamples = Math.floor(
+          sampleRate * ((raw ? RAW_INTERRUPT_TRAILING_SILENCE_MS : 500) / 1000)
+        );
         const silence = new Int16Array(silenceSamples);
         const silenceFrame = new AudioFrame(silence, sampleRate, 1, silenceSamples);
         await audioSource.captureFrame(silenceFrame);
@@ -312,26 +334,60 @@ export class RetellAudioChannel extends BaseAudioChannel {
 
   async getCallData(): Promise<ObservedToolCall[]> {
     const data = await this.fetchCallResponse();
-    if (!data) return [];
-    return this.parseToolCalls(data);
+    if (!data) return this.parseRealtimeToolCalls();
+    const parsed = this.parseToolCalls(data);
+    return parsed.length > 0 ? parsed : this.parseRealtimeToolCalls();
   }
 
   async getCallMetadata(): Promise<CallMetadata | null> {
     const data = await this.fetchCallResponse();
-    if (!data) return null;
+    if (!data) {
+      const providerMetadata = compactUnknownRecord({
+        realtime_transcript_with_tool_calls:
+          this.realtimeToolCallEntries.size > 0 ? [...this.realtimeToolCallEntries.values()] : undefined,
+      });
+      if (!this.callId && !providerMetadata) return null;
+      return {
+        platform: "retell",
+        provider_call_id: this.callId ?? undefined,
+        provider_metadata: providerMetadata,
+      };
+    }
 
     const cost = data.call_cost as { combined_cost?: number; product_costs?: Array<{ product: string; cost: number }> } | undefined;
+    const dataRecord = data as unknown as Record<string, unknown>;
+    const telephony = dataRecord["telephony_identifier"] as { twilio_call_sid?: string } | undefined;
 
     return {
       platform: "retell",
+      provider_call_id: data.call_id ?? this.callId ?? undefined,
+      provider_session_id: telephony?.twilio_call_sid,
       ended_reason: data.disconnection_reason ?? undefined,
-      duration_s: data.duration_ms != null ? data.duration_ms / 1000 : undefined,
       cost_usd: cost?.combined_cost != null ? cost.combined_cost / 100 : undefined,
       cost_breakdown: cost?.product_costs ? buildRetellCostBreakdown(cost.product_costs) : undefined,
       recording_url: data.recording_url ?? undefined,
-      summary: data.call_analysis?.call_summary ?? undefined,
-      user_sentiment: data.call_analysis?.user_sentiment ?? undefined,
-      call_successful: data.call_analysis?.call_successful ?? undefined,
+      recording_variants: compactStringRecord({
+        multi_channel: data.recording_multi_channel_url ?? undefined,
+        scrubbed: data.scrubbed_recording_url ?? undefined,
+        scrubbed_multi_channel: data.scrubbed_recording_multi_channel_url ?? undefined,
+      }),
+      provider_debug_urls: compactStringRecord({
+        public_log: data.public_log_url ?? undefined,
+        knowledge_base: data.knowledge_base_retrieved_contents_url ?? undefined,
+      }),
+      provider_metadata: compactUnknownRecord({
+        duration_s: data.duration_ms != null ? data.duration_ms / 1000 : undefined,
+        summary: data.call_analysis?.call_summary,
+        user_sentiment: data.call_analysis?.user_sentiment,
+        call_successful: data.call_analysis?.call_successful,
+        custom_analysis_data: data.call_analysis?.custom_analysis_data,
+        in_voicemail: data.call_analysis?.in_voicemail,
+        llm_token_usage: data.llm_token_usage,
+        telephony_identifier: telephony,
+        metadata: data.metadata,
+        scrubbed_transcript_with_tool_calls: data.scrubbed_transcript_with_tool_calls,
+        e2e_latency: extractRetellE2eLatency(data),
+      }),
       transfers: extractRetellTransfers(data),
     };
   }
@@ -343,15 +399,15 @@ export class RetellAudioChannel extends BaseAudioChannel {
   getTranscripts(): Array<{ turnIndex: number; text: string }> {
     const data = this.cachedCallResponse;
     const entries = data?.transcript_with_tool_calls;
-    if (!entries) return [];
+    if (!entries) {
+      return this.realtimeUserTranscripts.map((text, turnIndex) => ({ turnIndex, text }));
+    }
 
     const transcripts: Array<{ turnIndex: number; text: string }> = [];
     let callerTurnIndex = 0;
     for (const entry of entries) {
       if (entry.role === "user" && "content" in entry) {
         transcripts.push({ turnIndex: callerTurnIndex, text: entry.content });
-        callerTurnIndex++;
-      } else if (entry.role === "agent") {
         callerTurnIndex++;
       }
     }
@@ -360,7 +416,7 @@ export class RetellAudioChannel extends BaseAudioChannel {
 
   /** Full caller transcript for WER computation (avoids turn alignment issues). */
   getFullCallerTranscript(): string {
-    return extractRetellCallerTranscript(this.cachedCallResponse);
+    return extractRetellCallerTranscript(this.cachedCallResponse) || this.realtimeUserTranscripts.join(" ");
   }
 
   /** Consume accumulated real-time agent transcript text (resets buffer). */
@@ -397,9 +453,13 @@ export class RetellAudioChannel extends BaseAudioChannel {
               if (entry.role === "agent" && entry.content !== this.lastAgentContent) {
                 this.agentTextBuffer += (this.agentTextBuffer ? " " : "") + entry.content;
                 this.lastAgentContent = entry.content;
+              } else if (entry.role === "user" && entry.content !== this.lastUserContent) {
+                this.realtimeUserTranscripts.push(entry.content);
+                this.lastUserContent = entry.content;
               }
             }
           }
+          this.captureRealtimeToolCallEntries(event);
           break;
       }
     } catch {
@@ -430,46 +490,32 @@ export class RetellAudioChannel extends BaseAudioChannel {
   }
 
   private parseToolCalls(data: CallResponse): ObservedToolCall[] {
-    const entries = data.transcript_with_tool_calls ?? [];
-    const toolCalls: ObservedToolCall[] = [];
+    const entries = (data.transcript_with_tool_calls ?? [])
+      .map((entry) => entry as unknown as Record<string, unknown>);
+    return parseRetellToolCallsFromEntries(entries);
+  }
 
-    // Build a map of results keyed by tool_call_id
-    const resultMap = new Map<string, { content: string; successful?: boolean }>();
-    for (const entry of entries) {
-      if (entry.role === "tool_call_result") {
-        resultMap.set(entry.tool_call_id, { content: entry.content, successful: entry.successful });
-      }
+  private parseRealtimeToolCalls(): ObservedToolCall[] {
+    return parseRetellToolCallsFromEntries([...this.realtimeToolCallEntries.values()]);
+  }
+
+  private captureRealtimeToolCallEntries(event: Record<string, unknown>): void {
+    const transcriptWithToolCalls =
+      firstRecordArray(event["transcript_with_tool_calls"], event["transcriptWithToolCalls"]);
+    if (!transcriptWithToolCalls) return;
+
+    for (const entry of transcriptWithToolCalls) {
+      const role = typeof entry["role"] === "string" ? entry["role"] : undefined;
+      if (role !== "tool_call_invocation" && role !== "tool_call_result") continue;
+      const toolCallId = typeof entry["tool_call_id"] === "string" ? entry["tool_call_id"] : undefined;
+      if (!toolCallId) continue;
+      const key = `${role}:${toolCallId}`;
+      const prior = this.realtimeToolCallEntries.get(key);
+      this.realtimeToolCallEntries.set(key, {
+        ...(prior ?? {}),
+        ...entry,
+      });
     }
-
-    for (const entry of entries) {
-      if (entry.role === "tool_call_invocation") {
-        let args: Record<string, unknown> = {};
-        try {
-          args = JSON.parse(entry.arguments) as Record<string, unknown>;
-        } catch {
-          // keep empty
-        }
-
-        const result = resultMap.get(entry.tool_call_id);
-        let parsedResult: unknown;
-        if (result) {
-          try {
-            parsedResult = JSON.parse(result.content);
-          } catch {
-            parsedResult = result.content;
-          }
-        }
-
-        toolCalls.push({
-          name: entry.name,
-          arguments: args,
-          result: parsedResult,
-          successful: result?.successful,
-        });
-      }
-    }
-
-    return toolCalls;
   }
 
   private startReadingTrack(track: RemoteTrack): void {
@@ -505,6 +551,69 @@ export class RetellAudioChannel extends BaseAudioChannel {
   }
 }
 
+function parseRetellToolCallsFromEntries(entries: Record<string, unknown>[]): ObservedToolCall[] {
+  const toolCalls: ObservedToolCall[] = [];
+  const resultMap = new Map<string, { content: string; successful?: boolean }>();
+
+  for (const entry of entries) {
+    if (entry["role"] === "tool_call_result" && typeof entry["tool_call_id"] === "string") {
+      resultMap.set(entry["tool_call_id"], {
+        content: typeof entry["content"] === "string" ? entry["content"] : "",
+        successful: typeof entry["successful"] === "boolean" ? entry["successful"] : undefined,
+      });
+    }
+  }
+
+  for (const entry of entries) {
+    if (entry["role"] !== "tool_call_invocation") continue;
+    const toolCallId = typeof entry["tool_call_id"] === "string" ? entry["tool_call_id"] : undefined;
+    const name = typeof entry["name"] === "string" ? entry["name"] : undefined;
+    if (!toolCallId || !name) continue;
+
+    let args: Record<string, unknown> = {};
+    if (typeof entry["arguments"] === "string") {
+      try {
+        args = JSON.parse(entry["arguments"]) as Record<string, unknown>;
+      } catch {
+        args = {};
+      }
+    }
+
+    const result = resultMap.get(toolCallId);
+    let parsedResult: unknown;
+    if (result) {
+      try {
+        parsedResult = JSON.parse(result.content);
+      } catch {
+        parsedResult = result.content;
+      }
+    }
+
+    toolCalls.push({
+      name,
+      arguments: args,
+      result: parsedResult,
+      successful: result?.successful,
+      provider_tool_type: typeof entry["type"] === "string"
+        ? entry["type"]
+        : typeof entry["tool_type"] === "string"
+          ? entry["tool_type"]
+          : undefined,
+    });
+  }
+
+  return toolCalls;
+}
+
+function firstRecordArray(...values: unknown[]): Record<string, unknown>[] | undefined {
+  for (const value of values) {
+    if (!Array.isArray(value)) continue;
+    const records = value.filter((item): item is Record<string, unknown> => !!item && typeof item === "object" && !Array.isArray(item));
+    if (records.length > 0) return records;
+  }
+  return undefined;
+}
+
 export function extractRetellComponentTimings(data: CallResponse | null | undefined): ComponentLatency[] {
   if (!data?.latency) return [];
   const lat = data.latency as Record<string, { values?: number[] } | undefined>;
@@ -522,6 +631,21 @@ export function extractRetellComponentTimings(data: CallResponse | null | undefi
     });
   }
   return timings;
+}
+
+function extractRetellE2eLatency(data: CallResponse): Record<string, unknown> | undefined {
+  const lat = data.latency as Record<string, { p50?: number; p90?: number; p95?: number; p99?: number; min?: number; max?: number; num?: number } | undefined> | undefined;
+  const e2e = lat?.e2e;
+  if (!e2e) return undefined;
+  return {
+    p50_ms: e2e.p50,
+    p90_ms: e2e.p90,
+    p95_ms: e2e.p95,
+    p99_ms: e2e.p99,
+    min_ms: e2e.min,
+    max_ms: e2e.max,
+    num_turns: e2e.num,
+  };
 }
 
 export function extractRetellTransfers(data: CallResponse): CallTransfer[] | undefined {
@@ -601,6 +725,21 @@ export function buildRetellCostBreakdown(products: Array<{ product: string; cost
   }
   breakdown.total_usd = total;
   return breakdown;
+}
+
+function compactStringRecord(record: Record<string, string | undefined>): Record<string, string> | undefined {
+  const compacted: Record<string, string> = {};
+  for (const [key, value] of Object.entries(record)) {
+    if (typeof value === "string" && value.length > 0) {
+      compacted[key] = value;
+    }
+  }
+  return Object.keys(compacted).length > 0 ? compacted : undefined;
+}
+
+function compactUnknownRecord(record: Record<string, unknown>): Record<string, unknown> | undefined {
+  const entries = Object.entries(record).filter(([, value]) => value != null);
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
 }
 
 function sleep(ms: number): Promise<void> {

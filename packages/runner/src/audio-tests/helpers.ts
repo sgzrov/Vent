@@ -4,8 +4,6 @@
 
 import type { AudioChannel } from "@vent/adapters";
 import { VoiceActivityDetector, type VADState, transcribe as sttTranscribe, concatPcm } from "@vent/voice";
-import { generateSilence } from "./signals.js";
-
 /**
  * Stats about audio collection — used by adaptive threshold to tune silence detection.
  */
@@ -542,25 +540,6 @@ export async function waitForSpeech(
   }
 
   return { detectedAt, timedOut };
-}
-
-/**
- * Stream silence to the channel in 20ms chunks.
- * Used by silence audio actions and echo probes.
- */
-export async function streamSilence(
-  channel: AudioChannel,
-  durationMs: number,
-): Promise<void> {
-  const chunkMs = 20;
-  const chunk = generateSilence(chunkMs);
-  const chunks = Math.ceil(durationMs / chunkMs);
-
-  for (let i = 0; i < chunks; i++) {
-    await channel.sendAudio(chunk);
-    // Pace at real-time to avoid buffer flooding
-    await new Promise((r) => setTimeout(r, chunkMs));
-  }
 }
 
 /**

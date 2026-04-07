@@ -18,6 +18,14 @@ const FILLER_WORDS = new Set([
   "you know", "i mean", "sort of", "kind of",
 ]);
 const HALLUCINATION_MIN_RUN_LENGTH = 5;
+const LANGUAGES_WITHOUT_RELIABLE_WORD_BOUNDARIES = new Set([
+  "zh",
+  "ja",
+  "th",
+  "lo",
+  "my",
+  "km",
+]);
 
 type AlignmentOpType = "equal" | "substitution" | "insertion" | "deletion";
 
@@ -39,7 +47,16 @@ export function computeWER(reference: string, hypothesis: string): number {
 
   if (ref.length === 0) return hyp.length === 0 ? 0 : 1;
   const { distance } = computeWerAlignment(ref, hyp);
-  return Math.min(distance / ref.length, 1);
+  return distance / ref.length;
+}
+
+export function computeCER(reference: string, hypothesis: string): number {
+  const ref = tokenizeCharacters(reference);
+  const hyp = tokenizeCharacters(hypothesis);
+
+  if (ref.length === 0) return hyp.length === 0 ? 0 : 1;
+  const { distance } = computeWerAlignment(ref, hyp);
+  return distance / ref.length;
 }
 
 export function extractHallucinationEvents(
@@ -170,10 +187,11 @@ function computeRepromptRate(repromptCount: number, agentTurnCount: number): num
   return Math.round((repromptCount / agentTurnCount) * 1000) / 1000;
 }
 
-/**
- * Compute all transcript metrics from conversation turns.
- */
-export async function computeTranscriptMetrics(turns: ConversationTurn[], fullPlatformCallerText?: string): Promise<TranscriptMetrics> {
+export async function computeTranscriptMetrics(
+  turns: ConversationTurn[],
+  fullPlatformCallerText?: string,
+  language?: string,
+): Promise<TranscriptMetrics> {
   const agentTurns = turns.filter((t) => t.role === "agent");
   const agentTexts = agentTurns.map((t) => t.text);
   const totalAgentAudioMs = agentTurns.reduce((sum, t) => sum + (t.audio_duration_ms ?? 0), 0);
@@ -196,21 +214,29 @@ export async function computeTranscriptMetrics(turns: ConversationTurn[], fullPl
 
   // Whisper-style normalization: expand contractions, normalize numbers, lowercase, strip punctuation/fillers
   let wer: number | undefined;
+  let cer: number | undefined;
   let hallucinationEvents: HallucinationEvent[] | undefined;
   if (refStr.length > 0 && hypStr.length > 0) {
-    const normalizer = await getWerNormalizer();
-    const normRef = normalizeNumbers(normalizer.normalize(refStr));
-    const normHyp = normalizeNumbers(normalizer.normalize(hypStr));
-    wer = normRef.length > 0 && normHyp.length > 0
-      ? computeWER(normRef, normHyp)
-      : undefined;
-    hallucinationEvents = normRef.length > 0 && normHyp.length > 0
-      ? extractHallucinationEvents(normRef, normHyp)
-      : undefined;
+    const normRef = await normalizeForWer(refStr, language);
+    const normHyp = await normalizeForWer(hypStr, language);
+
+    if (supportsWordErrorRate(language)) {
+      wer = normRef.length > 0 && normHyp.length > 0
+        ? computeWERWithLanguage(normRef, normHyp, language)
+        : undefined;
+      hallucinationEvents = normRef.length > 0 && normHyp.length > 0
+        ? extractHallucinationEventsWithLanguage(normRef, normHyp, language)
+        : undefined;
+    } else {
+      cer = normRef.length > 0 && normHyp.length > 0
+        ? computeCER(normRef, normHyp)
+        : undefined;
+    }
   }
 
   return {
     wer,
+    cer,
     hallucination_events: hallucinationEvents?.length ? hallucinationEvents : undefined,
     repetition_score: computeRepetitionScore(agentTexts),
     reprompt_count: repromptCount,
@@ -288,12 +314,69 @@ function normalizeNumbers(text: string): string {
   return out.join(" ");
 }
 
-function tokenize(text: string): string[] {
+function tokenize(text: string, language?: string): string[] {
+  const normalized = basicNormalizeText(text, language);
+  return normalized.length > 0
+    ? normalized.split(/\s+/u).filter((w) => w.length > 0)
+    : [];
+}
+
+function tokenizeCharacters(text: string): string[] {
+  return Array.from(
+    text
+      .normalize("NFKC")
+      .replace(/\s+/gu, ""),
+  );
+}
+
+function basicNormalizeText(text: string, language?: string): string {
   return text
-    .toLowerCase()
-    .replace(/[^\w\s]/g, "")
-    .split(/\s+/)
-    .filter((w) => w.length > 0);
+    .normalize("NFKC")
+    .toLocaleLowerCase(language)
+    .replace(/[^\p{L}\p{N}\p{M}\s]/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+}
+
+async function normalizeForWer(text: string, language?: string): Promise<string> {
+  if (isEnglishLanguage(language)) {
+    const normalizer = await getWerNormalizer();
+    return normalizeNumbers(normalizer.normalize(text));
+  }
+  return basicNormalizeText(text, language);
+}
+
+function computeWERWithLanguage(reference: string, hypothesis: string, language?: string): number {
+  const ref = tokenize(reference, language);
+  const hyp = tokenize(hypothesis, language);
+
+  if (ref.length === 0) return hyp.length === 0 ? 0 : 1;
+  const { distance } = computeWerAlignment(ref, hyp);
+  return distance / ref.length;
+}
+
+function extractHallucinationEventsWithLanguage(
+  reference: string,
+  hypothesis: string,
+  language?: string,
+): HallucinationEvent[] {
+  const ref = tokenize(reference, language);
+  const hyp = tokenize(hypothesis, language);
+  if (ref.length === 0 || hyp.length === 0) return [];
+
+  const { alignment } = computeWerAlignment(ref, hyp);
+  return hallucinationEventsFromAlignment(alignment, HALLUCINATION_MIN_RUN_LENGTH);
+}
+
+function isEnglishLanguage(language?: string): boolean {
+  if (!language) return true;
+  return language.toLowerCase().startsWith("en");
+}
+
+function supportsWordErrorRate(language?: string): boolean {
+  if (!language) return true;
+  const baseLanguage = language.toLowerCase().split(/[-_]/)[0] ?? language.toLowerCase();
+  return !LANGUAGES_WITHOUT_RELIABLE_WORD_BOUNDARIES.has(baseLanguage);
 }
 
 function computeWerAlignment(reference: string[], hypothesis: string[]): { distance: number; alignment: AlignmentOp[] } {

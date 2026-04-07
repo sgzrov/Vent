@@ -32,6 +32,132 @@ This will:
 
 Supports 6 adapters: WebSocket (`websocket`), LiveKit/WebRTC (`livekit`), Vapi, Retell, ElevenLabs, and Bland.
 
+## Result Normalization
+
+Vent always emits one normalized conversation result shape on `stdout`.
+
+Top-level result categories are:
+- `transcript`
+- `latency`
+- `transcript_quality`
+- `audio_analysis`
+- `tool_calls`
+- `component_latency`
+- `call_metadata`
+- `warnings`
+- `audio_actions`
+- `emotion`
+- `debug` only when `--verbose` is used
+
+Source-of-truth policy:
+- Vent computes `transcript_quality`, `latency`, and `audio_analysis` itself from the captured call.
+- Hosted adapters choose the best source per category, usually provider post-call artifacts for `tool_calls`, `call_metadata`, `transfers`, recordings, and provider transcripts.
+- Realtime provider events are used as fallback or enrichment when post-call data is missing, delayed, weaker for that category, or provider-specific.
+- `LiveKit` rich observability comes from the Vent helper running inside the agent runtime.
+- `websocket`/custom agents are realtime-native and emit the same normalized categories through the Vent protocol.
+- `recording_url` is provider-first with Vent fallback when a provider artifact is missing.
+
+This keeps adapter-specific differences inside ingestion code while preserving one stable result schema for coding agents.
+
+### Example Result
+
+```json
+{
+  "name": "reschedule-appointment",
+  "status": "completed",
+  "caller_prompt": "You are Maria calling to reschedule her appointment.",
+  "duration_ms": 48213,
+  "error": null,
+  "transcript": [
+    { "role": "caller", "text": "Hi, I need to move my appointment to Friday." },
+    { "role": "agent", "text": "Sure, I can help with that.", "ttfb_ms": 812, "ttfw_ms": 1094, "audio_duration_ms": 2410 }
+  ],
+  "latency": {
+    "response_time_ms": 1094,
+    "response_time_source": "ttfw",
+    "p50_response_time_ms": 1094,
+    "p95_response_time_ms": 1094,
+    "first_response_time_ms": 1094,
+    "total_silence_ms": 690,
+    "mean_turn_gap_ms": 345
+  },
+  "transcript_quality": {
+    "wer": 0.06,
+    "repetition_score": 0.03,
+    "reprompt_count": 0,
+    "reprompt_rate": 0,
+    "filler_word_rate": 0.01,
+    "words_per_minute": 149,
+    "vocabulary_diversity": 0.78
+  },
+  "audio_analysis": {
+    "caller_talk_time_ms": 6420,
+    "agent_talk_time_ms": 9030,
+    "agent_speech_ratio": 0.93,
+    "talk_ratio_vad": 0.42,
+    "interruption_rate": 0,
+    "interruption_count": 0,
+    "agent_overtalk_after_barge_in_ms": 0,
+    "missed_response_windows": 0
+  },
+  "tool_calls": {
+    "total": 2,
+    "successful": 2,
+    "failed": 0,
+    "mean_latency_ms": 384,
+    "names": ["calendar.lookup", "calendar.reschedule"],
+    "observed": [
+      {
+        "name": "calendar.lookup",
+        "arguments": { "date": "2026-04-10", "after": "14:00" },
+        "result": { "slots": ["15:00", "16:30"] },
+        "successful": true,
+        "provider_tool_type": "mcp",
+        "latency_ms": 301,
+        "turn_index": 1
+      }
+    ]
+  },
+  "component_latency": {
+    "mean_stt_ms": 152,
+    "mean_llm_ms": 401,
+    "mean_tts_ms": 233,
+    "p95_stt_ms": 191,
+    "p95_llm_ms": 588,
+    "p95_tts_ms": 301,
+    "mean_speech_duration_ms": 2524,
+    "bottleneck": "llm"
+  },
+  "call_metadata": {
+    "platform": "retell",
+    "provider_call_id": "call_01JQXYZ123",
+    "ended_reason": "call_ended",
+    "duration_s": 48.2,
+    "cost_usd": 0.18,
+    "cost_breakdown": {
+      "stt_usd": 0.01,
+      "llm_usd": 0.09,
+      "tts_usd": 0.03,
+      "total_usd": 0.18
+    },
+    "recording_url": "https://artifacts.vent.dev/runs/run_123/recording.mp3",
+    "recording_variants": {
+      "multi_channel": "https://provider.example/recording-multichannel.wav"
+    },
+    "provider_debug_urls": {
+      "public_log": "https://provider.example/public-log.txt"
+    },
+    "summary": "The caller successfully rescheduled the appointment.",
+    "call_successful": true,
+    "transfer_attempted": false,
+    "transfer_completed": false
+  },
+  "warnings": [],
+  "audio_actions": [],
+  "emotion": null
+}
+```
+
 ## Config Example
 
 ```json

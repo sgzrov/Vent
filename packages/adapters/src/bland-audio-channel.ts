@@ -112,6 +112,7 @@ export interface BlandCallResponse {
   error_message?: string;
   started_at?: string;
   end_at?: string;
+  citations?: unknown;
   warm_transfer_call?: {
     state?: string;
     proxy_agent_calls?: Array<{
@@ -136,6 +137,7 @@ export class BlandAudioChannel extends BaseAudioChannel {
   private cachedCorrectedTranscripts: BlandCorrectedTranscriptEntry[] | null = null;
   private componentLatencies: ComponentLatency[] = [];
   private realtimeToolCalls: ObservedToolCall[] = [];
+  private realtimeCitations: unknown[] = [];
   private firstAudioReceivedAt: number | null = null;
   private firstNonSilentAudioAt: number | null = null;
 
@@ -165,6 +167,8 @@ export class BlandAudioChannel extends BaseAudioChannel {
 
   async connect(): Promise<void> {
     const connectStart = Date.now();
+    this.enableRecordingCapture();
+    this.realtimeCitations = [];
 
     // 1. Acquire shared server (starts HTTP + Twilio on first channel)
     this.sharedServer = await SharedSipServer.acquire(this.config.server);
@@ -377,13 +381,24 @@ export class BlandAudioChannel extends BaseAudioChannel {
     // before we poll GET /v1/calls/{call_id}
     await this.endTwilioCall();
     const data = await this.fetchCallResponse();
-    if (!data) return [];
-    return this.parseToolCalls(data);
+    if (!data) return [...this.realtimeToolCalls];
+    const parsed = this.parseToolCalls(data);
+    return parsed.length > 0 ? parsed : [...this.realtimeToolCalls];
   }
 
   async getCallMetadata(): Promise<CallMetadata | null> {
     const data = await this.fetchCallResponse();
-    if (!data) return null;
+    if (!data) {
+      const providerMetadata = compactUnknownRecord({
+        citations: this.realtimeCitations.length > 0 ? this.realtimeCitations : undefined,
+      });
+      if (!this.callId && !providerMetadata) return null;
+      return {
+        platform: "bland",
+        provider_call_id: this.callId ?? undefined,
+        provider_metadata: providerMetadata,
+      };
+    }
 
     const durationS =
       data.corrected_duration != null
@@ -398,12 +413,21 @@ export class BlandAudioChannel extends BaseAudioChannel {
 
     return {
       platform: "bland",
+      provider_call_id: data.call_id ?? this.callId ?? undefined,
       ended_reason: endedReason,
-      duration_s: durationS,
       cost_usd: data.price,
       recording_url: data.recording_url ?? undefined,
-      summary: data.summary ?? undefined,
       variables: data.variables,
+      provider_warnings: data.error_message ? [{ message: data.error_message, code: "provider_error" }] : undefined,
+      provider_metadata: compactUnknownRecord({
+        duration_s: durationS,
+        summary: data.summary,
+        answered_by: data.answered_by,
+        citations: data.citations ?? (this.realtimeCitations.length > 0 ? this.realtimeCitations : undefined),
+        concatenated_transcript: data.concatenated_transcript,
+        pathway_logs: data.pathway_logs,
+        warm_transfer_call: data.warm_transfer_call,
+      }),
       transfers: extractBlandTransfers(data),
     };
   }
@@ -519,7 +543,7 @@ export class BlandAudioChannel extends BaseAudioChannel {
       record: true,
       wait_for_greeting: opts?.wait_for_greeting ?? false,
       webhook: webhookUrl,
-      webhook_events: ["latency", "tool", "call", "dynamic_data", "webhook"],
+      webhook_events: ["latency", "tool", "call", "dynamic_data", "webhook", "citations"],
     };
 
     if (this.config.agentId) body.pathway_id = this.config.agentId;
@@ -697,7 +721,7 @@ export class BlandAudioChannel extends BaseAudioChannel {
             arguments: (data.request_data ?? data.params ?? {}) as Record<string, unknown>,
             result: data.response ?? data.result ?? data.response_data,
             successful: data.status === "success" || data.status_code === 200 || data.response != null,
-            timestamp_ms: Date.now(),
+            timestamp_ms: relMs,
           });
         }
 
@@ -710,8 +734,13 @@ export class BlandAudioChannel extends BaseAudioChannel {
             arguments: (data.request_data ?? data.params ?? {}) as Record<string, unknown>,
             result: data.response ?? data.result ?? data.response_data,
             successful: data.status === "success" || data.status_code === 200 || data.response != null,
-            timestamp_ms: Date.now(),
+            timestamp_ms: relMs,
           });
+        }
+
+        if (eventType === "citations") {
+          const citationPayload = event.data ?? event.citations ?? event.result ?? event;
+          this.realtimeCitations.push(citationPayload);
         }
 
         // Capture "Storing dynamic data" from call events — Bland stores webhook
@@ -734,7 +763,7 @@ export class BlandAudioChannel extends BaseAudioChannel {
               arguments: {},
               result: varValue,
               successful: true,
-              timestamp_ms: Date.now(),
+              timestamp_ms: relMs,
             });
           }
         }
@@ -784,7 +813,7 @@ export class BlandAudioChannel extends BaseAudioChannel {
           arguments: args,
           result,
           successful,
-          timestamp_ms: Date.now(),
+          timestamp_ms: this.eotRelMs(),
         });
       } catch {
         // Ignore malformed payloads
@@ -897,21 +926,7 @@ export class BlandAudioChannel extends BaseAudioChannel {
   }
 
   private parseToolCalls(data: BlandCallResponse): ObservedToolCall[] {
-    const toolCalls = parseBlandToolCalls(data);
-
-    // Merge real-time tool call webhook events (collected during the call)
-    // Only add if not already captured from transcripts/pathway_logs (dedupe by name+timestamp proximity)
-    for (const rtc of this.realtimeToolCalls) {
-      const isDuplicate = toolCalls.some(
-        (tc) => tc.name === rtc.name && tc.timestamp_ms && rtc.timestamp_ms &&
-          Math.abs(tc.timestamp_ms - rtc.timestamp_ms) < 5000,
-      );
-      if (!isDuplicate) {
-        toolCalls.push(rtc);
-      }
-    }
-
-    return toolCalls;
+    return parseBlandToolCalls(data);
   }
 }
 
@@ -921,6 +936,7 @@ export class BlandAudioChannel extends BaseAudioChannel {
  */
 export function parseBlandToolCalls(data: BlandCallResponse): ObservedToolCall[] {
   const toolCalls: ObservedToolCall[] = [];
+  const callStartMs = parseBlandTimestampMs(data.started_at);
 
   // 1. Parse agent-action transcript entries (inline tool calls)
   const transcripts = data.transcripts ?? [];
@@ -930,6 +946,8 @@ export function parseBlandToolCalls(data: BlandCallResponse): ObservedToolCall[]
         const parsed = JSON.parse(entry.text) as {
           name?: string;
           tool?: string;
+          type?: string;
+          tool_type?: string;
           arguments?: Record<string, unknown>;
           result?: unknown;
         };
@@ -937,13 +955,14 @@ export function parseBlandToolCalls(data: BlandCallResponse): ObservedToolCall[]
           name: parsed.name ?? parsed.tool ?? "unknown",
           arguments: parsed.arguments ?? {},
           result: parsed.result,
-          timestamp_ms: new Date(entry.created_at).getTime(),
+          provider_tool_type: parsed.tool_type ?? parsed.type,
+          timestamp_ms: toRelativeBlandTimestampMs(entry.created_at, callStartMs),
         });
       } catch {
         toolCalls.push({
           name: entry.text,
           arguments: {},
-          timestamp_ms: new Date(entry.created_at).getTime(),
+          timestamp_ms: toRelativeBlandTimestampMs(entry.created_at, callStartMs),
         });
       }
     }
@@ -973,7 +992,8 @@ export function parseBlandToolCalls(data: BlandCallResponse): ObservedToolCall[]
         arguments: webhookArgs,
         result: webhookResult,
         successful: true,
-        timestamp_ms: log.created_at ? new Date(log.created_at).getTime() : undefined,
+        provider_tool_type: "webhook",
+        timestamp_ms: toRelativeBlandTimestampMs(log.created_at, callStartMs),
       });
       continue;
     }
@@ -989,7 +1009,8 @@ export function parseBlandToolCalls(data: BlandCallResponse): ObservedToolCall[]
             arguments: (info.request_data ?? info.params ?? info.body ?? {}) as Record<string, unknown>,
             result: info.response ?? info.result,
             successful: info.status_code === 200 || info.status === "success" || info.response != null,
-            timestamp_ms: log.created_at ? new Date(log.created_at).getTime() : undefined,
+            provider_tool_type: "webhook",
+            timestamp_ms: toRelativeBlandTimestampMs(log.created_at, callStartMs),
           });
         }
       } catch { /* not JSON */ }
@@ -1039,6 +1060,23 @@ function resolveBlandTransferStatus(state: string | undefined): CallTransfer["st
     return "failed";
   }
   return "attempted";
+}
+
+function compactUnknownRecord(record: Record<string, unknown>): Record<string, unknown> | undefined {
+  const entries = Object.entries(record).filter(([, value]) => value != null);
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
+
+function parseBlandTimestampMs(timestamp: string | undefined): number | undefined {
+  if (!timestamp) return undefined;
+  const parsed = Date.parse(timestamp);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function toRelativeBlandTimestampMs(timestamp: string | undefined, callStartMs: number | undefined): number | undefined {
+  const absoluteMs = parseBlandTimestampMs(timestamp);
+  if (absoluteMs == null || callStartMs == null) return undefined;
+  return Math.max(0, absoluteMs - callStartMs);
 }
 
 function sleep(ms: number): Promise<void> {

@@ -157,7 +157,7 @@ export function computeAudioAnalysisMetrics(
     talk_ratio_vad: round3(talkRatioVad),
     interruption_rate: ratio(interruptionCount, interruptionOpportunities),
     interruption_count: interruptionCount,
-    barge_in_recovery_time_ms: mean(bargeInRecoverySamples),
+    agent_overtalk_after_barge_in_ms: mean(bargeInRecoverySamples),
     agent_interrupting_user_rate: ratio(agentInterruptingUserCount, agentInterruptOpportunities),
     agent_interrupting_user_count: agentInterruptingUserCount,
     missed_response_windows: missedResponseWindows,

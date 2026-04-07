@@ -30,7 +30,7 @@ export async function startAgentSession(relayConfig: {
   const client = new RelayClient(clientConfig);
 
   client.on("log", (msg: unknown) => {
-    if (isVerbose()) process.stderr.write(`${msg}\n`);
+    if (isVerbose()) process.stdout.write(`${msg}\n`);
   });
 
   // 1. Connect relay WebSocket — establishes the tunnel to Vent cloud
@@ -48,14 +48,14 @@ export async function startAgentSession(relayConfig: {
     });
 
     agentProcess.stdout?.on("data", (data: Buffer) => {
-      if (isVerbose()) process.stderr.write(`[agent] ${data}`);
+      if (isVerbose()) process.stdout.write(`[agent] ${data}`);
     });
     agentProcess.stderr?.on("data", (data: Buffer) => {
-      if (isVerbose()) process.stderr.write(`[agent] ${data}`);
+      if (isVerbose()) process.stdout.write(`[agent] ${data}`);
     });
 
     agentProcess.on("error", (err) => {
-      process.stderr.write(`Agent process error: ${err.message}\n`);
+      process.stdout.write(`Agent process error: ${err.message}\n`);
     });
   }
 

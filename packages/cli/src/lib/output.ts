@@ -1,5 +1,5 @@
 import { writeFileSync } from "node:fs";
-import type { FormattedConversationResult } from "@vent/shared";
+import { formatConversationResult, type FormattedConversationResult } from "@vent/shared";
 import type { SSEEvent } from "./sse.js";
 
 const isTTY = process.stdout.isTTY;
@@ -13,7 +13,7 @@ export function setVerbose(v: boolean): void {
 export function debug(msg: string): void {
   if (!_verbose) return;
   const ts = new Date().toISOString().slice(11, 23);
-  process.stderr.write(`[vent ${ts}] ${msg}\n`);
+  stdoutSync(`[vent ${ts}] ${msg}\n`);
 }
 
 export function isVerbose(): boolean {
@@ -40,6 +40,10 @@ function stdoutSync(data: string): void {
   }
 }
 
+export function writeJsonStdout(value: unknown): void {
+  stdoutSync(JSON.stringify(value, null, 2) + "\n");
+}
+
 // ANSI helpers
 const bold = (s: string) => (isTTY ? `\x1b[1m${s}\x1b[0m` : s);
 const dim = (s: string) => (isTTY ? `\x1b[2m${s}\x1b[0m` : s);
@@ -47,6 +51,25 @@ const green = (s: string) => (isTTY ? `\x1b[32m${s}\x1b[0m` : s);
 const red = (s: string) => (isTTY ? `\x1b[31m${s}\x1b[0m` : s);
 const yellow = (s: string) => (isTTY ? `\x1b[33m${s}\x1b[0m` : s);
 const blue = (s: string) => (isTTY ? `\x1b[34m${s}\x1b[0m` : s);
+
+interface RunSummaryJsonOptions {
+  runId: string;
+  status: unknown;
+  total?: unknown;
+  passed?: unknown;
+  failed?: unknown;
+  formattedCalls?: Array<FormattedConversationResult | Record<string, unknown>>;
+  rawCalls?: unknown[];
+  verbose?: boolean;
+  runDetails?: {
+    created_at?: unknown;
+    started_at?: unknown;
+    finished_at?: unknown;
+    duration_ms?: unknown;
+    error_text?: unknown;
+    aggregate?: unknown;
+  };
+}
 
 export function printEvent(event: SSEEvent): void {
   // Non-TTY (coding agents): don't write individual events to stdout.
@@ -65,11 +88,11 @@ export function printEvent(event: SSEEvent): void {
       break;
     case "call_started": {
       const name = (meta.call_name as string) ?? "call";
-      process.stderr.write(dim(`  ▸ ${name}…`) + "\n");
+      stdoutSync(dim(`  ▸ ${name}…`) + "\n");
       break;
     }
     default:
-      process.stderr.write(dim(`  [${event.event_type}]`) + "\n");
+      stdoutSync(dim(`  [${event.event_type}]`) + "\n");
   }
 }
 
@@ -95,6 +118,26 @@ function printCallResult(meta: Record<string, unknown>): void {
   }
 
   stdoutSync(parts.join("  ") + "\n");
+
+  const providerCallId = result?.call_metadata?.provider_call_id;
+  const providerSessionId = result?.call_metadata?.provider_session_id;
+  if (providerCallId) {
+    stdoutSync(dim(`    provider id: ${providerCallId}`) + "\n");
+  } else if (providerSessionId) {
+    stdoutSync(dim(`    provider session: ${providerSessionId}`) + "\n");
+  }
+
+  const recordingUrl = result?.call_metadata?.recording_url;
+  if (recordingUrl) {
+    stdoutSync(dim(`    recording: ${recordingUrl}`) + "\n");
+  }
+
+  const debugUrls = result?.call_metadata?.provider_debug_urls;
+  if (debugUrls) {
+    for (const [label, url] of Object.entries(debugUrls)) {
+      stdoutSync(dim(`    ${label}: ${url}`) + "\n");
+    }
+  }
 }
 
 function printRunComplete(meta: Record<string, unknown>): void {
@@ -127,33 +170,39 @@ export function printSummary(
   callResults: SSEEvent[],
   runComplete: Record<string, unknown>,
   runId: string,
+  options: {
+    verbose?: boolean;
+    rawCalls?: unknown[];
+    runDetails?: RunSummaryJsonOptions["runDetails"];
+  } = {},
 ): void {
-  // Build call results summary — pass through the full FormattedConversationResult
-  // so coding agents have complete context on latency, behavior, transcript, etc.
-  const allCalls = callResults.map((e) => {
-    const meta = e.metadata_json ?? {};
-    const r = meta.result as FormattedConversationResult | undefined;
-    if (r) return r;
-    // Fallback for events without a full result object
-    return {
-      name: (meta.call_name as string) ?? "call",
-      status: (meta.status as string) ?? "unknown",
-      duration_ms: meta.duration_ms as number,
-      error: null,
-    };
-  });
+  const allCalls = options.rawCalls
+    ? formatRawCalls(options.rawCalls, options.verbose ?? false)
+    : callResults.map((e) => {
+      const meta = e.metadata_json ?? {};
+      const r = meta.result as FormattedConversationResult | undefined;
+      if (r) return r;
+      // Fallback for events without a full result object
+      return {
+        name: (meta.call_name as string) ?? "call",
+        status: (meta.status as string) ?? "unknown",
+        duration_ms: meta.duration_ms as number,
+        error: null,
+      };
+    });
 
   const agg = runComplete.aggregate as { conversation_calls?: { passed?: number; failed?: number; total?: number } } | undefined;
   const counts = agg?.conversation_calls;
-
-  const summaryData = {
-    run_id: runId,
+  const summaryData = buildRunSummaryJson({
+    runId,
     status: runComplete.status,
     total: runComplete.total_calls ?? counts?.total,
     passed: runComplete.passed_calls ?? counts?.passed,
     failed: runComplete.failed_calls ?? counts?.failed,
-    calls: allCalls,
-  };
+    formattedCalls: allCalls,
+    verbose: options.verbose,
+    runDetails: options.runDetails ?? { aggregate: runComplete.aggregate },
+  });
 
   // Non-TTY (coding agents): write single summary JSON to stdout.
   if (!isTTY) {
@@ -173,35 +222,71 @@ export function printSummary(
     }
   }
 
-  process.stderr.write(dim(`Full details: vent status ${runId} --json`) + "\n");
+  stdoutSync(dim(`Full details: vent status ${runId}${options.verbose ? " --verbose" : ""}`) + "\n");
+}
+
+export function buildRunSummaryJson(options: RunSummaryJsonOptions): Record<string, unknown> {
+  const calls = options.rawCalls
+    ? formatRawCalls(options.rawCalls, options.verbose ?? false)
+    : (options.formattedCalls ?? []);
+
+  const summaryData: Record<string, unknown> = {
+    run_id: options.runId,
+    status: options.status,
+    total: options.total,
+    passed: options.passed,
+    failed: options.failed,
+    calls,
+  };
+
+  const details = options.runDetails;
+  if (details?.created_at != null) summaryData["created_at"] = details.created_at;
+  if (details?.started_at != null) summaryData["started_at"] = details.started_at;
+  if (details?.finished_at != null) summaryData["finished_at"] = details.finished_at;
+  if (details?.duration_ms != null) summaryData["duration_ms"] = details.duration_ms;
+  if (details?.error_text != null) summaryData["error_text"] = details.error_text;
+  if (details?.aggregate != null) summaryData["aggregate"] = details.aggregate;
+
+  return summaryData;
+}
+
+function formatRawCalls(
+  rawCalls: unknown[],
+  verbose: boolean,
+): Array<FormattedConversationResult | Record<string, unknown>> {
+  return rawCalls.map((raw) => {
+    const formatted = formatConversationResult(raw, { verbose });
+    if (formatted) return formatted;
+
+    const fallback = raw as Record<string, unknown>;
+    return {
+      name: typeof fallback["name"] === "string" ? fallback["name"] : "call",
+      status: typeof fallback["status"] === "string" ? fallback["status"] : "unknown",
+      duration_ms: typeof fallback["duration_ms"] === "number" ? fallback["duration_ms"] : undefined,
+      error: typeof fallback["error"] === "string" ? fallback["error"] : null,
+    };
+  });
 }
 
 export function printError(message: string): void {
   const line = red(bold("error")) + ` ${message}\n`;
-  process.stderr.write(line);
-  // Also write to stdout so coding agents (which may only capture stdout) see errors
-  if (!isTTY) {
-    stdoutSync(line);
-  }
+  stdoutSync(line);
 }
 
 export function printInfo(message: string, { force }: { force?: boolean } = {}): void {
   if (!force && !isTTY && !_verbose) return;
   const line = blue("▸") + ` ${message}\n`;
-  process.stderr.write(line);
-  if (!isTTY && force) stdoutSync(line);
+  stdoutSync(line);
 }
 
 export function printSuccess(message: string, { force }: { force?: boolean } = {}): void {
   if (!force && !isTTY && !_verbose) return;
   const line = green("✔") + ` ${message}\n`;
-  process.stderr.write(line);
-  if (!isTTY && force) stdoutSync(line);
+  stdoutSync(line);
 }
 
 export function printWarn(message: string, { force }: { force?: boolean } = {}): void {
   if (!force && !isTTY && !_verbose) return;
   const line = yellow("⚠") + ` ${message}\n`;
-  process.stderr.write(line);
-  if (!isTTY && force) stdoutSync(line);
+  stdoutSync(line);
 }

@@ -2,8 +2,9 @@
  * Transforms raw ConversationCallResult into a structured, grouped format
  * for agent consumption (CLI).
  *
- * Groups metrics by concern and removes Vent internals (harness overhead,
- * Hume API timing, our TTS/STT processing time).
+ * Groups metrics by concern and removes Vent internals by default. Verbose mode
+ * re-attaches debug-only details such as harness timings, raw warnings, and
+ * provider artifacts.
  */
 
 import type {
@@ -14,12 +15,18 @@ import type {
   LatencyMetrics,
   TranscriptMetrics,
   AudioAnalysisMetrics,
+  AudioAnalysisWarning,
   ProsodyMetrics,
+  ProsodyWarning,
   ToolCallMetrics,
   CallMetadata,
   CallTransfer,
   CostBreakdown,
   ComponentLatencyMetrics,
+  ComponentLatency,
+  HarnessOverhead,
+  SignalQualityMetrics,
+  ProviderWarning,
 } from "./types.js";
 
 // ---- Formatted types ----
@@ -32,6 +39,16 @@ interface FormattedTranscriptTurn {
   audio_duration_ms?: number;
   interrupted?: boolean;
   is_interruption?: boolean;
+  debug?: {
+    timestamp_ms: number;
+    caller_decision_mode?: ConversationTurn["caller_decision_mode"];
+    silence_pad_ms?: number;
+    stt_confidence?: number;
+    harness_tts_ms?: number;
+    harness_stt_ms?: number;
+    component_latency?: ComponentLatency;
+    platform_transcript?: string;
+  };
 }
 
 interface FormattedLatency {
@@ -62,7 +79,7 @@ interface FormattedAudioAnalysis {
   talk_ratio_vad: number;
   interruption_rate: number;
   interruption_count: number;
-  barge_in_recovery_time_ms?: number;
+  agent_overtalk_after_barge_in_ms?: number;
   agent_interrupting_user_rate: number;
   agent_interrupting_user_count: number;
   missed_response_windows: number;
@@ -83,6 +100,7 @@ interface FormattedToolCalls {
     arguments: Record<string, unknown>;
     result?: unknown;
     successful?: boolean;
+    provider_tool_type?: string;
     latency_ms?: number;
     turn_index?: number;
   }>;
@@ -110,14 +128,14 @@ interface FormattedComponentLatency {
 
 interface FormattedCallMetadata {
   platform: string;
+  provider_call_id?: string;
+  provider_session_id?: string;
   ended_reason?: string;
   cost_usd?: number;
   cost_breakdown?: CostBreakdown;
   recording_url?: string;
-  summary?: string;
-  success_evaluation?: string;
-  user_sentiment?: string;
-  call_successful?: boolean;
+  recording_variants?: Record<string, string>;
+  provider_debug_urls?: Record<string, string>;
   variables?: Record<string, unknown>;
   transfer_attempted?: boolean;
   transfer_completed?: boolean;
@@ -125,6 +143,29 @@ interface FormattedCallMetadata {
   transfer_count?: number;
   completed_transfer_count?: number;
   transfers?: CallTransfer[];
+}
+
+interface FormattedDebugToolCall {
+  name: string;
+  arguments: Record<string, unknown>;
+  result?: unknown;
+  successful?: boolean;
+  provider_tool_type?: string;
+  timestamp_ms?: number;
+  latency_ms?: number;
+  turn_index?: number;
+}
+
+interface FormattedConversationDebug {
+  signal_quality?: SignalQualityMetrics;
+  harness_overhead?: HarnessOverhead;
+  prosody?: ProsodyMetrics;
+  audio_analysis_warnings?: AudioAnalysisWarning[];
+  prosody_warnings?: ProsodyWarning[];
+  provider_warnings?: ProviderWarning[];
+  component_latency_per_turn?: ComponentLatency[];
+  observed_tool_calls?: FormattedDebugToolCall[];
+  provider_metadata?: Record<string, unknown>;
 }
 
 export interface FormattedConversationResult {
@@ -143,14 +184,24 @@ export interface FormattedConversationResult {
   warnings: string[];
   audio_actions: AudioActionResult[];
   emotion: FormattedEmotion | null;
+  debug?: FormattedConversationDebug;
+}
+
+export interface FormatConversationResultOptions {
+  verbose?: boolean;
 }
 
 // ---- Public API ----
 
-export function formatConversationResult(raw: unknown): FormattedConversationResult | null {
+export function formatConversationResult(
+  raw: unknown,
+  options: FormatConversationResultOptions = {},
+): FormattedConversationResult | null {
   if (!raw || typeof raw !== "object") return null;
   const r = raw as ConversationCallResult;
   if (typeof r.caller_prompt !== "string") return null;
+
+  const debug = options.verbose ? formatDebug(r) : undefined;
 
   return {
     name: r.name ?? null,
@@ -158,26 +209,31 @@ export function formatConversationResult(raw: unknown): FormattedConversationRes
     caller_prompt: r.caller_prompt,
     duration_ms: r.duration_ms,
     error: r.error ?? null,
-    transcript: formatTranscript(r.transcript),
+    transcript: formatTranscript(r.transcript, options),
     latency: r.metrics?.latency ? formatLatency(r.metrics.latency, r.metrics) : null,
     transcript_quality: r.metrics?.transcript && hasContent(r.metrics.transcript) ? r.metrics.transcript : null,
-    audio_analysis: r.metrics?.audio_analysis ? formatAudioAnalysis(r.metrics.audio_analysis) : null,
+    audio_analysis: r.metrics?.audio_analysis && hasContent(r.metrics.audio_analysis) ? formatAudioAnalysis(r.metrics.audio_analysis) : null,
     tool_calls: formatToolCalls(r.metrics?.tool_calls, r.observed_tool_calls),
     component_latency: formatComponentLatency(r.metrics?.component_latency),
     call_metadata: formatCallMetadata(r.call_metadata),
-    warnings: [
+    warnings: dedupeStrings([
       ...(r.metrics?.audio_analysis_warnings ?? []).map(w => w.message),
       ...(r.metrics?.prosody_warnings ?? []).map(w => w.message),
-    ],
+      ...formatProviderWarningMessages(r.call_metadata?.provider_warnings),
+    ]),
     audio_actions: r.audio_action_results ?? [],
     emotion: r.metrics?.prosody ? formatEmotion(r.metrics.prosody) : null,
+    ...(debug ? { debug } : {}),
   };
 }
 
 // ---- Helpers ----
 
 
-function formatTranscript(turns: ConversationTurn[] | undefined): FormattedTranscriptTurn[] {
+function formatTranscript(
+  turns: ConversationTurn[] | undefined,
+  options: FormatConversationResultOptions,
+): FormattedTranscriptTurn[] {
   if (!turns) return [];
   return turns.map((t) => {
     const turn: FormattedTranscriptTurn = {
@@ -190,6 +246,21 @@ function formatTranscript(turns: ConversationTurn[] | undefined): FormattedTrans
     if (t.audio_duration_ms != null) turn.audio_duration_ms = t.audio_duration_ms;
     if (t.interrupted != null) turn.interrupted = t.interrupted;
     if (t.is_interruption != null) turn.is_interruption = t.is_interruption;
+    if (options.verbose) {
+      const debug = compactUnknownRecord({
+        timestamp_ms: t.timestamp_ms,
+        caller_decision_mode: t.caller_decision_mode,
+        silence_pad_ms: t.silence_pad_ms,
+        stt_confidence: t.stt_confidence,
+        harness_tts_ms: t.tts_ms,
+        harness_stt_ms: t.stt_ms,
+        component_latency: t.component_latency,
+        platform_transcript: t.platform_transcript,
+      });
+      if (debug && Object.keys(debug).length > 0) {
+        turn.debug = debug as FormattedTranscriptTurn["debug"];
+      }
+    }
     return turn;
   });
 }
@@ -237,7 +308,7 @@ function formatAudioAnalysis(audio: AudioAnalysisMetrics): FormattedAudioAnalysi
     talk_ratio_vad: audio.talk_ratio_vad,
     interruption_rate: audio.interruption_rate,
     interruption_count: audio.interruption_count,
-    barge_in_recovery_time_ms: audio.barge_in_recovery_time_ms,
+    agent_overtalk_after_barge_in_ms: audio.agent_overtalk_after_barge_in_ms,
     agent_interrupting_user_rate: audio.agent_interrupting_user_rate,
     agent_interrupting_user_count: audio.agent_interrupting_user_count,
     missed_response_windows: audio.missed_response_windows,
@@ -263,6 +334,7 @@ function formatToolCalls(
       arguments: c.arguments,
       result: c.result,
       successful: c.successful,
+      provider_tool_type: c.provider_tool_type,
       latency_ms: c.latency_ms,
       turn_index: c.turn_index,
     })),
@@ -316,14 +388,14 @@ function formatCallMetadata(meta: CallMetadata | undefined): FormattedCallMetada
 
   const result: FormattedCallMetadata = {
     platform: meta.platform,
+    provider_call_id: meta.provider_call_id,
+    provider_session_id: meta.provider_session_id,
     ended_reason: meta.ended_reason,
     cost_usd: meta.cost_usd,
     cost_breakdown: meta.cost_breakdown,
     recording_url: meta.recording_url,
-    summary: meta.summary ?? undefined,
-    success_evaluation: meta.success_evaluation ?? undefined,
-    user_sentiment: meta.user_sentiment ?? undefined,
-    call_successful: meta.call_successful,
+    recording_variants: meta.recording_variants,
+    provider_debug_urls: meta.provider_debug_urls,
     variables: meta.variables,
   };
 
@@ -339,6 +411,60 @@ function formatCallMetadata(meta: CallMetadata | undefined): FormattedCallMetada
   }
 
   return result;
+}
+
+function formatDebug(result: ConversationCallResult): FormattedConversationDebug | undefined {
+  const debug = compactUnknownRecord({
+    signal_quality: result.metrics?.signal_quality,
+    harness_overhead: result.metrics?.harness_overhead,
+    prosody: result.metrics?.prosody,
+    audio_analysis_warnings: nonEmptyArray(result.metrics?.audio_analysis_warnings),
+    prosody_warnings: nonEmptyArray(result.metrics?.prosody_warnings),
+    provider_warnings: nonEmptyArray(result.call_metadata?.provider_warnings),
+    component_latency_per_turn: nonEmptyArray(result.metrics?.component_latency?.per_turn),
+    observed_tool_calls: formatDebugToolCalls(result.observed_tool_calls),
+    provider_metadata: result.call_metadata?.provider_metadata,
+  });
+
+  return debug && Object.keys(debug).length > 0
+    ? debug as FormattedConversationDebug
+    : undefined;
+}
+
+function formatDebugToolCalls(observed: ObservedToolCall[] | undefined): FormattedDebugToolCall[] | undefined {
+  if (!observed || observed.length === 0) return undefined;
+  return observed.map((call) => ({
+    name: call.name,
+    arguments: call.arguments,
+    result: call.result,
+    successful: call.successful,
+    provider_tool_type: call.provider_tool_type,
+    timestamp_ms: call.timestamp_ms,
+    latency_ms: call.latency_ms,
+    turn_index: call.turn_index,
+  }));
+}
+
+function nonEmptyArray<T>(value: T[] | undefined): T[] | undefined {
+  return value && value.length > 0 ? value : undefined;
+}
+
+function formatProviderWarningMessages(warnings: ProviderWarning[] | undefined): string[] {
+  if (!warnings || warnings.length === 0) return [];
+  return warnings
+    .map((warning) => warning.message ?? warning.code)
+    .filter((message): message is string => typeof message === "string" && message.length > 0);
+}
+
+function dedupeStrings(values: string[]): string[] {
+  return [...new Set(values)];
+}
+
+function compactUnknownRecord(
+  record: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  const entries = Object.entries(record).filter(([, value]) => value != null);
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
 }
 
 function hasContent(obj: object): boolean {

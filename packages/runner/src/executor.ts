@@ -1,6 +1,6 @@
 /**
  * Single call execution — runs one conversation call against a voice agent.
- * Audio quality analysis, latency drift, and echo detection are integrated
+ * Audio quality analysis and latency drift are integrated
  * into the call (no standalone infrastructure probes).
  */
 
@@ -61,6 +61,10 @@ function slugifyRecordingLabel(label: string): string {
   return slug || "call";
 }
 
+function usesVentOwnedRecording(adapter: AudioChannelConfig["adapter"]): boolean {
+  return adapter === "livekit" || adapter === "websocket";
+}
+
 async function attachRecordingUrl(
   result: ConversationCallResult,
   channel: ReturnType<typeof createAudioChannel>,
@@ -76,6 +80,43 @@ async function attachRecordingUrl(
   if (!runId) {
     await activeUpload?.abort().catch(() => {});
     await channel.discardCallRecording?.().catch(() => {});
+    return;
+  }
+
+  const preferVentOwnedRecording = usesVentOwnedRecording(channelConfig.adapter);
+
+  if (!preferVentOwnedRecording) {
+    await activeUpload?.abort().catch(() => {});
+
+    let recording:
+      | Awaited<ReturnType<NonNullable<typeof channel.getCallRecording>>>
+      | null
+      | undefined;
+    try {
+      recording = await channel.getCallRecording?.();
+      if (!recording) return;
+
+      const storage = getStorageClient();
+      if (!storage) return;
+
+      const baseName = slugifyRecordingLabel(result.name ?? result.caller_prompt.slice(0, 48));
+      const key = `recordings/${runId}/${baseName}-${randomUUID()}.${recording.extension}`;
+
+      await storage.upload(key, recording.body, recording.contentType);
+
+      const recordingUrl = await buildRecordingUrl(key, storage);
+
+      result.call_metadata = {
+        platform: result.call_metadata?.platform ?? channelConfig.adapter,
+        ...(result.call_metadata ?? {}),
+        recording_url: recordingUrl,
+      };
+    } catch (err) {
+      console.warn(`attachRecordingUrl failed: ${(err as Error).message}`);
+    } finally {
+      await recording?.cleanup?.().catch(() => {});
+      await channel.discardCallRecording?.().catch(() => {});
+    }
     return;
   }
 
@@ -282,11 +323,13 @@ export async function executeCall(opts: ExecuteCallOpts): Promise<ExecuteCallRes
     callName,
   };
   const channel = createAudioChannel(perCallChannelConfig);
-  const recordingUpload = await startRecordingUpload(channel, spec.name, spec.caller_prompt, runId)
-    .catch((err) => {
-      console.warn(`recording upload bootstrap failed: ${(err as Error).message}`);
-      return null;
-    });
+  const recordingUpload = usesVentOwnedRecording(perCallChannelConfig.adapter)
+    ? await startRecordingUpload(channel, spec.name, spec.caller_prompt, runId)
+      .catch((err) => {
+        console.warn(`recording upload bootstrap failed: ${(err as Error).message}`);
+        return null;
+      })
+    : null;
   const start = Date.now();
 
   let result: ConversationCallResult;

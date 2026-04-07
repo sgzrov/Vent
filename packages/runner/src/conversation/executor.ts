@@ -203,14 +203,8 @@ export async function runConversationCall(
           const sttStart = performance.now();
           const { text } = await transcriber.finalize();
           greetingSttMs = Math.round(performance.now() - sttStart);
-
-          if (!text && channel.consumeAgentText) {
-            const platformText = channel.consumeAgentText();
-            if (platformText) greetingText = platformText;
-          } else {
-            greetingText = text;
-            channel.consumeAgentText?.();
-          }
+          greetingText = text;
+          channel.consumeAgentText?.();
         } else {
           channel.consumeAgentText?.();
         }
@@ -244,15 +238,13 @@ export async function runConversationCall(
         adaptiveThreshold.update(stats);
         continue;
       }
-      // Check for audio action at this turn (silence, split_sentence skip CallerLLM)
+      // Check for audio action at this turn (split_sentence skips CallerLLM)
       const audioAction = spec.audio_actions?.find((a) => a.at_turn === turn);
 
-      if (audioAction && (audioAction.action === "silence" || audioAction.action === "split_sentence")) {
-        // These actions replace the caller utterance entirely
+      if (audioAction && audioAction.action === "split_sentence") {
+        // This action replaces the caller utterance entirely
         const callerTimestamp = performance.now() - startTime;
-        const actionLabel = audioAction.action === "silence"
-          ? `[silence ${audioAction.duration_ms ?? 8000}ms]`
-          : `[split: "${audioAction.split?.part_a}" ... "${audioAction.split?.part_b}"]`;
+        const actionLabel = `[split: "${audioAction.split?.part_a}" ... "${audioAction.split?.part_b}"]`;
 
         transcript.push({
           role: "caller",
@@ -356,17 +348,7 @@ export async function runConversationCall(
           let { text, confidence } = await transcriber.finalize();
           const sttMs = Math.round(performance.now() - sttStart);
           let textSource = text ? "stt" : "empty";
-
-          if (!text && channel.consumeAgentText) {
-            const platformText = channel.consumeAgentText();
-            if (platformText) {
-              text = platformText;
-              confidence = 1;
-              textSource = "platform";
-            }
-          } else {
-            channel.consumeAgentText?.();
-          }
+          channel.consumeAgentText?.();
 
           agentText = text;
 
@@ -424,6 +406,12 @@ export async function runConversationCall(
       callerText = callerDecision.text;
       spokenCallerText = prepareCallerSpeechText(channel, callerText);
       const emittedCallerText = spokenCallerText ?? callerText;
+      const interruptionStyle = spec.persona?.interruption_style;
+      const interruptGateProb = interruptionStyle === "high" ? 1.0 : 0.5;
+      const interruptPlanEligible = !shouldStopAfterAgentReply
+        && interruptionStyle
+        && turn >= 2
+        && Math.random() < interruptGateProb;
       if (spokenCallerText !== callerText) {
         console.log(
           `[caller-tts] turn=${turn} normalized original="${summarizeDebugText(callerText)}" ` +
@@ -435,10 +423,27 @@ export async function runConversationCall(
         `text="${summarizeDebugText(emittedCallerText)}"`
       );
 
+      const interruptPlanPromise = interruptPlanEligible
+        ? caller.planInterrupt(emittedCallerText)
+        : Promise.resolve({ mode: "listen" } as const);
       const ttsStart = performance.now();
       callerAudio = await ttsSession.synthesize(emittedCallerText);
       if (spec.caller_audio) callerAudio = applyEffects(callerAudio, spec.caller_audio);
       ttsMs = Math.round(performance.now() - ttsStart);
+      const interruptPlan = await interruptPlanPromise;
+      const plannedInterrupt = interruptPlan.mode === "interrupt"
+        ? {
+            text: interruptPlan.text,
+            delayMs: interruptionStyle === "high"
+              ? 500 + Math.random() * 1000
+              : 1500 + Math.random() * 1500,
+            audioPromise: (async () => {
+              let audio = await ttsSession.synthesize(interruptPlan.text);
+              if (spec.caller_audio) audio = applyEffects(audio, spec.caller_audio);
+              return audio;
+            })(),
+          }
+        : null;
 
       if (!callerAudio) {
         channel.off("audio", feedSTT);
@@ -538,38 +543,22 @@ export async function runConversationCall(
         continue;
       }
 
-      // ── Persona-driven interruption (LLM-decided) ──────────────────
-      // When interruption_style is set, we collect agent speech, then after
-      // a delay ask the CallerLLM: "interrupt or listen?" The LLM decides
-      // based on persona traits and conversation context.
-      // low: ~3/10 turns checked, high: every turn checked
-      const interruptionStyle = spec.persona?.interruption_style;
-      const interruptGateProb = interruptionStyle === "high" ? 1.0 : 0.5;
-      const interruptEligible = !shouldStopAfterAgentReply
-        && interruptionStyle
-        && turn >= 2
-        && Math.random() < interruptGateProb;
-
-      if (interruptEligible) {
-        // Collect with an abort signal — we'll abort after speech onset + delay
-        // to ask the LLM for an interrupt decision
+      // ── Preplanned persona interruption ─────────────────────────────
+      // If the caller persona is likely to cut the agent off, plan that
+      // before the turn starts and execute it inline once speech begins.
+      if (plannedInterrupt) {
         const abortCtrl = new AbortController();
-        const peekMs = interruptionStyle === "high"
-          ? 500 + Math.random() * 1000    // 0.5–1.5s of speech before asking
-          : 1500 + Math.random() * 1500;  // 1.5–3s of speech before asking
 
-        // Set up speech onset detection to trigger the abort after delay
         let speechDetected = false;
         const onSpeechCheck = (chunk: Buffer) => {
           if (speechDetected) return;
-          // Simple energy check — speech detected when RMS > 300
           const int16 = new Int16Array(chunk.buffer, chunk.byteOffset, chunk.length / 2);
           let sumSq = 0;
           for (let i = 0; i < int16.length; i++) sumSq += int16[i]! * int16[i]!;
           const rms = Math.sqrt(sumSq / int16.length);
           if (rms > 300) {
             speechDetected = true;
-            setTimeout(() => abortCtrl.abort(), peekMs);
+            setTimeout(() => abortCtrl.abort(), plannedInterrupt.delayMs);
           }
         };
         channel.on("audio", onSpeechCheck);
@@ -582,26 +571,20 @@ export async function runConversationCall(
         channel.off("audio", onSpeechCheck);
 
         if (!peekResult.aborted) {
-          // Agent finished speaking before we could even ask — no interrupt opportunity.
-          // Process as a normal turn (fall through to normal handling below).
+          // Agent finished speaking before the preplanned cut-in point.
           channel.off("audio", feedSTT);
 
           const { text: fullText, confidence } = await transcriber.finalize();
           let resolvedText = fullText;
-          if (!resolvedText && channel.consumeAgentText) {
-            const platformText = channel.consumeAgentText();
-            if (platformText) resolvedText = platformText;
-          } else {
-            channel.consumeAgentText?.();
-          }
+          channel.consumeAgentText?.();
 
           agentText = resolvedText || "";
           adaptiveThreshold.update(peekResult.stats);
 
           const agentTimestamp = performance.now() - startTime;
           const audioDurationMs = Math.round((peekResult.audio.length / 2 / 24000) * 1000);
-          const ttfbMs = peekResult.stats.firstChunkAt ? Math.max(0, peekResult.stats.firstChunkAt - sendTime) : undefined;
-          const ttfwMs = peekResult.stats.speechOnsetAt ? Math.max(0, peekResult.stats.speechOnsetAt - sendTime) : undefined;
+          const ttfbMs = peekResult.stats.firstChunkAt !== null ? Math.max(0, peekResult.stats.firstChunkAt - sendTime) : undefined;
+          const ttfwMs = peekResult.stats.speechOnsetAt !== null ? Math.max(0, peekResult.stats.speechOnsetAt - sendTime) : undefined;
           const speechSegments = batchVAD.analyze(peekResult.audio);
           if (spec.prosody) agentAudioBuffers.push(Buffer.from(peekResult.audio));
           turnSignalQualities.push(analyzeAudioQuality(peekResult.audio, speechSegments));
@@ -626,82 +609,17 @@ export async function runConversationCall(
           continue;
         }
 
-        // We have partial agent speech — transcribe it and ask the LLM
+        // We have partial agent speech — send the preplanned interruption.
+        channel.off("audio", feedSTT);
         const partialText = await transcriber.finalize();
         const partialAgentText = partialText.text || "";
-        console.log(`    [interrupt-check] turn=${turn} asking LLM: "${partialAgentText.slice(0, 60)}..."`);
-
-        // Ask CallerLLM: interrupt or listen?
-        const interruptDecision = await caller.decideInterrupt(partialAgentText, transcript);
-
-        if (interruptDecision.mode === "listen") {
-          // LLM decided to listen — continue collecting the rest of the agent response
-          console.log(`    [interrupt-check] turn=${turn} LLM decided: LISTEN`);
-          transcriber.resetForNextTurn();
-          const feedContinueSTT = (chunk: Buffer) => transcriber.feedAudio(chunk);
-          channel.on("audio", feedContinueSTT);
-
-          const { audio: restAudio, stats: restStats } = await collectUntilEndOfTurn(
-            channel,
-            { timeoutMs: resolveCollectionTimeoutMs(30000), vad: turnVAD, preferPlatformEOT: !!channel.hasPlatformEndOfTurn }
-          );
-          channel.off("audio", feedContinueSTT);
-
-          // Combine partial + rest transcripts
-          let restText = "";
-          if (restAudio.length > 0) {
-            const { text } = await transcriber.finalize();
-            if (!text && channel.consumeAgentText) {
-              const platformText = channel.consumeAgentText();
-              if (platformText) restText = platformText;
-            } else {
-              restText = text;
-              channel.consumeAgentText?.();
-            }
-          }
-
-          agentText = (partialAgentText + " " + restText).trim();
-          adaptiveThreshold.update(restStats);
-
-          const agentTimestamp = performance.now() - startTime;
-          const combinedAudio = Buffer.concat([peekResult.audio, restAudio]);
-          const audioDurationMs = Math.round((combinedAudio.length / 2 / 24000) * 1000);
-          const ttfbMs = peekResult.stats.firstChunkAt ? Math.max(0, peekResult.stats.firstChunkAt - sendTime) : undefined;
-          const ttfwMs = peekResult.stats.speechOnsetAt ? Math.max(0, peekResult.stats.speechOnsetAt - sendTime) : undefined;
-          const speechSegments = batchVAD.analyze(combinedAudio);
-          if (spec.prosody) agentAudioBuffers.push(Buffer.from(combinedAudio));
-          turnSignalQualities.push(analyzeAudioQuality(combinedAudio, speechSegments));
-          recordTurnAudio(
-            turnAudioData,
-            resolveAgentAudioStartTimestampMs(agentTimestamp, audioDurationMs, callerTimestamp, ttfbMs),
-            {
-              role: "agent",
-              audioDurationMs,
-              speechSegments,
-            },
-          );
-          transcript.push({
-            role: "agent",
-            text: agentText,
-            timestamp_ms: Math.round(agentTimestamp),
-            audio_duration_ms: audioDurationMs,
-            ttfb_ms: ttfbMs,
-            ttfw_ms: ttfwMs,
-          });
-          if (shouldStopAfterAgentReply) break;
-          continue;
-        }
-
-        // LLM decided to interrupt!
-        const interruptText = interruptDecision.text;
-        console.log(`    [interrupt] turn=${turn} LLM decided: INTERRUPT with "${interruptText.slice(0, 60)}"`);
-        channel.off("audio", feedSTT);
+        console.log(`    [interrupt-plan] turn=${turn} sending planned interruption="${plannedInterrupt.text.slice(0, 60)}"`);
 
         // Record partial agent turn (interrupted)
         const agentTimestamp = performance.now() - startTime;
         const preAudioDurationMs = Math.round((peekResult.audio.length / 2 / 24000) * 1000);
-        const preTtfbMs = peekResult.stats.firstChunkAt ? Math.max(0, peekResult.stats.firstChunkAt - sendTime) : undefined;
-        const preTtfwMs = peekResult.stats.speechOnsetAt ? Math.max(0, peekResult.stats.speechOnsetAt - sendTime) : undefined;
+        const preTtfbMs = peekResult.stats.firstChunkAt !== null ? Math.max(0, peekResult.stats.firstChunkAt - sendTime) : undefined;
+        const preTtfwMs = peekResult.stats.speechOnsetAt !== null ? Math.max(0, peekResult.stats.speechOnsetAt - sendTime) : undefined;
         const preSpeechSegments = batchVAD.analyze(peekResult.audio);
         if (spec.prosody) agentAudioBuffers.push(Buffer.from(peekResult.audio));
         turnSignalQualities.push(analyzeAudioQuality(peekResult.audio, preSpeechSegments));
@@ -725,11 +643,8 @@ export async function runConversationCall(
           interrupted: true,
         });
 
-        // TTS the interruption
-        let interruptAudio = await ttsSession.synthesize(interruptText);
-        if (spec.caller_audio) interruptAudio = applyEffects(interruptAudio, spec.caller_audio);
-
         // Send interrupt (raw = skip clear/mark for immediate delivery)
+        const interruptAudio = await plannedInterrupt.audioPromise;
         const interruptTime = Date.now();
         sendTime = Date.now();
         await channel.sendAudio(interruptAudio, { raw: true });
@@ -744,7 +659,7 @@ export async function runConversationCall(
         });
         transcript.push({
           role: "caller",
-          text: interruptText,
+          text: plannedInterrupt.text,
           timestamp_ms: Math.round(interruptCallerTimestamp),
           caller_decision_mode: "continue",
           audio_duration_ms: interruptAudioDurationMs,
@@ -772,20 +687,15 @@ export async function runConversationCall(
         let postAgentText = "";
         if (postAudio.length > 0) {
           const { text } = await transcriber.finalize();
-          if (!text && channel.consumeAgentText) {
-            const platformText = channel.consumeAgentText();
-            if (platformText) postAgentText = platformText;
-          } else {
-            postAgentText = text;
-            channel.consumeAgentText?.();
-          }
+          postAgentText = text;
+          channel.consumeAgentText?.();
         }
 
         agentText = postAgentText;
         const postAgentTimestamp = performance.now() - startTime;
         const postAudioDurationMs = Math.round((postAudio.length / 2 / 24000) * 1000);
-        const postTtfbMs = postStats.firstChunkAt ? Math.max(0, postStats.firstChunkAt - interruptTime) : undefined;
-        const postTtfwMs = postStats.speechOnsetAt ? Math.max(0, postStats.speechOnsetAt - interruptTime) : undefined;
+        const postTtfbMs = postStats.firstChunkAt !== null ? Math.max(0, postStats.firstChunkAt - interruptTime) : undefined;
+        const postTtfwMs = postStats.speechOnsetAt !== null ? Math.max(0, postStats.speechOnsetAt - interruptTime) : undefined;
         const postSpeechSegments = batchVAD.analyze(postAudio);
         if (spec.prosody) agentAudioBuffers.push(Buffer.from(postAudio));
         turnSignalQualities.push(analyzeAudioQuality(postAudio, postSpeechSegments));
@@ -878,20 +788,8 @@ export async function runConversationCall(
         let { text, confidence } = await transcriber.finalize();
         const sttMs = Math.round(performance.now() - sttStart);
         let textSource = text ? "stt" : "empty";
-
-        // Fallback: use real-time platform transcript when STT finds nothing
-        // (e.g. Bland sends agent text via control messages but binary audio is sparse)
-        if (!text && channel.consumeAgentText) {
-          const platformText = channel.consumeAgentText();
-          if (platformText) {
-            text = platformText;
-            confidence = 1;
-            textSource = "platform";
-          }
-        } else {
-          // Consume and discard — keep buffer from growing across turns
-          channel.consumeAgentText?.();
-        }
+        // Consume and discard platform transcript buffers. Vent STT stays authoritative.
+        channel.consumeAgentText?.();
 
         agentText = text;
 
@@ -1043,18 +941,20 @@ export async function runConversationCall(
       const sttValues = rawComponentTimings.map((t: ComponentLatency) => t.stt_ms).filter((v: number | undefined): v is number => v != null);
       const llmValues = rawComponentTimings.map((t: ComponentLatency) => t.llm_ms).filter((v: number | undefined): v is number => v != null);
       const ttsValues = rawComponentTimings.map((t: ComponentLatency) => t.tts_ms).filter((v: number | undefined): v is number => v != null);
-
       const mean = (arr: number[]) => arr.length > 0 ? Math.round(arr.reduce((a, b) => a + b, 0) / arr.length) : undefined;
       const p95 = (arr: number[]) => {
         if (arr.length === 0) return undefined;
         const sorted = [...arr].sort((a, b) => a - b);
-        return Math.round(sorted[Math.min(Math.floor(sorted.length * 0.95), sorted.length - 1)]!);
+        const index = 0.95 * (sorted.length - 1);
+        const lower = Math.floor(index);
+        const upper = Math.ceil(index);
+        const value = lower === upper ? sorted[lower]! : sorted[lower]! + (sorted[upper]! - sorted[lower]!) * (index - lower);
+        return Math.round(value);
       };
 
       const meanStt = mean(sttValues);
       const meanLlm = mean(llmValues);
       const meanTts = mean(ttsValues);
-
       // Determine bottleneck from mean values
       let bottleneck: "stt" | "llm" | "tts" | undefined;
       if (meanStt != null && meanLlm != null && meanTts != null) {
@@ -1089,7 +989,13 @@ export async function runConversationCall(
 
     // Step 8c: Compute metrics AFTER platform transcripts are merged (WER needs platform_transcript)
     const fullPlatformCallerText = channel.getFullCallerTranscript?.() ?? undefined;
-    const { transcript: transcriptMetrics, latency, audio_analysis, harness_overhead } = await computeAllMetrics(transcript, turnAudioData, channel.stats.connectLatencyMs, fullPlatformCallerText);
+    const { transcript: transcriptMetrics, latency, audio_analysis, harness_overhead } = await computeAllMetrics(
+      transcript,
+      turnAudioData,
+      channel.stats.connectLatencyMs,
+      fullPlatformCallerText,
+      spec.language,
+    );
 
     // Step 9: Collect platform call metadata (cost, ended reason, recording, analysis)
     const callMetadata = await channel.getCallMetadata?.() ?? null;

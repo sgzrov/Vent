@@ -2,16 +2,8 @@ export type RunStatus = "queued" | "running" | "pass" | "fail";
 export type SourceType = "remote" | "session";
 
 // ============================================================
-// Audio + Conversation call types
+// Conversation call types
 // ============================================================
-
-export const AUDIO_CALL_NAMES = [
-  "audio_quality",
-  "latency",
-  "echo",
-] as const;
-
-export type AudioCallName = (typeof AUDIO_CALL_NAMES)[number];
 
 export type AdapterType = "websocket" | "livekit" | "vapi" | "retell" | "elevenlabs" | "bland";
 export type TransferMode = "cold" | "warm" | "unknown";
@@ -52,7 +44,6 @@ export interface CallerAudioEffects {
 
 export const AUDIO_ACTION_TYPES = [
   "interrupt",
-  "silence",
   "inject_noise",
   "split_sentence",
   "noise_on_caller",
@@ -65,7 +56,7 @@ export interface AudioAction {
   action: AudioActionType;
   /** What the caller says to interrupt (interrupt action) */
   prompt?: string;
-  /** How long to stay silent in ms (silence action, default 8000) */
+  /** Duration in ms (used by some actions) */
   duration_ms?: number;
   /** Noise type for inject_noise / noise_on_caller (default "babble") */
   noise_type?: "babble" | "white" | "pink";
@@ -108,6 +99,7 @@ export interface ObservedToolCall {
   arguments: Record<string, unknown>;
   result?: unknown;
   successful?: boolean;
+  provider_tool_type?: string;
   timestamp_ms?: number;
   latency_ms?: number;
   turn_index?: number;
@@ -307,37 +299,11 @@ export interface CallSpec {
   call: ConversationCallSpec;
 }
 
-export interface CallDiagnostics {
-  /** "platform" = Vent infra issue, "agent" = user's agent issue, null = call passed */
-  error_origin: "platform" | "agent" | null;
-  error_detail: string | null;
-  timing: {
-    channel_connect_ms: number;
-  };
-  channel: {
-    connected: boolean;
-    error_events: string[];
-    audio_bytes_sent: number;
-    audio_bytes_received: number;
-  };
-}
-
 export interface ChannelStats {
   bytesSent: number;
   bytesReceived: number;
   errorEvents: string[];
   connectLatencyMs: number;
-}
-
-export interface AudioCallResult {
-  call_name: AudioCallName;
-  /** "completed" = probe ran successfully, "error" = probe failed to run. NOT pass/fail. */
-  status: "completed" | "error";
-  metrics: Record<string, number | boolean | number[]>;
-  transcriptions: Record<string, string | string[] | null>;
-  duration_ms: number;
-  error?: string;
-  diagnostics?: CallDiagnostics;
 }
 
 export interface ConversationTurn {
@@ -372,7 +338,10 @@ export interface ConversationTurn {
 // ============================================================
 
 export interface TranscriptMetrics {
+  /** Caller word error rate vs provider caller transcript. May exceed 1.0 when insertions dominate. Omitted when word segmentation is not reliable for the configured language. */
   wer?: number;
+  /** Caller character error rate vs provider caller transcript. Used when word segmentation is not reliable for the configured language. */
+  cer?: number;
   /** Consecutive insertion/substitution runs from WER alignment (proxy for STT hallucinations). */
   hallucination_events?: HallucinationEvent[];
   repetition_score?: number;
@@ -457,8 +426,8 @@ export interface AudioAnalysisMetrics {
   interruption_rate: number;
   /** Count of caller turns that begin before the prior agent utterance fully ends */
   interruption_count: number;
-  /** Mean overlap time from caller barge-in until the agent stops speaking */
-  barge_in_recovery_time_ms?: number;
+  /** Mean overlap time where the agent keeps speaking after the caller barges in. */
+  agent_overtalk_after_barge_in_ms?: number;
   /** Agent starts speaking before the caller finished / eligible agent responses */
   agent_interrupting_user_rate: number;
   /** Count of agent responses that start before the caller finished speaking */
@@ -521,25 +490,34 @@ export interface CostBreakdown {
   llm_completion_tokens?: number;
 }
 
+export interface ProviderWarning {
+  message?: string;
+  code?: string;
+  detail?: unknown;
+}
+
 /** Post-call metadata from the voice platform API */
 export interface CallMetadata {
   platform: string;
+  /** Provider-visible call/conversation identifier for dashboard/API lookup. */
+  provider_call_id?: string;
+  /** Secondary runtime/session identifier when distinct from the call ID. */
+  provider_session_id?: string;
   ended_reason?: string;
-  duration_s?: number;
   cost_usd?: number;
   /** Per-component cost breakdown (STT/LLM/TTS/transport) */
   cost_breakdown?: CostBreakdown;
   recording_url?: string;
-  /** Platform's own AI-generated call summary */
-  summary?: string;
-  /** Platform's own success evaluation (pass/fail or rubric) */
-  success_evaluation?: string;
-  /** User sentiment from platform analysis */
-  user_sentiment?: string;
-  /** Whether the platform judged the call as successful */
-  call_successful?: boolean;
+  /** Provider-specific alternate recording artifacts keyed by variant name. */
+  recording_variants?: Record<string, string>;
+  /** Provider-specific debug and deep-link URLs keyed by purpose. */
+  provider_debug_urls?: Record<string, string>;
   /** Final pathway/agent variables at end of call (Bland: pathway state, Vapi: extracted data) */
   variables?: Record<string, unknown>;
+  /** Provider/runtime warnings retained in a normalized structure. */
+  provider_warnings?: ProviderWarning[];
+  /** Provider-native artifacts that are valuable to retain but not worth fully normalizing yet. */
+  provider_metadata?: Record<string, unknown>;
   /** Call transfers that occurred during the call */
   transfers?: CallTransfer[];
 }

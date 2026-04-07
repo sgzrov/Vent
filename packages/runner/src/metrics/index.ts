@@ -28,8 +28,9 @@ export async function computeAllMetrics(
   turnAudioData?: TurnAudioData[],
   connectLatencyMs?: number,
   fullPlatformCallerText?: string,
+  language?: string,
 ): Promise<ComputedMetrics> {
-  const transcript = await computeTranscriptMetrics(turns, fullPlatformCallerText);
+  const transcript = await computeTranscriptMetrics(turns, fullPlatformCallerText, language);
   const latency = computeLatencyMetrics(turns, connectLatencyMs);
   const harness_overhead = computeHarnessOverhead(turns);
 

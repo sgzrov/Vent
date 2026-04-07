@@ -14,7 +14,7 @@ function log(msg: string): void {
   if (!isVerbose()) return;
   const ts = new Date().toISOString().slice(11, 23);
   const line = `[vent:sse ${ts}] ${msg}\n`;
-  process.stderr.write(line);
+  process.stdout.write(line);
 }
 
 const MAX_RETRIES = 5;
@@ -156,6 +156,11 @@ export async function* streamRunEvents(
     }
   }
 
-  // Exhausted retries without run_complete
+  // Exhausted retries without run_complete — yield a synthetic error event
+  // so callers know the stream failed rather than silently getting nothing
   log(`exhausted ${MAX_RETRIES} retries without run_complete`);
+  yield {
+    event_type: "error",
+    message: `Stream lost after ${MAX_RETRIES} reconnect attempts without receiving run_complete`,
+  } as SSEEvent;
 }

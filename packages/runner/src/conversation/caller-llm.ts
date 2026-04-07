@@ -53,7 +53,7 @@ Shapes:
 
 The agent's turn may have stutters, filler, repeats, or fragmented sentences (normal for voice calls). Ignore the noise and respond to the clearest intended meaning. If the agent seems mid-thought, use "wait".`;
 
-const INTERRUPT_SYSTEM_PROMPT = `You are a simulated phone caller. Your persona and goals are defined in the user's first message.
+const INTERRUPT_PLAN_SYSTEM_PROMPT = `You are a simulated phone caller. Your persona and goals are defined in the user's first message.
 
 Rules:
 - Return JSON only.
@@ -62,7 +62,8 @@ Rules:
   {"mode":"interrupt","text":"what you'd actually say to cut the agent off"}
 - The text field must contain ONLY the exact spoken interruption — no stage directions, no quotes, no labels.
 - Stay in character. Be natural and conversational.
-- Prefer "listen" unless interrupting is actually natural for this caller and this moment.
+- You are deciding BEFORE the agent starts responding.
+- Prefer "listen" unless this caller would plausibly cut off a long, verbose, or off-target next answer.
 - If you interrupt, keep it short and conversational.
 - Never return the normal turn-taking shapes like "continue", "wait", "closing", or "end_now".`;
 
@@ -159,7 +160,7 @@ export class CallerLLM {
   private history: Array<{ role: "user" | "assistant"; content: string }> = [];
   private callerPrompt: string;
   private systemPrompt: string;
-  private interruptSystemPrompt: string;
+  private interruptPlanSystemPrompt: string;
 
   constructor(callerPrompt: string, persona?: CallerPersona, language?: string) {
     this.client = new Anthropic();
@@ -168,8 +169,8 @@ export class CallerLLM {
       SYSTEM_PROMPT +
       (persona ? compilePersona(persona) : "") +
       (language && language !== "en" ? compileLanguage(language) : "");
-    this.interruptSystemPrompt =
-      INTERRUPT_SYSTEM_PROMPT +
+    this.interruptPlanSystemPrompt =
+      INTERRUPT_PLAN_SYSTEM_PROMPT +
       (persona ? compilePersona(persona) : "") +
       (language && language !== "en" ? compileLanguage(language) : "");
   }
@@ -215,24 +216,25 @@ export class CallerLLM {
   }
 
   /**
- * LLM-driven interrupt decision. Given partial agent speech, the CallerLLM
- * decides whether to interrupt based on persona and conversation context.
- *
- * Returns a structured interrupt decision. The LLM's decision is contextual —
- * an impatient caller interrupts verbose explanations, a cooperative caller
- * lets the agent finish important details like booking confirmations.
- */
-  async decideInterrupt(
-    partialAgentText: string,
-    transcript: ConversationTurn[]
+   * Pre-plan whether the caller would cut off the upcoming agent turn if it
+   * gets too long or goes in the wrong direction. This happens before the
+   * agent starts speaking, so execution stays in the realtime audio path.
+   */
+  async planInterrupt(
+    currentCallerText: string,
   ): Promise<InterruptDecision> {
-    // Use a separate call (not appended to history) so a listen decision
-    // doesn't pollute the conversation history
     const decisionMessages = [
       ...this.history,
       {
         role: "user" as const,
-        content: `[The agent is mid-sentence. They are saying: "${partialAgentText}"]\n\nBased on your persona, decide whether to interrupt right now or keep listening.\nReturn JSON only, using one of these shapes:\n{"mode":"listen"}\n{"mode":"interrupt","text":"what you'd actually say to cut them off"}\n\nIf you interrupt, the text must be ONLY the spoken interruption.`,
+        content:
+          `[Planning only, before the agent's next response. You just said: "${currentCallerText}"]\n\n` +
+          `If the agent's next reply becomes long, repetitive, or goes in the wrong direction, ` +
+          `would you naturally cut them off on this turn?\n` +
+          `Return JSON only using one of these shapes:\n` +
+          `{"mode":"listen"}\n` +
+          `{"mode":"interrupt","text":"what you'd actually say to cut them off"}\n\n` +
+          `If you interrupt, the text must be ONLY the spoken interruption.`,
       },
     ];
 
@@ -240,7 +242,7 @@ export class CallerLLM {
       model: MODEL,
       max_tokens: MAX_TOKENS,
       temperature: 0.7,
-      system: this.interruptSystemPrompt,
+      system: this.interruptPlanSystemPrompt,
       messages: decisionMessages,
     });
 
@@ -250,15 +252,6 @@ export class CallerLLM {
         : "";
 
     const decision = parseInterruptDecision(text);
-    if (decision.mode === "listen") return decision;
-
-    // LLM decided to interrupt — commit to conversation history
-    this.history.push({
-      role: "user",
-      content: `[You interrupted the agent mid-sentence. They were saying: "${partialAgentText}"]`,
-    });
-    this.history.push({ role: "assistant", content: decision.text });
-
     return decision;
   }
 
@@ -400,7 +393,8 @@ function parseInterruptDecision(raw: string): InterruptDecision {
     }
   }
 
-  return { mode: "interrupt", text };
+  // Unparseable LLM output — safe fallback is to listen, not speak raw text
+  return { mode: "listen" };
 }
 
 function extractJsonObject(text: string): string | null {

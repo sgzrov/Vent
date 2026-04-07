@@ -9,6 +9,7 @@
  *   - Agent state transitions (lk.agent.state) for component latency estimation
  *   - Transcription streams (lk.transcription) for platform STT transcripts
  *   - Tool call events via DataChannel on topic "vent:tool-calls"
+ *   - Optional inside-agent metadata via custom "vent:*" topics
  *   - Disconnect reason for call metadata
  *
  * Supports explicit agent dispatch via AgentDispatchClient when agentName is set.
@@ -37,8 +38,8 @@ import {
 import { RoomAgentDispatch, RoomConfiguration } from "@livekit/protocol";
 import { AccessToken, RoomServiceClient } from "livekit-server-sdk";
 import { resample } from "@vent/voice";
-import type { ObservedToolCall, CallMetadata, ComponentLatency } from "@vent/shared";
-import { BaseAudioChannel } from "./audio-channel.js";
+import type { ObservedToolCall, CallMetadata, CallTransfer, ComponentLatency, ProviderWarning } from "@vent/shared";
+import { BaseAudioChannel, type SendAudioOptions } from "./audio-channel.js";
 
 interface WsToolCallEvent {
   type: "tool_call";
@@ -46,7 +47,51 @@ interface WsToolCallEvent {
   arguments?: Record<string, unknown>;
   result?: unknown;
   successful?: boolean;
+  provider_tool_type?: string;
+  tool_type?: string;
   duration_ms?: number;
+}
+
+interface LiveKitTransferEvent {
+  type: "vent:transfer";
+  transfer?: CallTransfer;
+  destination?: string;
+  status?: CallTransfer["status"];
+  transfer_type?: string;
+  timestamp_ms?: number;
+  source?: CallTransfer["sources"][number];
+}
+
+interface LiveKitDebugUrlEvent {
+  type: "vent:debug-url";
+  label?: string;
+  url?: string;
+}
+
+interface LiveKitMetricsEvent {
+  type?: "vent:metrics";
+  event?: string;
+  metric_type?: string;
+  metrics?: Record<string, unknown>;
+  timestamp_ms?: number;
+}
+
+interface LiveKitFunctionToolsExecutedEvent {
+  type?: "vent:function-tools-executed";
+  event?: string;
+  has_agent_handoff?: boolean;
+  hasAgentHandoff?: boolean;
+  tool_calls?: unknown[];
+  function_calls?: unknown[];
+  calls?: unknown[];
+}
+
+interface LiveKitConversationItemEvent {
+  type?: "vent:conversation-item";
+  event?: string;
+  item?: Record<string, unknown>;
+  conversation_item?: Record<string, unknown>;
+  timestamp_ms?: number;
 }
 
 /** Per-turn timing from LiveKit agent state transitions + transcription streams */
@@ -74,6 +119,27 @@ interface LiveKitRoomDisconnectState {
   disconnectTimestamp: number;
   disconnectReasonStr: string;
 }
+
+interface LiveKitMetricTiming {
+  speechId?: string;
+  timing: ComponentLatency;
+}
+
+const LIVEKIT_TOOL_CALL_TOPIC = "vent:tool-calls";
+const LIVEKIT_SESSION_TOPIC = "vent:session";
+const LIVEKIT_CALL_METADATA_TOPIC = "vent:call-metadata";
+const LIVEKIT_TRANSFER_TOPIC = "vent:transfer";
+const LIVEKIT_DEBUG_URL_TOPIC = "vent:debug-url";
+const LIVEKIT_WARNING_TOPIC = "vent:warning";
+const LIVEKIT_SESSION_REPORT_TOPIC = "vent:session-report";
+const LIVEKIT_METRICS_TOPIC = "vent:metrics";
+const LIVEKIT_FUNCTION_TOOLS_EXECUTED_TOPIC = "vent:function-tools-executed";
+const LIVEKIT_CONVERSATION_ITEM_TOPIC = "vent:conversation-item";
+const LIVEKIT_USER_INPUT_TRANSCRIBED_TOPIC = "vent:user-input-transcribed";
+const LIVEKIT_SESSION_USAGE_TOPIC = "vent:session-usage";
+const LIVEKIT_TRANSCRIPTION_TOPIC = "lk.transcription";
+const LIVEKIT_AGENT_STATE_ATTR = "lk.agent.state";
+const RAW_INTERRUPT_TRAILING_SILENCE_MS = 160;
 
 export function applyLiveKitAgentStateChange(
   previousState: string | null,
@@ -146,10 +212,6 @@ export interface WebRtcAudioChannelConfig {
 }
 
 export class WebRtcAudioChannel extends BaseAudioChannel {
-  private static readonly TOOL_CALL_TOPIC = "vent:tool-calls";
-  private static readonly TRANSCRIPTION_TOPIC = "lk.transcription";
-  private static readonly AGENT_STATE_ATTR = "lk.agent.state";
-
   /** LiveKit emits platformEndOfTurn via agent state transitions. */
   hasPlatformEndOfTurn = true;
 
@@ -173,6 +235,11 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
 
   // Agent transcript accumulator for consumeAgentText()
   private agentTextBuffer = "";
+  private callMetadata: CallMetadata = { platform: "livekit" };
+  private livekitMetricTimings: LiveKitMetricTiming[] = [];
+  private livekitMetricTimingIndexBySpeechId = new Map<string, number>();
+  private toolCallFingerprints = new Set<string>();
+  private hasDirectToolCallStream = false;
 
   // Segment-to-turn anchoring: lock each STT segment to the turn that was
   // active when the segment was first observed (interim or final).
@@ -224,6 +291,7 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
     this.agentIdentity = null;
     this.lastAgentState = null;
     this.agentTextBuffer = "";
+    this.callMetadata = { platform: "livekit" };
 
     // On Fly.io (and other containerized environments), direct UDP is unreliable
     // because containers sit behind WireGuard tunnels and HTTP proxies. Force
@@ -248,27 +316,44 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
     this.turnTimings = [];
     this.currentTurnIndex = -1;
     this.segmentTurnMap.clear();
+    this.livekitMetricTimings = [];
+    this.livekitMetricTimingIndexBySpeechId.clear();
+    this.toolCallFingerprints.clear();
+    this.hasDirectToolCallStream = false;
 
     // ── Tool call capture via DataChannel ──────────────────────
     this.room.on(
       RoomEvent.DataReceived,
-      (payload: Uint8Array, _participant?: RemoteParticipant, _kind?: unknown, topic?: string) => {
-        if (topic === WebRtcAudioChannel.TOOL_CALL_TOPIC) {
+      (payload: Uint8Array, participant?: RemoteParticipant, _kind?: unknown, topic?: string) => {
+        if (!this.isObservabilityParticipant(participant)) return;
+        if (topic === LIVEKIT_TOOL_CALL_TOPIC) {
           this.handleToolCallData(payload);
+          return;
+        }
+        if (topic) {
+          this.handleObservabilityData(payload, topic);
         }
       }
     );
 
-    this.room.registerTextStreamHandler(WebRtcAudioChannel.TOOL_CALL_TOPIC, async (reader) => {
+    this.room.registerTextStreamHandler(LIVEKIT_TOOL_CALL_TOPIC, async (reader) => {
       const text = await reader.readAll();
       this.handleToolCallText(text);
     });
+
+    for (const topic of LIVEKIT_OBSERVABILITY_TOPICS) {
+      this.room.registerTextStreamHandler(topic, async (reader, participantInfo) => {
+        if (this.agentIdentity && participantInfo.identity !== this.agentIdentity) return;
+        const text = await reader.readAll();
+        this.handleObservabilityText(text, topic);
+      });
+    }
 
     // ── Agent state transitions (lk.agent.state) ──────────────
     this.room.on(
       RoomEvent.ParticipantAttributesChanged,
       (changedAttributes: Record<string, string>, participant: Participant) => {
-        const agentState = changedAttributes[WebRtcAudioChannel.AGENT_STATE_ATTR];
+        const agentState = changedAttributes[LIVEKIT_AGENT_STATE_ATTR];
         if (!agentState) return;
 
         // Use ParticipantKind for definitive agent identification
@@ -284,7 +369,7 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
 
     // ── Transcription streams (lk.transcription) ──────────────
     this.room.registerTextStreamHandler(
-      WebRtcAudioChannel.TRANSCRIPTION_TOPIC,
+      LIVEKIT_TRANSCRIPTION_TOPIC,
       async (reader, participantInfo) => {
         const isUser = participantInfo.identity === "vent-tester";
         const turn = this.currentTurnIndex >= 0 ? this.turnTimings[this.currentTurnIndex] : undefined;
@@ -404,13 +489,28 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
     // Without this, we'd send audio during AEC warmup and the agent would ignore it.
     const AGENT_READY_TIMEOUT = 45_000;
     const agentReady = await new Promise<boolean>((resolve) => {
-      const timer = setTimeout(() => resolve(false), AGENT_READY_TIMEOUT);
+      // Define listener first so timeout cleanup can reference it
+      const onAttrsChanged = (attrs: Record<string, string>, participant: Participant) => {
+        if (participant.kind !== ParticipantKind.AGENT) return;
+        this.agentIdentity = participant.identity;
+        const state = attrs[LIVEKIT_AGENT_STATE_ATTR];
+        if (state === "listening") {
+          clearTimeout(timer);
+          this.room?.off(RoomEvent.ParticipantAttributesChanged, onAttrsChanged);
+          resolve(true);
+        }
+      };
+
+      const timer = setTimeout(() => {
+        this.room?.off(RoomEvent.ParticipantAttributesChanged, onAttrsChanged);
+        resolve(false);
+      }, AGENT_READY_TIMEOUT);
 
       // Check if agent is already in "listening" state
       for (const p of this.room!.remoteParticipants.values()) {
         if (p.kind === ParticipantKind.AGENT) {
           this.agentIdentity = p.identity;
-          const state = p.attributes?.[WebRtcAudioChannel.AGENT_STATE_ATTR];
+          const state = p.attributes?.[LIVEKIT_AGENT_STATE_ATTR];
           if (state === "listening") {
             clearTimeout(timer);
             resolve(true);
@@ -419,17 +519,6 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
         }
       }
 
-      // Listen for state changes
-      const onAttrsChanged = (attrs: Record<string, string>, participant: Participant) => {
-        if (participant.kind !== ParticipantKind.AGENT) return;
-        this.agentIdentity = participant.identity;
-        const state = attrs[WebRtcAudioChannel.AGENT_STATE_ATTR];
-        if (state === "listening") {
-          clearTimeout(timer);
-          this.room?.off(RoomEvent.ParticipantAttributesChanged, onAttrsChanged);
-          resolve(true);
-        }
-      };
       this.room!.on(RoomEvent.ParticipantAttributesChanged, onAttrsChanged);
     });
 
@@ -481,14 +570,18 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
     }
   }
 
-  sendAudio(pcm: Buffer): void {
+  sendAudio(pcm: Buffer, opts?: SendAudioOptions): void {
     if (!this.audioSource || !this.collecting) {
       return;
     }
+    const raw = opts?.raw ?? false;
 
     // Stop comfort noise before sending real speech
     if (this.comfortNoiseActive) {
       this.stopComfortNoise();
+    } else if (raw) {
+      // Flush any queued frames so interrupts are not stuck behind stale audio.
+      this.audioSource.clearQueue();
     }
 
     this._stats.bytesSent += pcm.length;
@@ -528,14 +621,20 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
           await this.audioSource.captureFrame(frame);
         }
 
-        // Send 500ms of silence so the agent's VAD detects end-of-turn
+        // Send a shorter silence tail for raw interrupt audio so the agent can
+        // detect end-of-user-turn without adding the full normal-turn delay.
         if (!this.collecting || !this.audioSource) return;
-        const silenceSamples = Math.floor(sampleRate * 0.5);
+        const silenceSamples = Math.floor(
+          sampleRate * ((raw ? RAW_INTERRUPT_TRAILING_SILENCE_MS : 500) / 1000)
+        );
         const silence = new Int16Array(silenceSamples);
         const silenceFrame = new AudioFrame(silence, sampleRate, 1, silenceSamples);
         await this.audioSource.captureFrame(silenceFrame);
 
-        console.log(`[livekit] sendAudio complete: ${Math.ceil(samples.length / chunkSamples)} frames, ${pcm.length} source bytes`);
+        console.log(
+          `[livekit] sendAudio complete: ${Math.ceil(samples.length / chunkSamples)} frames, ` +
+          `${pcm.length} source bytes raw=${raw}`
+        );
 
         // Resume comfort noise after speech ends. A real caller's mic
         // produces constant ambient noise — this keeps the agent's
@@ -556,11 +655,18 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
     this.stopComfortNoise();
     this.disconnectTimestamp = Date.now();
     if (this.room) {
-      this.room.unregisterTextStreamHandler(WebRtcAudioChannel.TOOL_CALL_TOPIC);
+      this.room.unregisterTextStreamHandler(LIVEKIT_TOOL_CALL_TOPIC);
       try {
-        this.room.unregisterTextStreamHandler(WebRtcAudioChannel.TRANSCRIPTION_TOPIC);
+        this.room.unregisterTextStreamHandler(LIVEKIT_TRANSCRIPTION_TOPIC);
       } catch {
         // May not be registered if connect() failed partway
+      }
+      for (const topic of LIVEKIT_OBSERVABILITY_TOPICS) {
+        try {
+          this.room.unregisterTextStreamHandler(topic);
+        } catch {
+          // May not be registered if connect() failed partway
+        }
       }
     }
     if (this.audioSource) {
@@ -602,15 +708,27 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
       ? (this.disconnectTimestamp - this.connectTimestamp) / 1000
       : undefined;
 
+    const providerMetadata = compactUnknownRecord({
+      ...(this.callMetadata.provider_metadata ?? {}),
+      room_name: this.config.roomName,
+      agent_identity: this.agentIdentity,
+      tool_call_instrumentation: this.toolCalls.length > 0 ? "custom_data_channel" : undefined,
+    });
+
     return {
+      ...this.callMetadata,
       platform: "livekit",
-      ended_reason: this.disconnectReasonStr ?? undefined,
-      duration_s: durationS,
+      provider_session_id: this.callMetadata.provider_session_id ?? this.config.roomName,
+      ended_reason: this.callMetadata.ended_reason ?? this.disconnectReasonStr ?? undefined,
+      provider_metadata: {
+        ...providerMetadata,
+        duration_s: (this.callMetadata.provider_metadata?.["duration_s"] as number | undefined) ?? durationS,
+      },
     };
   }
 
   getComponentTimings(): ComponentLatency[] {
-    return this.turnTimings.map((t) => {
+    const roomDerived = this.turnTimings.map((t) => {
       const stt_ms = t.audioSentAt != null && t.thinkingAt != null
         ? t.thinkingAt - t.audioSentAt : undefined;
 
@@ -625,6 +743,25 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
 
       return { stt_ms, llm_ms, tts_ms, speech_duration_ms };
     });
+
+    if (this.livekitMetricTimings.length === 0) {
+      return roomDerived;
+    }
+
+    const metricDerived = this.livekitMetricTimings.map((entry) => entry.timing);
+    const maxLength = Math.max(roomDerived.length, metricDerived.length);
+    const merged: ComponentLatency[] = [];
+    for (let i = 0; i < maxLength; i++) {
+      const roomTiming = roomDerived[i];
+      const metricTiming = metricDerived[i];
+      merged.push({
+        stt_ms: metricTiming?.stt_ms ?? roomTiming?.stt_ms,
+        llm_ms: metricTiming?.llm_ms ?? roomTiming?.llm_ms,
+        tts_ms: metricTiming?.tts_ms ?? roomTiming?.tts_ms,
+        speech_duration_ms: metricTiming?.speech_duration_ms ?? roomTiming?.speech_duration_ms,
+      });
+    }
+    return merged;
   }
 
   getTranscripts(): Array<{ turnIndex: number; text: string }> {
@@ -668,11 +805,13 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
     try {
       const event = JSON.parse(text) as WsToolCallEvent;
       if (event.type === "tool_call" && event.name) {
-        this.toolCalls.push({
+        this.hasDirectToolCallStream = true;
+        this.recordObservedToolCall({
           name: event.name,
           arguments: event.arguments ?? {},
           result: event.result,
           successful: event.successful,
+          provider_tool_type: event.provider_tool_type ?? event.tool_type,
           timestamp_ms: Date.now() - this.connectTimestamp,
           latency_ms: event.duration_ms,
         });
@@ -680,6 +819,250 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
     } catch {
       // Ignore malformed JSON
     }
+  }
+
+  private handleObservabilityData(payload: Uint8Array, topic: string): void {
+    try {
+      const text = new TextDecoder().decode(payload);
+      this.handleObservabilityText(text, topic);
+    } catch {
+      // Ignore malformed data
+    }
+  }
+
+  private handleObservabilityText(text: string, topic: string): void {
+    let event: Record<string, unknown>;
+    try {
+      event = JSON.parse(text) as Record<string, unknown>;
+    } catch {
+      return;
+    }
+
+    switch (topic) {
+      case LIVEKIT_SESSION_TOPIC:
+      case LIVEKIT_CALL_METADATA_TOPIC:
+        this.mergeCallMetadata(normalizeLiveKitMetadata(event));
+        break;
+      case LIVEKIT_TRANSFER_TOPIC:
+        this.handleTransferEvent(event as unknown as LiveKitTransferEvent);
+        break;
+      case LIVEKIT_DEBUG_URL_TOPIC:
+        this.handleDebugUrlEvent(event as unknown as LiveKitDebugUrlEvent);
+        break;
+      case LIVEKIT_WARNING_TOPIC:
+        this.handleWarningEvent(event);
+        break;
+      case LIVEKIT_SESSION_REPORT_TOPIC:
+        this.handleSessionReportEvent(event);
+        break;
+      case LIVEKIT_METRICS_TOPIC:
+        this.handleMetricsEvent(event as unknown as LiveKitMetricsEvent);
+        break;
+      case LIVEKIT_FUNCTION_TOOLS_EXECUTED_TOPIC:
+        this.handleFunctionToolsExecutedEvent(event as unknown as LiveKitFunctionToolsExecutedEvent);
+        break;
+      case LIVEKIT_CONVERSATION_ITEM_TOPIC:
+        this.handleConversationItemEvent(event as unknown as LiveKitConversationItemEvent);
+        break;
+      case LIVEKIT_USER_INPUT_TRANSCRIBED_TOPIC:
+        this.handleUserInputTranscribedEvent(event);
+        break;
+      case LIVEKIT_SESSION_USAGE_TOPIC:
+        this.handleSessionUsageEvent(event);
+        break;
+    }
+  }
+
+  private mergeCallMetadata(metadata: Partial<CallMetadata>): void {
+    if (!metadata.platform) {
+      metadata.platform = this.callMetadata.platform;
+    }
+
+    this.callMetadata = {
+      ...this.callMetadata,
+      ...metadata,
+      recording_variants: {
+        ...(this.callMetadata.recording_variants ?? {}),
+        ...(metadata.recording_variants ?? {}),
+      },
+      provider_debug_urls: {
+        ...(this.callMetadata.provider_debug_urls ?? {}),
+        ...(metadata.provider_debug_urls ?? {}),
+      },
+      provider_metadata: {
+        ...(this.callMetadata.provider_metadata ?? {}),
+        ...(metadata.provider_metadata ?? {}),
+      },
+      variables: {
+        ...(this.callMetadata.variables ?? {}),
+        ...(metadata.variables ?? {}),
+      },
+      provider_warnings: mergeProviderWarnings(this.callMetadata.provider_warnings, metadata.provider_warnings),
+      transfers: mergeTransfers(this.callMetadata.transfers, metadata.transfers),
+    };
+  }
+
+  private handleTransferEvent(event: LiveKitTransferEvent): void {
+    const transfer = event.transfer ?? {
+      type: event.transfer_type ?? "transfer",
+      destination: event.destination,
+      status: event.status ?? "unknown",
+      sources: [event.source ?? "platform_event"],
+      timestamp_ms: event.timestamp_ms,
+    };
+    this.mergeCallMetadata({ transfers: [transfer] });
+  }
+
+  private handleMetricsEvent(event: LiveKitMetricsEvent): void {
+    const eventRecord = event as unknown as Record<string, unknown>;
+    const metrics = firstRecord(event.metrics, eventRecord) ?? eventRecord;
+    const metricType = inferLiveKitMetricType(metrics, event.metric_type, event.event);
+    this.appendProviderMetadataListItem("livekit_metrics_events", compactUnknownRecord({
+      metric_type: metricType,
+      ...eventRecord,
+    }) ?? eventRecord);
+
+    const extracted = extractLiveKitMetricTiming(metrics, metricType);
+    if (extracted) {
+      this.upsertMetricTiming(extracted);
+    }
+  }
+
+  private handleFunctionToolsExecutedEvent(event: LiveKitFunctionToolsExecutedEvent): void {
+    this.appendProviderMetadataListItem("livekit_function_tools_events", event);
+
+    if (!this.hasDirectToolCallStream) {
+      for (const toolCall of extractObservedToolCallsFromEvent(event, this.connectTimestamp)) {
+        this.recordObservedToolCall(toolCall);
+      }
+    }
+
+    const derivedTransfer = extractTransferFromFunctionToolsEvent(event);
+    if (derivedTransfer) {
+      this.mergeCallMetadata({ transfers: [derivedTransfer] });
+    }
+  }
+
+  private handleConversationItemEvent(event: LiveKitConversationItemEvent): void {
+    this.appendProviderMetadataListItem("livekit_conversation_items", event);
+    const derivedTransfer = extractTransferFromConversationItemEvent(event);
+    if (derivedTransfer) {
+      this.mergeCallMetadata({ transfers: [derivedTransfer] });
+    }
+  }
+
+  private handleUserInputTranscribedEvent(event: Record<string, unknown>): void {
+    this.appendProviderMetadataListItem("livekit_user_input_transcribed_events", event);
+  }
+
+  private handleSessionUsageEvent(event: Record<string, unknown>): void {
+    const usage = firstRecord(event.usage, event.session_usage, event.data) ?? event;
+    this.mergeCallMetadata({
+      provider_metadata: compactUnknownRecord({
+        livekit_session_usage: usage,
+      }),
+    });
+  }
+
+  private handleDebugUrlEvent(event: LiveKitDebugUrlEvent): void {
+    if (!event.label || !event.url) return;
+    this.mergeCallMetadata({
+      provider_debug_urls: {
+        [event.label]: event.url,
+      },
+    });
+  }
+
+  private handleWarningEvent(event: Record<string, unknown>): void {
+    const warning = compactProviderWarning({
+      message: typeof event.message === "string" ? event.message : undefined,
+      code: typeof event.code === "string" ? event.code : undefined,
+      detail: event.detail,
+    });
+    if (!warning) return;
+
+    this.mergeCallMetadata({
+      provider_warnings: [warning],
+    });
+  }
+
+  private handleSessionReportEvent(event: Record<string, unknown>): void {
+    const report = firstRecord(event.report) ?? event;
+    const providerSessionId = firstString(
+      event.provider_session_id,
+      event.session_id,
+      report["provider_session_id"],
+      report["session_id"],
+      report["room_name"],
+      report["roomName"],
+    );
+
+    this.mergeCallMetadata({
+      provider_session_id: providerSessionId,
+      provider_metadata: compactUnknownRecord({
+        session_report: report,
+      }),
+    });
+
+    for (const transfer of extractTransfersFromSessionReport(report)) {
+      this.mergeCallMetadata({ transfers: [transfer] });
+    }
+  }
+
+  private upsertMetricTiming(extracted: LiveKitMetricTiming): void {
+    if (!hasComponentLatencyContent(extracted.timing)) return;
+
+    if (extracted.speechId) {
+      const existingIndex = this.livekitMetricTimingIndexBySpeechId.get(extracted.speechId);
+      if (existingIndex != null) {
+        const existing = this.livekitMetricTimings[existingIndex];
+        if (existing) {
+          existing.timing = {
+            stt_ms: extracted.timing.stt_ms ?? existing.timing.stt_ms,
+            llm_ms: extracted.timing.llm_ms ?? existing.timing.llm_ms,
+            tts_ms: extracted.timing.tts_ms ?? existing.timing.tts_ms,
+            speech_duration_ms: extracted.timing.speech_duration_ms ?? existing.timing.speech_duration_ms,
+          };
+        }
+        return;
+      }
+
+      this.livekitMetricTimingIndexBySpeechId.set(extracted.speechId, this.livekitMetricTimings.length);
+    }
+
+    this.livekitMetricTimings.push(extracted);
+  }
+
+  private recordObservedToolCall(toolCall: ObservedToolCall): void {
+    const fingerprint = stableToolCallFingerprint(toolCall);
+    if (this.toolCallFingerprints.has(fingerprint)) {
+      return;
+    }
+    this.toolCallFingerprints.add(fingerprint);
+    this.toolCalls.push(toolCall);
+  }
+
+  private appendProviderMetadataListItem(key: string, value: unknown): void {
+    const existing = Array.isArray(this.callMetadata.provider_metadata?.[key])
+      ? [...(this.callMetadata.provider_metadata?.[key] as unknown[])]
+      : [];
+    existing.push(value);
+    this.mergeCallMetadata({
+      provider_metadata: {
+        [key]: existing,
+      },
+    });
+  }
+
+  private isObservabilityParticipant(participant?: RemoteParticipant): boolean {
+    if (!participant) return true;
+    if (participant.kind === ParticipantKind.AGENT) {
+      if (!this.agentIdentity) {
+        this.agentIdentity = participant.identity;
+      }
+      return true;
+    }
+    return !!this.agentIdentity && participant.identity === this.agentIdentity;
   }
 
   private handleAgentStateChange(agentState: string, now = Date.now()): void {
@@ -744,3 +1127,366 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
     readLoop();
   }
 }
+
+function compactUnknownRecord(record: Record<string, unknown>): Record<string, unknown> | undefined {
+  const entries = Object.entries(record).filter(([, value]) => value != null);
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
+
+function compactStringRecord(record: Record<string, unknown> | undefined): Record<string, string> | undefined {
+  if (!record) return undefined;
+  const compacted: Record<string, string> = {};
+  for (const [key, value] of Object.entries(record)) {
+    if (typeof value === "string" && value.length > 0) {
+      compacted[key] = value;
+    }
+  }
+  return Object.keys(compacted).length > 0 ? compacted : undefined;
+}
+
+function firstString(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value === "string" && value.length > 0) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function firstNumber(...values: unknown[]): number | undefined {
+  for (const value of values) {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function firstBoolean(...values: unknown[]): boolean | undefined {
+  for (const value of values) {
+    if (typeof value === "boolean") {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function firstRecord(...values: unknown[]): Record<string, unknown> | undefined {
+  for (const value of values) {
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      return value as Record<string, unknown>;
+    }
+  }
+  return undefined;
+}
+
+function normalizeLiveKitMetadata(payload: Record<string, unknown>): Partial<CallMetadata> {
+  const nested = firstRecord(payload["call_metadata"]);
+  const source = nested ?? payload;
+  const providerDebugUrls = firstRecord(source["provider_debug_urls"], source["debug_urls"]);
+  const recordingVariants = firstRecord(source["recording_variants"]);
+  const providerMetadata = firstRecord(source["provider_metadata"]);
+  const variables = firstRecord(source["variables"]);
+  const providerWarnings = normalizeProviderWarnings(source["provider_warnings"], source["warnings"]);
+
+  return compactUnknownRecord({
+    platform: firstString(source["platform"]) ?? "livekit",
+    provider_call_id: firstString(source["provider_call_id"], source["call_id"]),
+    provider_session_id: firstString(source["provider_session_id"], source["session_id"]),
+    ended_reason: firstString(source["ended_reason"]),
+    cost_usd: firstNumber(source["cost_usd"]),
+    cost_breakdown: firstRecord(source["cost_breakdown"]),
+    recording_url: firstString(source["recording_url"]),
+    recording_variants: compactStringRecord(firstRecord(source["recording_variants"]) ?? recordingVariants),
+    provider_debug_urls: compactStringRecord(firstRecord(source["provider_debug_urls"], source["debug_urls"]) ?? providerDebugUrls),
+    variables,
+    provider_warnings: providerWarnings,
+    provider_metadata: {
+      ...providerMetadata,
+      duration_s: firstNumber(source["duration_s"]),
+      summary: firstString(source["summary"]),
+      success_evaluation: firstString(source["success_evaluation"]),
+      user_sentiment: firstString(source["user_sentiment"]),
+      call_successful: firstBoolean(source["call_successful"]),
+      answered_by: firstString(source["answered_by"]),
+    },
+  }) as Partial<CallMetadata>;
+}
+
+function extractLiveKitMetricTiming(
+  metrics: Record<string, unknown>,
+  metricType?: string,
+): LiveKitMetricTiming | undefined {
+  const normalizedType = metricType?.toLowerCase();
+  const speechId = firstString(
+    metrics["speechId"],
+    metrics["speech_id"],
+  );
+
+  if (normalizedType === "eou" || normalizedType === "end_of_utterance" || normalizedType === "eoumetrics") {
+    const sttMs = firstNumber(metrics["endOfUtteranceDelayMs"], metrics["end_of_utterance_delay"], metrics["end_of_utterance_delay_ms"]);
+    return sttMs != null ? { speechId, timing: { stt_ms: Math.round(sttMs) } } : undefined;
+  }
+
+  if (normalizedType === "llm" || normalizedType === "llmmetrics") {
+    const llmMs = firstNumber(metrics["ttftMs"], metrics["ttft"], metrics["ttft_ms"]);
+    return llmMs != null ? { speechId, timing: { llm_ms: Math.round(llmMs) } } : undefined;
+  }
+
+  if (normalizedType === "realtime" || normalizedType === "realtimemodel" || normalizedType === "realtimemodelmetrics") {
+    const llmMs = firstNumber(metrics["ttftMs"], metrics["ttft"], metrics["ttft_ms"]);
+    const speechDurationMs = firstNumber(metrics["sessionDurationMs"], metrics["session_duration"], metrics["session_duration_ms"]);
+    return hasComponentLatencyContent({ llm_ms: llmMs, speech_duration_ms: speechDurationMs })
+      ? {
+          speechId,
+          timing: {
+            llm_ms: llmMs != null ? Math.round(llmMs) : undefined,
+            speech_duration_ms: speechDurationMs != null ? Math.round(speechDurationMs) : undefined,
+          },
+        }
+      : undefined;
+  }
+
+  if (normalizedType === "tts" || normalizedType === "ttsmetrics") {
+    const ttsMs = firstNumber(metrics["ttfbMs"], metrics["ttfb"], metrics["ttfb_ms"]);
+    const speechDurationMs = firstNumber(metrics["audioDurationMs"], metrics["audio_duration"], metrics["audio_duration_ms"]);
+    return hasComponentLatencyContent({ tts_ms: ttsMs, speech_duration_ms: speechDurationMs })
+      ? {
+          speechId,
+          timing: {
+            tts_ms: ttsMs != null ? Math.round(ttsMs) : undefined,
+            speech_duration_ms: speechDurationMs != null ? Math.round(speechDurationMs) : undefined,
+          },
+        }
+      : undefined;
+  }
+
+  if (normalizedType === "stt" || normalizedType === "sttmetrics") {
+    const sttMs = firstNumber(metrics["durationMs"], metrics["duration"], metrics["duration_ms"]);
+    return sttMs != null ? { speechId, timing: { stt_ms: Math.round(sttMs) } } : undefined;
+  }
+
+  return undefined;
+}
+
+function inferLiveKitMetricType(metrics: Record<string, unknown>, ...typeHints: Array<string | undefined>): string | undefined {
+  const hinted = typeHints.find((hint) => typeof hint === "string" && hint.length > 0);
+  if (hinted) return hinted;
+  if ("endOfUtteranceDelayMs" in metrics || "transcriptionDelayMs" in metrics || "end_of_utterance_delay" in metrics) return "eou";
+  if ("sessionDurationMs" in metrics || "session_duration" in metrics || "inputTokens" in metrics || "outputTokens" in metrics) return "realtime";
+  if ("charactersCount" in metrics || "ttfbMs" in metrics || "audioDurationMs" in metrics) return "tts";
+  if ("completionTokens" in metrics || "promptTokens" in metrics || ("ttftMs" in metrics && "totalTokens" in metrics)) return "llm";
+  if ("detectionDelay" in metrics || "numInterruptions" in metrics) return "interruption";
+  if ("idleTimeMs" in metrics || "inferenceCount" in metrics) return "vad";
+  if ("streamed" in metrics || "audioDurationMs" in metrics) return "stt";
+  return undefined;
+}
+
+function extractObservedToolCallsFromEvent(
+  event: LiveKitFunctionToolsExecutedEvent,
+  connectTimestamp: number,
+): ObservedToolCall[] {
+  const callRecords = firstRecordArray(event.tool_calls, event.function_calls, event.calls);
+  const observed: ObservedToolCall[] = [];
+  for (const call of callRecords) {
+    const name = firstString(call["name"], call["tool_name"], call["function_name"]);
+    if (!name) continue;
+    observed.push({
+      name,
+      arguments: firstRecord(call["arguments"], call["args"], call["input"]) ?? {},
+      result: call["result"],
+      successful: firstBoolean(call["successful"], call["success"]),
+      provider_tool_type: firstString(call["tool_type"], call["toolType"], call["type"]),
+      latency_ms: firstNumber(call["latency_ms"], call["durationMs"], call["duration_ms"], call["duration"]),
+      timestamp_ms: firstNumber(call["timestamp_ms"], call["timestampMs"], call["timestamp"]) ?? Date.now() - connectTimestamp,
+    });
+  }
+  return observed;
+}
+
+function extractTransferFromFunctionToolsEvent(event: LiveKitFunctionToolsExecutedEvent): CallTransfer | undefined {
+  const hasAgentHandoff = firstBoolean(event.has_agent_handoff, event.hasAgentHandoff);
+  if (!hasAgentHandoff) return undefined;
+
+  const destination = firstString(
+    (event as Record<string, unknown>)["new_agent_id"],
+    (event as Record<string, unknown>)["newAgentId"],
+    (event as Record<string, unknown>)["new_agent_type"],
+    (event as Record<string, unknown>)["newAgentType"],
+  );
+
+  return {
+    type: "agent_handoff",
+    destination,
+    status: "completed",
+    sources: ["platform_event"],
+  };
+}
+
+function extractTransferFromConversationItemEvent(event: LiveKitConversationItemEvent): CallTransfer | undefined {
+  const item = firstRecord(event.item, event.conversation_item);
+  if (!item) return undefined;
+
+  const itemType = firstString(item["type"], item["kind"], item["item_type"])?.toLowerCase();
+  if (itemType !== "agent_handoff" && itemType !== "handoff") {
+    return undefined;
+  }
+
+  return {
+    type: itemType,
+    destination: firstString(
+      item["new_agent_id"],
+      item["newAgentId"],
+      item["new_agent_type"],
+      item["newAgentType"],
+      item["to_agent"],
+      item["toAgent"],
+    ),
+    status: "completed",
+    sources: ["platform_event"],
+    timestamp_ms: firstNumber(event.timestamp_ms, item["timestamp_ms"], item["timestampMs"]),
+  };
+}
+
+function extractTransfersFromSessionReport(report: Record<string, unknown>): CallTransfer[] {
+  const transfers: CallTransfer[] = [];
+  for (const record of firstRecordArray(report["events"], report["history"])) {
+    const derived = extractTransferFromConversationItemEvent({
+      item: record,
+      timestamp_ms: firstNumber(record["timestamp_ms"], record["timestampMs"]),
+    });
+    if (derived) {
+      transfers.push(derived);
+    }
+  }
+  return transfers;
+}
+
+function firstRecordArray(...values: unknown[]): Record<string, unknown>[] {
+  for (const value of values) {
+    if (!Array.isArray(value)) continue;
+    const records = value.filter((item): item is Record<string, unknown> => !!item && typeof item === "object" && !Array.isArray(item));
+    if (records.length > 0) {
+      return records;
+    }
+  }
+  return [];
+}
+
+function hasComponentLatencyContent(timing: Partial<ComponentLatency>): boolean {
+  return timing.stt_ms != null || timing.llm_ms != null || timing.tts_ms != null || timing.speech_duration_ms != null;
+}
+
+function compactProviderWarning(warning: ProviderWarning): ProviderWarning | undefined {
+  const entries = Object.entries(warning).filter(([, value]) => value != null);
+  return entries.length > 0 ? Object.fromEntries(entries) as ProviderWarning : undefined;
+}
+
+function normalizeProviderWarnings(...values: unknown[]): ProviderWarning[] | undefined {
+  const warnings: ProviderWarning[] = [];
+  for (const value of values) {
+    if (typeof value === "string" && value.length > 0) {
+      warnings.push({ message: value });
+      continue;
+    }
+    if (!Array.isArray(value)) continue;
+    for (const item of value) {
+      if (typeof item === "string" && item.length > 0) {
+        warnings.push({ message: item });
+        continue;
+      }
+      if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+      const record = item as Record<string, unknown>;
+      const warning = compactProviderWarning({
+        message: firstString(record["message"], record["warning"], record["text"]),
+        code: firstString(record["code"], record["type"]),
+        detail: record["detail"] ?? record["data"],
+      });
+      if (warning) warnings.push(warning);
+    }
+  }
+  return warnings.length > 0 ? warnings : undefined;
+}
+
+function mergeProviderWarnings(
+  existing: ProviderWarning[] | undefined,
+  incoming: ProviderWarning[] | undefined,
+): ProviderWarning[] | undefined {
+  if ((!existing || existing.length === 0) && (!incoming || incoming.length === 0)) return undefined;
+  const merged = new Map<string, ProviderWarning>();
+  for (const warning of [...(existing ?? []), ...(incoming ?? [])]) {
+    const normalized = compactProviderWarning(warning);
+    if (!normalized) continue;
+    merged.set(stableProviderWarningFingerprint(normalized), normalized);
+  }
+  return merged.size > 0 ? [...merged.values()] : undefined;
+}
+
+function stableProviderWarningFingerprint(warning: ProviderWarning): string {
+  return JSON.stringify({
+    message: warning.message,
+    code: warning.code,
+    detail: warning.detail,
+  });
+}
+
+function mergeTransfers(
+  existing: CallTransfer[] | undefined,
+  incoming: CallTransfer[] | undefined,
+): CallTransfer[] | undefined {
+  if ((!existing || existing.length === 0) && (!incoming || incoming.length === 0)) return undefined;
+  const merged = new Map<string, CallTransfer>();
+  for (const transfer of [...(existing ?? []), ...(incoming ?? [])]) {
+    const key = stableTransferFingerprint(transfer);
+    const prior = merged.get(key);
+    if (!prior) {
+      merged.set(key, {
+        ...transfer,
+        sources: [...new Set(transfer.sources)],
+      });
+      continue;
+    }
+
+    merged.set(key, {
+      ...prior,
+      sources: [...new Set([...prior.sources, ...transfer.sources])],
+      timestamp_ms: prior.timestamp_ms ?? transfer.timestamp_ms,
+    });
+  }
+  return merged.size > 0 ? [...merged.values()] : undefined;
+}
+
+function stableTransferFingerprint(transfer: CallTransfer): string {
+  return JSON.stringify({
+    type: transfer.type,
+    destination: transfer.destination,
+    status: transfer.status,
+    timestamp_ms: transfer.timestamp_ms,
+  });
+}
+
+function stableToolCallFingerprint(toolCall: ObservedToolCall): string {
+  return JSON.stringify({
+    name: toolCall.name,
+    arguments: toolCall.arguments,
+    provider_tool_type: toolCall.provider_tool_type,
+    result: toolCall.result,
+    successful: toolCall.successful,
+    latency_ms: toolCall.latency_ms,
+    timestamp_ms: toolCall.timestamp_ms,
+  });
+}
+
+const LIVEKIT_OBSERVABILITY_TOPICS = [
+  LIVEKIT_SESSION_TOPIC,
+  LIVEKIT_CALL_METADATA_TOPIC,
+  LIVEKIT_TRANSFER_TOPIC,
+  LIVEKIT_DEBUG_URL_TOPIC,
+  LIVEKIT_WARNING_TOPIC,
+  LIVEKIT_SESSION_REPORT_TOPIC,
+  LIVEKIT_METRICS_TOPIC,
+  LIVEKIT_FUNCTION_TOOLS_EXECUTED_TOPIC,
+  LIVEKIT_CONVERSATION_ITEM_TOPIC,
+  LIVEKIT_USER_INPUT_TRANSCRIBED_TOPIC,
+  LIVEKIT_SESSION_USAGE_TOPIC,
+] as const;

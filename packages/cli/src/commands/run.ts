@@ -2,7 +2,7 @@ import * as fs from "node:fs/promises";
 import { apiFetch, ApiError, ensurePlatformConnection } from "../lib/api.js";
 import { deviceAuthFlow } from "../lib/auth.js";
 import { streamRunEvents } from "../lib/sse.js";
-import { printEvent, printError, printInfo, printSummary, debug } from "../lib/output.js";
+import { printEvent, printError, printInfo, printSummary, printWarn, debug } from "../lib/output.js";
 import { loadAccessToken, saveAccessToken } from "../lib/config.js";
 import { saveRunHistory } from "../lib/run-history.js";
 import { resolveRemotePlatformConfig } from "../lib/platform-connections.js";
@@ -14,6 +14,7 @@ interface RunArgs {
   file: string;
   call?: string;
   session?: string;
+  verbose?: boolean;
 }
 
 export async function runCommand(args: RunArgs): Promise<number> {
@@ -228,6 +229,11 @@ export async function runCommand(args: RunArgs): Promise<number> {
         exitCode = status === "pass" ? 0 : 1;
         debug(`run_complete: status=${status} exitCode=${exitCode}`);
       }
+
+      if (event.event_type === "error") {
+        printError(event.message ?? "Stream connection lost");
+        exitCode = 2;
+      }
     }
     debug(`SSE stream ended — received ${eventCount} events total`);
   } catch (err) {
@@ -246,7 +252,29 @@ export async function runCommand(args: RunArgs): Promise<number> {
   // 5. Print summary
   debug(`summary: callResults=${callResults.length} runComplete=${!!runCompleteData} exitCode=${exitCode}`);
   if (runCompleteData) {
-    printSummary(callResults, runCompleteData, run_id);
+    let rawRunDetails: Record<string, unknown> | null = null;
+    if (args.verbose && !isTTY) {
+      try {
+        const res = await apiFetch(`/runs/${run_id}`, activeAccessToken);
+        rawRunDetails = (await res.json()) as Record<string, unknown>;
+      } catch (err) {
+        debug(`verbose status fetch failed: ${(err as Error).message}`);
+        printWarn("Verbose result fetch failed; falling back to streamed summary.");
+      }
+    }
+
+    printSummary(callResults, runCompleteData, run_id, {
+      verbose: args.verbose,
+      rawCalls: Array.isArray(rawRunDetails?.["results"]) ? rawRunDetails["results"] as unknown[] : undefined,
+      runDetails: rawRunDetails ? {
+        created_at: rawRunDetails["created_at"],
+        started_at: rawRunDetails["started_at"],
+        finished_at: rawRunDetails["finished_at"],
+        duration_ms: rawRunDetails["duration_ms"],
+        error_text: rawRunDetails["error_text"],
+        aggregate: rawRunDetails["aggregate"],
+      } : undefined,
+    });
   }
 
   // 6. Save run history locally
