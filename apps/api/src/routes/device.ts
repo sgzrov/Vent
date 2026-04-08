@@ -16,7 +16,7 @@ function generateUserCode(): string {
 
 export async function deviceRoutes(app: FastifyInstance) {
   const dashboardUrl =
-    process.env["DASHBOARD_URL"] || "https://ventmcp.dev";
+    process.env["DASHBOARD_URL"]!;
 
   // Start a device authorization session (no auth required)
   app.post("/device/start", async (_request, reply) => {

@@ -12,7 +12,7 @@ primary_region = "iad"
   API_PORT = "3000"
   API_HOST = "0.0.0.0"
   NODE_ENV = "production"
-  DASHBOARD_URL = "https://ventmcp.dev"
+  DASHBOARD_URL = "https://venthq.dev"
 
 [http_service]
   internal_port = 3000
