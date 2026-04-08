@@ -231,7 +231,10 @@ export class BlandAudioChannel extends BaseAudioChannel {
    * preventing us from collecting the agent response while our audio is
    * still playing on the SIP line.
    */
-  async sendAudio(pcm: Buffer, opts?: SendAudioOptions): Promise<void> {
+  /** No-op — Bland sends audio directly over SIP/WebSocket in sendAudio. */
+  protected async writeAudioFrame(_samples: Int16Array, _sampleRate: number): Promise<void> {}
+
+  override async sendAudio(pcm: Buffer, opts?: SendAudioOptions): Promise<void> {
     if (!this.ws || !this.streamSid) {
       throw new Error("Bland SIP channel not connected");
     }

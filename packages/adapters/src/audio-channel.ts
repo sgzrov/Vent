@@ -17,7 +17,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import type { ObservedToolCall, ChannelStats, CallMetadata, ComponentLatency } from "@vent/shared";
-import { concatPcm } from "@vent/voice";
+import { concatPcm, resample } from "@vent/voice";
 
 export interface AudioChannelEvents {
   audio: (chunk: Buffer) => void;
@@ -174,10 +174,144 @@ export abstract class BaseAudioChannel extends EventEmitter implements AudioChan
     return this;
   }
 
+  // ── Pipecat-style audio buffer ──────────────────────────────────
+  // Accumulates resampled PCM across multiple sendAudio() calls.
+  // Drains fixed 20ms frames via writeAudioFrame() in the background.
+  // Adapters implement writeAudioFrame() to send one frame to their transport.
+  private _audioBuffer = new Int16Array(0);
+  private _audioQueue: { samples: Int16Array; sampleRate: number }[] = [];
+  private _audioDrainRunning = false;
+  private _audioDrainNotify: (() => void) | null = null;
+  protected _connectTimestampMs = 0;
+
+  /** Input sample rate for all adapters (16-bit mono PCM). */
+  static readonly INPUT_SAMPLE_RATE = 24000;
+
+  /** Output sample rate — override in subclass if different from 24kHz. */
+  protected outputSampleRate = 24000;
+
+  /** Frame duration in ms for chunking. */
+  protected frameDurationMs = 20;
+
   abstract connect(): Promise<void>;
-  abstract sendAudio(pcm: Buffer, opts?: SendAudioOptions): void | Promise<void>;
   abstract disconnect(): Promise<void>;
   abstract get connected(): boolean;
+
+  /**
+   * Write a single fixed-size audio frame to the transport.
+   * Subclasses implement this for their specific transport (WebRTC, WebSocket, SIP).
+   * The frame is already resampled to outputSampleRate and sized to frameDurationMs.
+   */
+  protected abstract writeAudioFrame(samples: Int16Array, sampleRate: number): Promise<void>;
+
+  /**
+   * Send PCM audio to the agent. Audio is resampled, buffered, and drained
+   * as fixed-size frames via writeAudioFrame(). Safe to call with any buffer
+   * size, any number of times (Pipecat-style).
+   */
+  sendAudio(pcm: Buffer, opts?: SendAudioOptions): void {
+    this._stats.bytesSent += pcm.length;
+    this.captureCallerAudio(pcm, Date.now() - this._connectTimestampMs);
+
+    // Resample input → output rate
+    const resampled = resample(pcm, BaseAudioChannel.INPUT_SAMPLE_RATE, this.outputSampleRate);
+    const newSamples = new Int16Array(
+      resampled.buffer,
+      resampled.byteOffset,
+      resampled.length / 2,
+    );
+
+    // Append to persistent buffer
+    const merged = new Int16Array(this._audioBuffer.length + newSamples.length);
+    merged.set(this._audioBuffer);
+    merged.set(newSamples, this._audioBuffer.length);
+    this._audioBuffer = merged;
+
+    // Slice fixed frames from the buffer into the queue
+    const chunkSamples = Math.floor(this.outputSampleRate * this.frameDurationMs / 1000);
+    while (this._audioBuffer.length >= chunkSamples) {
+      const chunk = new Int16Array(this._audioBuffer.subarray(0, chunkSamples));
+      this._audioQueue.push({ samples: chunk, sampleRate: this.outputSampleRate });
+      this._audioBuffer = new Int16Array(this._audioBuffer.subarray(chunkSamples));
+    }
+
+    // Wake the drain loop
+    this._audioDrainNotify?.();
+    this._audioDrainNotify = null;
+
+    // Start drain loop if not running
+    if (!this._audioDrainRunning) {
+      this._startAudioDrain();
+    }
+  }
+
+  /**
+   * Flush remaining audio buffer, add silence tail, and resume comfort noise.
+   * Call after all sendAudio() calls for a turn are complete.
+   */
+  async flushAudioBuffer(): Promise<void> {
+    // Flush remaining samples as a partial frame
+    if (this._audioBuffer.length > 0) {
+      const chunk = new Int16Array(this._audioBuffer);
+      this._audioQueue.push({ samples: chunk, sampleRate: this.outputSampleRate });
+      this._audioBuffer = new Int16Array(0);
+    }
+
+    // Add silence tail (500ms)
+    const silenceSamples = Math.floor(this.outputSampleRate * 0.5);
+    const silence = new Int16Array(silenceSamples);
+    this._audioQueue.push({ samples: silence, sampleRate: this.outputSampleRate });
+
+    // Wake drain
+    this._audioDrainNotify?.();
+    this._audioDrainNotify = null;
+
+    // Wait for queue to drain
+    while (this._audioQueue.length > 0) {
+      await new Promise<void>((r) => setTimeout(r, 10));
+    }
+    // Wait for drain loop to finish current frame
+    await new Promise<void>((r) => setTimeout(r, 25));
+
+    // Resume comfort noise (if adapter implements it)
+    if ("startComfortNoise" in this && typeof (this as any).startComfortNoise === "function") {
+      (this as any).startComfortNoise();
+    }
+  }
+
+  /** Clear the audio buffer and queue (for interruptions). */
+  protected clearAudioBuffer(): void {
+    this._audioBuffer = new Int16Array(0);
+    this._audioQueue = [];
+  }
+
+  private _startAudioDrain(): void {
+    if (this._audioDrainRunning) return;
+    this._audioDrainRunning = true;
+
+    (async () => {
+      try {
+        while (this.connected) {
+          if (this._audioQueue.length > 0) {
+            const { samples, sampleRate } = this._audioQueue.shift()!;
+            await this.writeAudioFrame(samples, sampleRate);
+          } else {
+            // Wait for new frames or timeout
+            await new Promise<void>((r) => {
+              this._audioDrainNotify = r;
+              setTimeout(r, 100);
+            });
+            if (this._audioQueue.length === 0 && this._audioBuffer.length === 0) {
+              break;
+            }
+          }
+        }
+      } catch {
+        // Transport closed — safe to ignore
+      }
+      this._audioDrainRunning = false;
+    })();
+  }
 
   protected enableRecordingCapture(): void {
     if (!this._recordingCapture) {

@@ -292,7 +292,10 @@ export class VapiAudioChannel extends BaseAudioChannel {
     this.startComfortNoise();
   }
 
-  async sendAudio(pcm: Buffer, opts?: SendAudioOptions): Promise<void> {
+  /** No-op — Vapi sends audio directly over WebSocket in sendAudio. */
+  protected async writeAudioFrame(_samples: Int16Array, _sampleRate: number): Promise<void> {}
+
+  override async sendAudio(pcm: Buffer, opts?: SendAudioOptions): Promise<void> {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       throw new Error("Vapi WebSocket not connected");
     }

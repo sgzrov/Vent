@@ -280,7 +280,17 @@ export class ElevenLabsAudioChannel extends BaseAudioChannel {
 
   // ── Audio I/O ──────────────────────────────────────────────────
 
-  sendAudio(pcm: Buffer, opts?: SendAudioOptions): void {
+  /** Write a single 20ms audio frame to LiveKit's AudioSource. */
+  protected async writeAudioFrame(samples: Int16Array, sampleRate: number): Promise<void> {
+    if (!this.audioSource || !this.collecting) return;
+    // CRITICAL: copy into standalone ArrayBuffer. AudioFrame.protoInfo()
+    // uses the ENTIRE underlying ArrayBuffer, not the subarray view.
+    const copied = new Int16Array(samples);
+    const frame = new AudioFrame(copied, sampleRate, 1, copied.length);
+    await this.audioSource.captureFrame(frame);
+  }
+
+  override sendAudio(pcm: Buffer, opts?: SendAudioOptions): void {
     if (!this.audioSource || !this.collecting) return;
     const raw = opts?.raw ?? false;
 
