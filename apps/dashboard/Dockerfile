@@ -26,4 +26,4 @@ COPY --from=build /app/apps/dashboard/public ./apps/dashboard/public
 EXPOSE 3000
 ENV PORT=3000
 ENV HOSTNAME="0.0.0.0"
-CMD ["node", "server.js"]
+CMD ["node", "apps/dashboard/server.js"]

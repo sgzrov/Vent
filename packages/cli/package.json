@@ -1,6 +1,6 @@
 {
   "name": "vent-hq",
-  "version": "0.9.1",
+  "version": "0.9.5",
   "type": "module",
   "description": "Vent CLI — CI/CD for voice AI agents",
   "bin": {
@@ -30,10 +30,9 @@
     "url": "https://github.com/vent-hq/vent",
     "directory": "packages/cli"
   },
-  "homepage": "https://ventmcp.dev",
+  "homepage": "https://venthq.dev",
   "dependencies": {
-    "@clack/prompts": "^1.1.0",
-    "ws": "catalog:"
+    "ws": "^8.18.0"
   },
   "devDependencies": {
     "@types/ws": "catalog:",

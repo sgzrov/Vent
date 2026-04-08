@@ -17,7 +17,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import type { ObservedToolCall, ChannelStats, CallMetadata, ComponentLatency } from "@vent/shared";
-import { concatPcm } from "@vent/voice";
+import { concatPcm, resample } from "@vent/voice";
 
 export interface AudioChannelEvents {
   audio: (chunk: Buffer) => void;
@@ -61,6 +61,9 @@ export interface AudioChannel {
   startComfortNoise?(): void;
   /** Stop comfort noise. */
   stopComfortNoise?(): void;
+  /** Flush any buffered audio, add silence tail, and resume comfort noise.
+   *  Call after all sendAudio() calls for a turn are complete. */
+  flushAudioBuffer?(): Promise<void>;
   disconnect(): Promise<void>;
   readonly connected: boolean;
   readonly stats: ChannelStats;
@@ -89,6 +92,11 @@ export interface AudioChannel {
   /** Optional quiet window after platformEndOfTurn before Vent starts the next turn.
    *  Some platforms signal end-of-turn slightly before playback has fully drained. */
   platformEndOfTurnDrainMs?: number;
+  /** Grace period after platformEndOfTurn before starting the drain timer.
+   *  Some platforms (Retell) fire agent_stop_talking between sentences, not just
+   *  at end of full response. A longer settle window lets agent_start_talking
+   *  cancel the resolution before we commit. Defaults to 500ms if unset. */
+  platformEndOfTurnSettleMs?: number;
   /** Optional continuation window after a tool call completes.
    *  Some platforms briefly speak filler, wait for the tool result, then continue
    *  the same assistant turn after a short pause. */
@@ -166,10 +174,178 @@ export abstract class BaseAudioChannel extends EventEmitter implements AudioChan
     return this;
   }
 
+  // ── Pipecat-style audio buffer ──────────────────────────────────
+  // Accumulates resampled PCM across multiple sendAudio() calls.
+  // Drains fixed 20ms frames via writeAudioFrame() in the background.
+  // Adapters implement writeAudioFrame() to send one frame to their transport.
+  private _audioBuffer = new Int16Array(0);
+  private _audioQueue: { samples: Int16Array; sampleRate: number }[] = [];
+  private _audioDrainRunning = false;
+  private _audioDrainNotify: (() => void) | null = null;
+  private _audioDrainStopping = false;
+  protected _connectTimestampMs = 0;
+
+  /** Input sample rate for all adapters (16-bit mono PCM). */
+  static readonly INPUT_SAMPLE_RATE = 24000;
+
+  /** Output sample rate — override in subclass if different from 24kHz. */
+  protected outputSampleRate = 24000;
+
+  /** Frame duration in ms for chunking. */
+  protected frameDurationMs = 20;
+
+  /** Pacing interval between frames (ms). 0 = no pacing (WebRTC backpressure).
+   *  WebSocket adapters set to frameDurationMs/2 for 2x real-time delivery
+   *  (Pipecat pattern: audio arrives ahead of playback to prevent underruns). */
+  protected pacingIntervalMs = 0;
+
+  /** Monotonic clock for self-correcting pacing (Pipecat _write_audio_sleep). */
+  private _nextSendTime = 0;
+
   abstract connect(): Promise<void>;
-  abstract sendAudio(pcm: Buffer, opts?: SendAudioOptions): void | Promise<void>;
   abstract disconnect(): Promise<void>;
   abstract get connected(): boolean;
+
+  /**
+   * Write a single fixed-size audio frame to the transport.
+   * Subclasses implement this for their specific transport (WebRTC, WebSocket, SIP).
+   * The frame is already resampled to outputSampleRate and sized to frameDurationMs.
+   */
+  protected abstract writeAudioFrame(samples: Int16Array, sampleRate: number): Promise<void>;
+
+  /**
+   * Send PCM audio to the agent. Audio is resampled, buffered, and drained
+   * as fixed-size frames via writeAudioFrame(). Safe to call with any buffer
+   * size, any number of times (Pipecat-style).
+   */
+  sendAudio(pcm: Buffer, opts?: SendAudioOptions): void {
+    this._stats.bytesSent += pcm.length;
+    this.captureCallerAudio(pcm, Date.now() - this._connectTimestampMs);
+
+    // Resample input → output rate
+    const resampled = resample(pcm, BaseAudioChannel.INPUT_SAMPLE_RATE, this.outputSampleRate);
+    const newSamples = new Int16Array(
+      resampled.buffer,
+      resampled.byteOffset,
+      resampled.length / 2,
+    );
+
+    // Append to persistent buffer
+    const merged = new Int16Array(this._audioBuffer.length + newSamples.length);
+    merged.set(this._audioBuffer);
+    merged.set(newSamples, this._audioBuffer.length);
+    this._audioBuffer = merged;
+
+    // Slice fixed frames from the buffer into the queue
+    const chunkSamples = Math.floor(this.outputSampleRate * this.frameDurationMs / 1000);
+    while (this._audioBuffer.length >= chunkSamples) {
+      const chunk = new Int16Array(this._audioBuffer.subarray(0, chunkSamples));
+      this._audioQueue.push({ samples: chunk, sampleRate: this.outputSampleRate });
+      this._audioBuffer = new Int16Array(this._audioBuffer.subarray(chunkSamples));
+    }
+
+    // Wake the drain loop
+    this._audioDrainNotify?.();
+    this._audioDrainNotify = null;
+
+    // Start drain loop if not running
+    if (!this._audioDrainRunning) {
+      this._startAudioDrain();
+    }
+  }
+
+  /**
+   * Flush remaining audio buffer, add silence tail, and resume comfort noise.
+   * Call after all sendAudio() calls for a turn are complete.
+   */
+  async flushAudioBuffer(): Promise<void> {
+    // Flush remaining samples as a partial frame
+    if (this._audioBuffer.length > 0) {
+      const chunk = new Int16Array(this._audioBuffer);
+      this._audioQueue.push({ samples: chunk, sampleRate: this.outputSampleRate });
+      this._audioBuffer = new Int16Array(0);
+    }
+
+    // Add silence tail (500ms)
+    const silenceSamples = Math.floor(this.outputSampleRate * 0.5);
+    const silence = new Int16Array(silenceSamples);
+    this._audioQueue.push({ samples: silence, sampleRate: this.outputSampleRate });
+
+    // Signal drain loop to exit after processing remaining queue
+    this._audioDrainStopping = true;
+    this._audioDrainNotify?.();
+    this._audioDrainNotify = null;
+
+    // Wait for drain loop to finish
+    while (this._audioDrainRunning) {
+      await new Promise<void>((r) => setTimeout(r, 10));
+    }
+    this._audioDrainStopping = false;
+
+    // Resume comfort noise (if adapter implements it)
+    if ("startComfortNoise" in this && typeof (this as any).startComfortNoise === "function") {
+      (this as any).startComfortNoise();
+    }
+  }
+
+  /** Clear both the audio buffer/queue AND the transport's internal queue.
+   *  Call on interruption to stop all pending audio immediately. */
+  protected clearAudioBuffer(): void {
+    this._audioBuffer = new Int16Array(0);
+    this._audioQueue = [];
+    this._nextSendTime = 0;
+    this._audioDrainStopping = true;
+    this._audioDrainNotify?.();
+    this._audioDrainNotify = null;
+    this.clearTransportQueue();
+  }
+
+  /** Clear the transport's internal queue (e.g. LiveKit AudioSource, Twilio buffer).
+   *  Override in subclass. Base implementation is a no-op. */
+  protected clearTransportQueue(): void {}
+
+  private _startAudioDrain(): void {
+    if (this._audioDrainRunning) return;
+    this._audioDrainRunning = true;
+    this._audioDrainStopping = false;
+    this._nextSendTime = 0;
+
+    (async () => {
+      try {
+        while (this.connected) {
+          if (this._audioQueue.length > 0) {
+            const { samples, sampleRate } = this._audioQueue.shift()!;
+            await this.writeAudioFrame(samples, sampleRate);
+
+            // Pipecat-style self-correcting clock pacing for WebSocket transports.
+            // WebRTC adapters leave pacingIntervalMs = 0 (captureFrame has backpressure).
+            if (this.pacingIntervalMs > 0) {
+              const now = performance.now();
+              const sleep = Math.max(0, this._nextSendTime - now);
+              if (sleep > 0) {
+                await new Promise<void>((r) => setTimeout(r, sleep));
+              }
+              this._nextSendTime = sleep === 0
+                ? performance.now() + this.pacingIntervalMs
+                : this._nextSendTime + this.pacingIntervalMs;
+            }
+          } else if (this._audioDrainStopping) {
+            // Only exit when explicitly told to (flushAudioBuffer or disconnect)
+            break;
+          } else {
+            // Wait for new frames — do NOT exit on empty buffer.
+            // Streaming TTS sends chunks with gaps between them.
+            await new Promise<void>((r) => {
+              this._audioDrainNotify = r;
+            });
+          }
+        }
+      } catch {
+        // Transport closed — safe to ignore
+      }
+      this._audioDrainRunning = false;
+    })();
+  }
 
   protected enableRecordingCapture(): void {
     if (!this._recordingCapture) {

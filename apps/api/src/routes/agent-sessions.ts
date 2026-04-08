@@ -26,7 +26,7 @@ async function agentSessionRoutes(app: FastifyInstance) {
     }
 
     const relayToken = randomUUID();
-    const apiUrl = process.env["API_URL"] ?? "https://vent-api.fly.dev";
+    const apiUrl = process.env["API_URL"]!;
 
     const [session] = await app.db
       .insert(schema.agentSessions)

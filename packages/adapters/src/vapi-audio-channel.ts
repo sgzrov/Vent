@@ -124,13 +124,6 @@ interface TurnTiming {
   vapiTranscript?: string;
 }
 
-interface OutboundFrame {
-  buffer: Buffer;
-  turnIndex: number;
-  frameIndex: number;
-  totalFrames: number;
-}
-
 /** Comfort noise: 20ms frame at 16kHz = 320 samples = 640 bytes */
 const COMFORT_NOISE_FRAME_SAMPLES = 320;
 const COMFORT_NOISE_INTERVAL_MS = 20;
@@ -148,6 +141,9 @@ const VAPI_MIN_START_SPEAKING_WAIT_SECONDS = 1.2;
 const WS_CONNECT_TIMEOUT_MS = 30_000;
 
 export class VapiAudioChannel extends BaseAudioChannel {
+  protected override outputSampleRate = 16000;
+  protected override pacingIntervalMs = 10; // 2x real-time (Pipecat: chunk_duration / 2)
+
   private config: VapiAudioChannelConfig;
   private ws: WebSocket | null = null;
   private callId: string | null = null;
@@ -194,8 +190,6 @@ export class VapiAudioChannel extends BaseAudioChannel {
 
   // Comfort noise state
   private comfortNoiseTimer: ReturnType<typeof setInterval> | null = null;
-  private outboundFrames: OutboundFrame[] = [];
-  private outboundPumpPromise: Promise<void> | null = null;
 
   // End-of-call report received via WebSocket (best-effort cache only)
   private endOfCallReport: Record<string, unknown> | null = null;
@@ -215,6 +209,7 @@ export class VapiAudioChannel extends BaseAudioChannel {
   async connect(): Promise<void> {
     const connectStart = Date.now();
     this.connectTimestamp = connectStart;
+    this._connectTimestampMs = connectStart;
     this.enableRecordingCapture();
     this.turnTimings = [];
     this.currentTurnIndex = -1;
@@ -292,12 +287,28 @@ export class VapiAudioChannel extends BaseAudioChannel {
     this.startComfortNoise();
   }
 
-  async sendAudio(pcm: Buffer, opts?: SendAudioOptions): Promise<void> {
+  protected async writeAudioFrame(samples: Int16Array, sampleRate: number): Promise<void> {
+    if (!this.ws) return;
+    const buf = Buffer.from(samples.buffer, samples.byteOffset, samples.byteLength);
+    this.ws.send(buf);
+
+    // Turn timing tracking (moved from sendAudio pacing loop)
+    const timing = this.turnTimings[this.currentTurnIndex];
+    if (timing) {
+      const now = Date.now();
+      if (timing.outboundFirstFrameAt == null) timing.outboundFirstFrameAt = now;
+      timing.outboundLastFrameAt = now;
+      timing.outboundFrameCount = (timing.outboundFrameCount ?? 0) + 1;
+    }
+  }
+
+  override async sendAudio(pcm: Buffer, opts?: SendAudioOptions): Promise<void> {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       throw new Error("Vapi WebSocket not connected");
     }
-    this._stats.bytesSent += pcm.length;
-    this.captureCallerAudio(pcm, Date.now() - this.connectTimestamp);
+
+    // Stop comfort noise before sending speech audio
+    this.stopComfortNoise();
 
     // Track when we send audio for component latency calculation
     this.currentTurnIndex++;
@@ -308,53 +319,10 @@ export class VapiAudioChannel extends BaseAudioChannel {
       `pcm24kBytes=${pcm.length} raw=${opts?.raw === true}`
     );
 
-    // Resample 24kHz → 16kHz before sending
-    const resampled = resample(pcm, 24000, 16000);
-    const raw = opts?.raw ?? false;
-    const normalizedResampled = raw
-      ? resampled
-      : normalizeCallerPcmForVapi(resampled, this.currentTurnIndex, this.relativeNowMs.bind(this));
-    if (raw) {
-      console.log(
-        `    [vapi-send] turn=${this.currentTurnIndex} raw_send t=${this.relativeNowMs()}ms ` +
-        `pcm16kBytes=${normalizedResampled.length}`
-      );
-      this.ws.send(normalizedResampled);
-      return;
-    }
-
-    // Pace audio at real-time speed: 20ms frames at 16kHz (640 bytes each).
-    // Without pacing, Vapi receives seconds of audio instantly and its STT
-    // treats it as one continuous utterance, breaking turn-taking.
-    const totalFrames = Math.ceil(normalizedResampled.length / VAPI_FRAME_BYTES);
-    const turnIdx = this.currentTurnIndex;
-    const timing = this.turnTimings[turnIdx]!;
-    timing.outboundFrameCount = totalFrames;
-    timing.outboundFirstFrameAt = Date.now();
-
-    const audioDurationMs = Math.round((normalizedResampled.length / 2 / 16000) * 1000);
-    console.log(
-      `    [vapi-send] turn=${turnIdx} paced_start t=${this.relativeNowMs()}ms ` +
-      `pcm16kBytes=${normalizedResampled.length} frames=${totalFrames} audioDuration=${audioDurationMs}ms`
-    );
-
-    for (let i = 0; i < normalizedResampled.length; i += VAPI_FRAME_BYTES) {
-      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) break;
-      const end = Math.min(i + VAPI_FRAME_BYTES, normalizedResampled.length);
-      this.ws.send(normalizedResampled.subarray(i, end));
-      if (i + VAPI_FRAME_BYTES < normalizedResampled.length) {
-        await sleep(COMFORT_NOISE_INTERVAL_MS);
-      }
-    }
-
-    timing.outboundLastFrameAt = Date.now();
-    console.log(
-      `    [vapi-send] turn=${turnIdx} paced_done t=${this.relativeNowMs()}ms ` +
-      `elapsed=${timing.outboundLastFrameAt - timing.outboundFirstFrameAt}ms`
-    );
-
-    // Resume comfort noise after speech — keeps WebSocket alive while agent processes
-    this.startComfortNoise();
+    // All audio goes through the base class buffer (Pipecat pattern).
+    // For interrupts: caller clears buffer first, then sends normally.
+    const normalized = normalizeCallerPcmForVapi(pcm, this.currentTurnIndex, this.relativeNowMs.bind(this));
+    super.sendAudio(normalized);
   }
 
   startComfortNoise(): void {
@@ -378,41 +346,6 @@ export class VapiAudioChannel extends BaseAudioChannel {
     if (this.comfortNoiseTimer) {
       clearInterval(this.comfortNoiseTimer);
       this.comfortNoiseTimer = null;
-    }
-  }
-
-  private async pumpOutboundFrames(): Promise<void> {
-    try {
-      while (this.outboundFrames.length > 0) {
-        const frame = this.outboundFrames.shift();
-        if (!frame) continue;
-        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) break;
-        const timing = this.turnTimings[frame.turnIndex];
-        const now = Date.now();
-        if (timing && timing.outboundFirstFrameAt == null) {
-          timing.outboundFirstFrameAt = now;
-          console.log(
-            `    [vapi-send] turn=${frame.turnIndex} first_frame t=${this.relativeNowMs()}ms ` +
-            `queueRemaining=${this.outboundFrames.length}`
-          );
-        }
-        if (timing) {
-          timing.outboundLastFrameAt = now;
-        }
-        if (frame.frameIndex === frame.totalFrames - 1) {
-          console.log(
-            `    [vapi-send] turn=${frame.turnIndex} last_frame t=${this.relativeNowMs()}ms ` +
-            `frames=${frame.totalFrames}`
-          );
-        }
-        this.ws.send(frame.buffer);
-        await sleep(COMFORT_NOISE_INTERVAL_MS);
-      }
-    } finally {
-      this.outboundPumpPromise = null;
-      if (this.outboundFrames.length > 0 && this.ws && this.ws.readyState === WebSocket.OPEN) {
-        this.outboundPumpPromise = this.pumpOutboundFrames();
-      }
     }
   }
 
@@ -450,7 +383,6 @@ export class VapiAudioChannel extends BaseAudioChannel {
 
   async disconnect(): Promise<void> {
     this.stopComfortNoise();
-    this.outboundFrames = [];
     this.clearToolCallActive("Call disconnected before tool result arrived", { markPendingFailed: true });
     // End the call on Vapi's side by sending end-call over WebSocket.
     // Per Vapi docs: send {"type": "end-call"} as a text frame to terminate the call cleanly.

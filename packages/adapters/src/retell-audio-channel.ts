@@ -53,6 +53,15 @@ export class RetellAudioChannel extends BaseAudioChannel {
   /** Retell emits agent_stop_talking via DataChannel — reliable end-of-turn signal. */
   hasPlatformEndOfTurn = true;
 
+  /** WebRTC audio frames lag behind DataChannel signals — wait for the audio tail
+   *  to fully drain before resolving the turn, otherwise STT truncates. */
+  platformEndOfTurnDrainMs = 500;
+
+  /** Retell fires agent_stop_talking between sentences, not just at end of full
+   *  response. A 1500ms settle window lets agent_start_talking cancel before we
+   *  commit to resolving the turn. */
+  platformEndOfTurnSettleMs = 1500;
+
   private config: RetellAudioChannelConfig;
   private client: Retell;
 
@@ -76,10 +85,23 @@ export class RetellAudioChannel extends BaseAudioChannel {
   private lastUserContent = "";
   private realtimeToolCallEntries = new Map<string, Record<string, unknown>>();
 
+  // Output sample rate for LiveKit WebRTC
+  protected override outputSampleRate = RetellAudioChannel.LIVEKIT_SAMPLE_RATE;
+
   constructor(config: RetellAudioChannelConfig) {
     super();
     this.config = config;
     this.client = new Retell({ apiKey: config.apiKey });
+  }
+
+  /** Write a single 20ms audio frame to LiveKit's AudioSource. */
+  protected async writeAudioFrame(samples: Int16Array, sampleRate: number): Promise<void> {
+    if (!this.audioSource || !this.collecting) return;
+    // CRITICAL: copy into standalone ArrayBuffer. AudioFrame.protoInfo()
+    // uses the ENTIRE underlying ArrayBuffer, not the subarray view.
+    const copied = new Int16Array(samples);
+    const frame = new AudioFrame(copied, sampleRate, 1, copied.length);
+    await this.audioSource.captureFrame(frame);
   }
 
   get connected(): boolean {
@@ -117,6 +139,7 @@ export class RetellAudioChannel extends BaseAudioChannel {
     });
     this.collecting = true;
     this.connectTimestamp = Date.now();
+    this._connectTimestampMs = this.connectTimestamp;
     this.agentTextBuffer = "";
     this.lastAgentContent = "";
     this.realtimeUserTranscripts = [];
@@ -247,67 +270,24 @@ export class RetellAudioChannel extends BaseAudioChannel {
 
   stopComfortNoise(): void {
     this.comfortNoiseActive = false;
-    if (this.audioSource) {
-      this.audioSource.clearQueue();
-    }
+    this.clearAudioBuffer();
+  }
+
+  /** Clear LiveKit AudioSource internal queue on interruption. */
+  protected override clearTransportQueue(): void {
+    this.audioSource?.clearQueue();
   }
 
   // ── Audio I/O ──────────────────────────────────────────────────
+  // sendAudio(), flushAudioBuffer(), clearAudioBuffer() inherited from BaseAudioChannel.
+  // writeAudioFrame() implemented above.
+  // All audio — including interrupts — goes through the buffer.
+  // Interrupts: caller clears buffer first, then sends normally.
 
-  sendAudio(pcm: Buffer, opts?: SendAudioOptions): void {
+  override sendAudio(pcm: Buffer, opts?: SendAudioOptions): void {
     if (!this.audioSource || !this.collecting) return;
-    const raw = opts?.raw ?? false;
-
-    if (this.comfortNoiseActive) {
-      this.stopComfortNoise();
-    } else if (raw) {
-      this.audioSource.clearQueue();
-    }
-
-    this._stats.bytesSent += pcm.length;
-    this.captureCallerAudio(pcm, Date.now() - this.connectTimestamp);
-
-    const sampleRate = RetellAudioChannel.LIVEKIT_SAMPLE_RATE;
-    const resampled = resample(pcm, 24000, sampleRate);
-    const samples = new Int16Array(
-      resampled.buffer,
-      resampled.byteOffset,
-      resampled.length / 2
-    );
-
-    const audioSource = this.audioSource;
-    const chunkSamples = Math.floor(sampleRate * 0.02); // 20ms = 960 samples at 48kHz
-
-    (async () => {
-      try {
-        for (let offset = 0; offset < samples.length; offset += chunkSamples) {
-          if (!this.collecting || !this.audioSource) return;
-          const end = Math.min(offset + chunkSamples, samples.length);
-          // CRITICAL: copy chunk into its own ArrayBuffer. AudioFrame.protoInfo()
-          // uses the ENTIRE underlying ArrayBuffer, not the subarray view.
-          const chunk = new Int16Array(samples.subarray(offset, end));
-          const frame = new AudioFrame(chunk, sampleRate, 1, chunk.length);
-          await audioSource.captureFrame(frame);
-        }
-
-        // Keep a short silence tail on raw interrupts so the agent still sees
-        // end-of-user-turn without the full normal-turn delay.
-        if (!this.collecting || !this.audioSource) return;
-        const silenceSamples = Math.floor(
-          sampleRate * ((raw ? RAW_INTERRUPT_TRAILING_SILENCE_MS : 500) / 1000)
-        );
-        const silence = new Int16Array(silenceSamples);
-        const silenceFrame = new AudioFrame(silence, sampleRate, 1, silenceSamples);
-        await audioSource.captureFrame(silenceFrame);
-
-        // Resume comfort noise between turns
-        if (this.collecting && this.audioSource) {
-          this.startComfortNoise();
-        }
-      } catch {
-        // AudioSource closed during send — safe to ignore
-      }
-    })();
+    if (this.comfortNoiseActive) this.stopComfortNoise();
+    super.sendAudio(pcm, opts);
   }
 
   async disconnect(): Promise<void> {

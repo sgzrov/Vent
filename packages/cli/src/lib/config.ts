@@ -5,8 +5,8 @@ import { homedir } from "node:os";
 const CONFIG_DIR = path.join(homedir(), ".vent");
 const CREDENTIALS_FILE = path.join(CONFIG_DIR, "credentials");
 
-export const API_BASE = process.env.VENT_API_URL ?? "https://vent-api.fly.dev";
-export const DASHBOARD_URL = process.env.VENT_DASHBOARD_URL ?? "https://ventmcp.dev";
+export const API_BASE = process.env.VENT_API_URL ?? "https://api.venthq.dev";
+export const DASHBOARD_URL = process.env.VENT_DASHBOARD_URL ?? "https://venthq.dev";
 
 export async function loadAccessToken(): Promise<string | null> {
   // 1. Environment variable (highest priority)

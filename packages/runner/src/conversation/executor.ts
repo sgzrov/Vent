@@ -22,7 +22,7 @@ import type {
   ComponentLatency,
   ComponentLatencyMetrics,
 } from "@vent/shared";
-import { synthesize, TTSSession, BatchVAD, VoiceActivityDetector, StreamingTranscriber, applyEffects, resolveAccentVoiceId, resolveLanguageVoiceId, analyzeAudioQuality, type AudioQualityMetrics } from "@vent/voice";
+import { synthesize, TTSSession, BatchVAD, VoiceActivityDetector, StreamingTranscriber, applyEffects, resolveAccentVoiceId, resolveLanguageVoiceId, analyzeAudioQuality, concatPcm, type AudioQualityMetrics } from "@vent/voice";
 import { CallerLLM } from "./caller-llm.js";
 import { executeAudioAction, mixCallerWithNoise, collectForDurationSafe } from "./audio-actions.js";
 import { collectUntilEndOfTurn, linearRegressionSlope } from "../audio-tests/helpers.js";
@@ -288,31 +288,96 @@ export async function runConversationCall(
       // Update VAD silence threshold for this turn (adaptive)
       turnVAD.silenceThresholdMs = adaptiveThreshold.thresholdMs;
 
-      // Pipe agent audio to streaming STT during collection
+      // Reset STT (opens new Deepgram connection for this turn).
+      // feedSTT is attached right before collection, not here — attaching
+      // during LLM+TTS feeds idle audio that slows down CloseStream.
       transcriber.resetForNextTurn();
       const feedSTT = (chunk: Buffer) => transcriber.feedAudio(chunk);
-      channel.on("audio", feedSTT);
 
       let sendTime: number;
 
       let callerAudio: Buffer | null = null;
       let callerDecision: Awaited<ReturnType<CallerLLM["nextUtterance"]>>;
-      let llmMs: number;
+      let llmMs: number = 0;
       let spokenCallerText: string | null = null;
+
+      // ── Streaming LLM → TTS → channel pipeline ──────────────────────
+      // LLM streams tokens and yields sentences via callback into a queue.
+      // A concurrent consumer synthesizes each sentence via streaming TTS
+      // and pipes audio chunks to the channel as they arrive.
+      // For "wait"/"end_now" modes, no sentences are yielded so no audio is sent.
       const llmStart = performance.now();
-      callerDecision = await caller.nextUtterance(agentText, transcript);
-      llmMs = Math.round(performance.now() - llmStart);
+      const callerAudioChunks: Buffer[] = [];
+
+      // ── Pipecat-style streaming pipeline ──────────────────────────
+      // 1. Set up TTS audio listener FIRST (captures audio as it arrives)
+      // 2. Stream LLM tokens → detect sentences → sendText per sentence
+      //    (Deepgram produces audio immediately per Speak message, no flush needed)
+      // 3. Flush once at the end to process any remaining buffer
+      const ttsStart = performance.now();
+
+      // Start TTS stream — audio listener queues chunks for sequential sending
+      const audioSendQueue: Buffer[] = [];
+      const audioNotify = { fn: null as (() => void) | null };
+      let ttsFinished = false;
+
+      const ttsStream = ttsSession.startStreaming((chunk) => {
+        callerAudioChunks.push(chunk);
+        audioSendQueue.push(chunk);
+        audioNotify.fn?.();
+        audioNotify.fn = null;
+      });
+
+      // Concurrent audio sender — sends chunks sequentially as they arrive
+      const audioSendPromise = (async () => {
+        while (true) {
+          if (audioSendQueue.length > 0) {
+            const chunk = audioSendQueue.shift()!;
+            let audio = chunk;
+            if (spec.caller_audio) audio = applyEffects(audio, spec.caller_audio);
+            await channel.sendAudio(audio);
+          } else if (ttsFinished) {
+            break;
+          } else {
+            await new Promise<void>((r) => { audioNotify.fn = r; });
+          }
+        }
+      })();
+
+      // Stream LLM — each sentence is sent to Deepgram TTS as it's detected
+      callerDecision = await caller.streamNextUtterance(
+        agentText,
+        transcript,
+        (sentence) => {
+          const spoken = prepareCallerSpeechText(channel, sentence);
+          ttsStream.sendText((spoken ?? sentence) + " ");
+        },
+      );
+
+      // Flush remaining TTS buffer and wait for all audio to arrive
+      await ttsStream.finish();
+      ttsFinished = true;
+      audioNotify.fn?.();
+      await audioSendPromise;
+
+      // Flush the adapter's audio buffer (drain remaining frames + silence tail)
+      await channel.flushAudioBuffer?.();
+      ttsMs = Math.round(performance.now() - ttsStart);
+
+      if (callerAudioChunks.length > 0) {
+        callerAudio = concatPcm(callerAudioChunks);
+      }
 
       const shouldStopAfterAgentReply = callerDecision?.mode === "closing";
 
       if (!callerDecision || callerDecision.mode === "end_now") {
-        channel.off("audio", feedSTT);
         break;
       }
 
       if (callerDecision.mode === "wait") {
         console.log(`[turn-decision] turn=${turn} caller=wait caller_llm=${llmMs}ms`);
 
+        channel.on("audio", feedSTT);
         const vadStart = performance.now();
         const { audio: agentAudio, stats, timedOut } = await collectUntilEndOfTurn(
           channel,
@@ -330,9 +395,8 @@ export async function runConversationCall(
           `speechSegments=${stats.speechSegments} totalSpeechMs=${stats.totalSpeechMs}`
         );
 
-        channel.off("audio", feedSTT);
-
         if (timedOut && stats.speechOnsetAt === null) {
+          channel.off("audio", feedSTT);
           throw new Error(
             `Agent stopped responding — no speech detected for 30s after turn ${turn + 1}. ` +
             `This may indicate the agent's backend (STT/LLM/TTS) is overwhelmed or rate-limited.`
@@ -344,6 +408,8 @@ export async function runConversationCall(
         const agentTimestamp = performance.now() - startTime;
 
         if (agentAudio.length > 0) {
+          channel.off("audio", feedSTT);
+          channel.startComfortNoise?.();
           const sttStart = performance.now();
           let { text, confidence } = await transcriber.finalize();
           const sttMs = Math.round(performance.now() - sttStart);
@@ -382,6 +448,7 @@ export async function runConversationCall(
           });
           if (shouldStopAfterAgentReply) break;
         } else {
+          channel.off("audio", feedSTT);
           agentText = "";
           console.log(
             `[turn-text] turn=${turn} caller=wait source=empty-audio chars=0 timedOut=${timedOut} ` +
@@ -403,33 +470,27 @@ export async function runConversationCall(
         continue;
       }
 
+      // Audio was already sent to the channel during the streaming pipeline above.
+      // Set up remaining state for this turn.
       callerText = callerDecision.text;
       spokenCallerText = prepareCallerSpeechText(channel, callerText);
       const emittedCallerText = spokenCallerText ?? callerText;
       const interruptionStyle = spec.persona?.interruption_style;
-      const interruptGateProb = interruptionStyle === "high" ? 1.0 : 0.5;
-      const interruptPlanEligible = !shouldStopAfterAgentReply
-        && interruptionStyle
-        && turn >= 2
-        && Math.random() < interruptGateProb;
-      if (spokenCallerText !== callerText) {
-        console.log(
-          `[caller-tts] turn=${turn} normalized original="${summarizeDebugText(callerText)}" ` +
-          `spoken="${summarizeDebugText(spokenCallerText)}"`
-        );
-      }
+
       console.log(
         `    [caller] turn=${turn} decision=${callerDecision.mode} t=${sinceStartMs(startTime)}ms ` +
         `text="${summarizeDebugText(emittedCallerText)}"`
       );
 
+      // Interrupt planning still uses the old blocking TTS path
+      const interruptGateProb = interruptionStyle === "high" ? 1.0 : 0.5;
+      const interruptPlanEligible = !shouldStopAfterAgentReply
+        && interruptionStyle
+        && turn >= 2
+        && Math.random() < interruptGateProb;
       const interruptPlanPromise = interruptPlanEligible
         ? caller.planInterrupt(emittedCallerText)
         : Promise.resolve({ mode: "listen" } as const);
-      const ttsStart = performance.now();
-      callerAudio = await ttsSession.synthesize(emittedCallerText);
-      if (spec.caller_audio) callerAudio = applyEffects(callerAudio, spec.caller_audio);
-      ttsMs = Math.round(performance.now() - ttsStart);
       const interruptPlan = await interruptPlanPromise;
       const plannedInterrupt = interruptPlan.mode === "interrupt"
         ? {
@@ -446,7 +507,6 @@ export async function runConversationCall(
         : null;
 
       if (!callerAudio) {
-        channel.off("audio", feedSTT);
         throw new Error(`Caller audio was not prepared for turn ${turn}`);
       }
 
@@ -478,22 +538,25 @@ export async function runConversationCall(
         callerDecisionMode: callerDecision.mode,
       });
 
-      // Handle noise_on_caller: mix noise into caller audio before sending
+      // Audio was already sent to the channel during the streaming pipeline.
+      // For noise_on_caller actions, we need to re-send with noise mixed in.
       if (audioAction?.action === "noise_on_caller") {
         callerAudio = mixCallerWithNoise(
           callerAudio,
           audioAction.noise_type ?? "babble",
           audioAction.snr_db ?? 10,
         );
+        await channel.sendAudio(callerAudio);
       }
 
       sendTime = Date.now();
       console.log(
-        `    [caller-send] turn=${turn} send_start t=${sinceStartMs(startTime)}ms ` +
+        `    [caller-send] turn=${turn} t=${sinceStartMs(startTime)}ms ` +
         `audioDuration=${audioDurationMs}ms bytes=${callerAudio.length}`
       );
-      await channel.sendAudio(callerAudio);
-      console.log(`    [caller-send] turn=${turn} send_return t=${sinceStartMs(startTime)}ms`);
+
+      // Attach STT feed — agent response audio starts arriving after caller sends.
+      channel.on("audio", feedSTT);
 
       // Handle interrupt action: wait for agent speech, then send interrupt
       if (audioAction?.action === "interrupt") {
@@ -647,7 +710,7 @@ export async function runConversationCall(
         const interruptAudio = await plannedInterrupt.audioPromise;
         const interruptTime = Date.now();
         sendTime = Date.now();
-        await channel.sendAudio(interruptAudio, { raw: true });
+        channel.sendAudio(interruptAudio);
 
         const interruptCallerTimestamp = performance.now() - startTime;
         const interruptAudioDurationMs = Math.round((interruptAudio.length / 2 / 24000) * 1000);
@@ -726,7 +789,7 @@ export async function runConversationCall(
       // so frames take seconds to deliver. The agent also needs processing time
       // (STT → LLM → TTS) before responding.
       const vadStart = performance.now();
-      const { audio: agentAudio, stats, timedOut } = await collectUntilEndOfTurn(
+      let { audio: agentAudio, stats, timedOut } = await collectUntilEndOfTurn(
         channel,
         {
           timeoutMs: resolveCollectionTimeoutMs(30000),
@@ -742,10 +805,11 @@ export async function runConversationCall(
         `speechSegments=${stats.speechSegments} totalSpeechMs=${stats.totalSpeechMs}`
       );
 
-      channel.off("audio", feedSTT);
+
 
       // Fail fast: if no speech detected within timeout, agent has stopped responding
       if (timedOut && stats.speechOnsetAt === null) {
+        channel.off("audio", feedSTT);
         throw new Error(
           `Agent stopped responding — no speech detected for 30s after turn ${turn + 1}. ` +
           `This may indicate the agent's backend (STT/LLM/TTS) is overwhelmed or rate-limited.`
@@ -765,7 +829,7 @@ export async function runConversationCall(
         });
       }
 
-      const agentTimestamp = performance.now() - startTime;
+      let agentTimestamp = performance.now() - startTime;
 
       // Measure TTFB (first audio byte) and TTFW (first speech via VAD)
       let turnTtfb: number | undefined;
@@ -784,14 +848,73 @@ export async function runConversationCall(
 
       // Step 4: Get streaming STT result + batch VAD analysis
       if (agentAudio.length > 0) {
+        channel.off("audio", feedSTT);
+        // Keep the codec warm during LLM+TTS processing to prevent
+        // the agent from detecting silence and saying "are you still there?"
+        channel.startComfortNoise?.();
         const sttStart = performance.now();
         let { text, confidence } = await transcriber.finalize();
-        const sttMs = Math.round(performance.now() - sttStart);
+        let sttMs = Math.round(performance.now() - sttStart);
         let textSource = text ? "stt" : "empty";
         // Consume and discard platform transcript buffers. Vent STT stays authoritative.
         channel.consumeAgentText?.();
 
         agentText = text;
+
+        // ── Filler speech detection (platform EOT adapters only) ──────────
+        // When the agent says filler ("Let me check that") before a tool call,
+        // Retell fires agent_stop_talking and we resolve the turn. But the real
+        // answer hasn't arrived yet. Detect filler via a fast Haiku call, then
+        // collect the continuation segment and merge into one logical turn.
+        const agentWordCount = agentText ? agentText.trim().split(/\s+/).length : 0;
+        if (channel.hasPlatformEndOfTurn && agentText && agentWordCount > 0 && agentWordCount <= 12) {
+          const fillerClassification = await caller.classifyAgentSpeech(agentText);
+
+          if (fillerClassification === "filler") {
+            console.log(
+              `[filler-continuation] turn=${turn} detected filler="${summarizeDebugText(agentText)}" — collecting continuation`
+            );
+
+            const fillerAudio = agentAudio;
+
+            transcriber.resetForNextTurn();
+            const feedContinuationSTT = (chunk: Buffer) => transcriber.feedAudio(chunk);
+            channel.on("audio", feedContinuationSTT);
+
+            turnVAD.silenceThresholdMs = adaptiveThreshold.thresholdMs;
+            const continuation = await collectUntilEndOfTurn(channel, {
+              timeoutMs: resolveCollectionTimeoutMs(30000),
+              vad: turnVAD,
+              preferPlatformEOT: true,
+              debugLabel: `turn-${turn}-continuation`,
+            });
+            channel.off("audio", feedContinuationSTT);
+
+            if (continuation.audio.length > 0 && continuation.stats.speechOnsetAt !== null) {
+              const contSttStart = performance.now();
+              const contResult = await transcriber.finalize();
+              const contSttMs = Math.round(performance.now() - contSttStart);
+              channel.consumeAgentText?.();
+
+              agentAudio = concatPcm([fillerAudio, continuation.audio]);
+              agentText = agentText + " " + (contResult.text || "");
+              sttMs += contSttMs;
+              confidence = contResult.confidence;
+
+              adaptiveThreshold.update(continuation.stats);
+              agentTimestamp = performance.now() - startTime;
+
+              console.log(
+                `[filler-continuation] turn=${turn} merged text="${summarizeDebugText(agentText)}" ` +
+                `continuation_bytes=${continuation.audio.length}`
+              );
+            } else {
+              console.log(
+                `[filler-continuation] turn=${turn} no continuation speech — using filler as-is`
+              );
+            }
+          }
+        }
 
         const totalPipelineMs = Math.round(performance.now() - turnPipelineStart);
         console.log(`[turn-timing] turn=${turn} vad_collect=${vadMs}ms stt=${sttMs}ms total_pipeline=${totalPipelineMs}ms threshold=${adaptiveThreshold.thresholdMs}ms`);
@@ -839,6 +962,7 @@ export async function runConversationCall(
         });
         if (shouldStopAfterAgentReply) break;
       } else {
+        channel.off("audio", feedSTT);
         agentText = "";
         console.log(
           `[turn-text] turn=${turn} source=empty-audio chars=0 timedOut=${timedOut} ` +

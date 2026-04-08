@@ -34,13 +34,12 @@ Shapes:
 
 ## Turn-taking rules (most important)
 
-1. Say ONE sentence per turn. Maximum 15 words. No exceptions.
+1. Say ONE or TWO short sentences per turn. Keep it under 25 words — be natural, not robotic.
 2. Only respond to what the agent ALREADY said. Never anticipate future responses.
-3. Never combine greeting + question + thanks in one turn. Pick one.
-4. First turn: introduce yourself and state why you are calling. Nothing else.
-5. Do not thank the agent for information they have not given you yet.
-6. Do not confirm, schedule, cancel, or close until the agent explicitly offers or asks.
-7. Do not pack your entire goal into one message. Let the conversation unfold naturally.
+3. First turn: greet AND state why you are calling, like a real person would. Example: "Hi, my name is Sarah. I'm calling to check on my recent order."
+4. Do not thank the agent for information they have not given you yet.
+5. Do not confirm, schedule, cancel, or close until the agent explicitly offers or asks.
+6. Do not pack your entire goal into one message. Let the conversation unfold naturally.
 
 ## When to use each mode
 
@@ -190,6 +189,84 @@ export class CallerLLM {
     return decision;
   }
 
+  /**
+   * Stream the caller's next utterance, yielding sentence-sized chunks
+   * as they are detected in the LLM token stream.
+   * Returns the full CallerDecision after the stream completes.
+   * Automatically commits the decision to history.
+   */
+  async streamNextUtterance(
+    agentResponse: string | null,
+    transcript: ConversationTurn[],
+    onSentence: (sentence: string) => void,
+  ): Promise<CallerDecision | null> {
+    const prompt = this.buildNextPrompt(agentResponse);
+    const messages = [...this.history, { role: "user" as const, content: prompt }];
+
+    const stream = this.client.messages.stream({
+      model: MODEL,
+      max_tokens: MAX_TOKENS,
+      temperature: 0.4,
+      system: this.systemPrompt,
+      messages,
+    });
+
+    let fullText = "";
+    let extractedSoFar = 0; // chars of extracted text already yielded
+
+    for await (const event of stream) {
+      if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
+        fullText += event.delta.text;
+
+        // Try to extract the "text" field progressively from the JSON
+        const extracted = extractPartialTextField(fullText);
+        if (extracted && extracted.length > extractedSoFar) {
+          const newText = extracted.slice(extractedSoFar);
+          // Find sentence boundaries in the new text
+          const boundary = findLastSentenceBoundary(newText);
+          if (boundary > 0) {
+            const sentence = newText.slice(0, boundary).trim();
+            if (sentence) {
+              onSentence(sentence);
+              extractedSoFar += boundary;
+            }
+          }
+        }
+      }
+    }
+
+    // Flush any remaining text
+    const extracted = extractPartialTextField(fullText);
+    if (extracted && extracted.length > extractedSoFar) {
+      const remaining = extracted.slice(extractedSoFar).trim();
+      if (remaining) {
+        onSentence(remaining);
+      }
+    }
+
+    // Parse the complete response
+    const finalMessage = await stream.finalMessage();
+    const responseText = finalMessage.content[0]?.type === "text"
+      ? finalMessage.content[0].text.trim()
+      : "";
+
+    const lastUserMsg = messages[messages.length - 1]?.content ?? "(none)";
+    const preview = typeof lastUserMsg === "string" ? lastUserMsg.slice(0, 120) : "(structured)";
+    console.log(`[caller-llm] prompt="${preview}" raw_response="${responseText.slice(0, 200)}" history_len=${this.history.length}`);
+
+    const decision = parseCallerDecision(responseText);
+    if (decision && "text" in decision) {
+      console.log(`[caller-llm] parsed mode=${decision.mode} text="${decision.text}"`);
+    } else {
+      console.log(`[caller-llm] parsed mode=${decision?.mode ?? "null"}`);
+    }
+
+    if (decision) {
+      this.commitDecision(agentResponse, decision);
+    }
+    return decision;
+  }
+
   async previewNextUtterance(
     agentResponse: string | null,
     transcript: ConversationTurn[]
@@ -255,12 +332,50 @@ export class CallerLLM {
     return decision;
   }
 
+  /**
+   * Classify agent speech as filler (transitional/holding before a tool result)
+   * or complete (substantive response). Used to detect when an agent says
+   * "Let me check that" before executing a tool call — so Vent can wait
+   * for the actual answer instead of advancing to the next caller turn.
+   */
+  async classifyAgentSpeech(agentText: string): Promise<FillerClassification> {
+    const response = await this.client.messages.create({
+      model: MODEL,
+      max_tokens: 16,
+      temperature: 0,
+      system: `Classify the agent's speech as either "filler" or "complete".
+
+filler = A very short (under 10 words) transitional phrase where the agent says they will do something but has NOT done it yet, and says NOTHING else. The ENTIRE utterance must be a pure holding statement. Examples: "Let me check that for you", "One moment please", "Sure, let me look that up".
+
+complete = everything else, including:
+- Any response that reports a result or outcome (e.g., "I wasn't able to find...", "I don't see...")
+- Any response with two or more sentences
+- Any response that asks the caller a question
+- Any response containing information, instructions, or findings
+- Greetings and farewells
+- Any response that appears truncated or cut off
+
+Default to "complete". Only return "filler" for very short, purely transitional phrases with zero substantive content.
+
+Return exactly one word: filler or complete`,
+      messages: [{ role: "user", content: agentText }],
+    });
+
+    const raw = response.content[0]?.type === "text"
+      ? response.content[0].text.trim().toLowerCase()
+      : "";
+
+    const result: FillerClassification = raw === "filler" ? "filler" : "complete";
+    console.log(`[filler-detect] text="${agentText.slice(0, 80)}" classification=${result}`);
+    return result;
+  }
+
   private buildNextPrompt(agentResponse: string | null): string {
     const isFirstTurn = this.history.length === 0;
     if (isFirstTurn) {
       return agentResponse
-        ? `Your persona and goal:\n${this.callerPrompt}\n\nThe agent just greeted you with: "${agentResponse}"\nRespond naturally.`
-        : `Your persona and goal:\n${this.callerPrompt}\n\nYou are starting the phone call. Say your opening line.`;
+        ? `Your persona and goal:\n${this.callerPrompt}\n\nThe agent just greeted you with: "${agentResponse}"\nRespond with a greeting AND state why you are calling. Do both in one turn.`
+        : `Your persona and goal:\n${this.callerPrompt}\n\nYou are starting the phone call. Greet AND state why you are calling.`;
     }
     if (agentResponse) {
       return agentResponse;
@@ -308,6 +423,8 @@ export type InterruptDecision =
   | { mode: "listen" }
   | { mode: "interrupt"; text: string };
 
+export type FillerClassification = "filler" | "complete";
+
 function parseCallerDecision(raw: string): CallerDecision | null {
   const text = raw.trim();
   if (!text) return null;
@@ -328,16 +445,7 @@ function parseCallerDecision(raw: string): CallerDecision | null {
   const parsed = parseCallerDecisionJson(text);
   if (parsed) return parsed;
 
-  return { mode: "continue", text: truncateToFirstSentence(text) };
-}
-
-/**
- * Truncate to the first sentence to prevent multi-sentence monologues.
- * Splits on sentence-ending punctuation followed by a space or end-of-string.
- */
-function truncateToFirstSentence(text: string): string {
-  const match = text.match(/^(.+?[.!?])(?:\s|$)/);
-  return match ? match[1] : text;
+  return { mode: "continue", text };
 }
 
 function parseCallerDecisionJson(text: string): CallerDecision | null {
@@ -356,7 +464,7 @@ function parseCallerDecisionJson(text: string): CallerDecision | null {
       return { mode: "wait" };
     }
     if ((mode === "continue" || mode === "closing") && spoken) {
-      return { mode, text: truncateToFirstSentence(spoken) };
+      return { mode, text: spoken };
     }
   } catch {
     return null;
@@ -418,4 +526,42 @@ function extractJsonObject(text: string): string | null {
   }
 
   return null;
+}
+
+/**
+ * Extract the "text" field value progressively from partially streamed JSON.
+ * Handles: {"mode":"continue","text":"sentence here."} and variations.
+ */
+function extractPartialTextField(partial: string): string | null {
+  // Find "text" key followed by colon and opening quote
+  const match = partial.match(/"text"\s*:\s*"/);
+  if (!match || match.index === undefined) return null;
+
+  const textStart = match.index + match[0].length;
+  let result = "";
+  let escaped = false;
+  for (let i = textStart; i < partial.length; i++) {
+    if (escaped) {
+      if (partial[i] === "n") result += "\n";
+      else if (partial[i] === "t") result += "\t";
+      else result += partial[i];
+      escaped = false;
+      continue;
+    }
+    if (partial[i] === "\\") { escaped = true; continue; }
+    if (partial[i] === '"') break;
+    result += partial[i];
+  }
+  return result || null;
+}
+
+/**
+ * Find the position just after the last sentence-ending punctuation.
+ * Returns 0 if no boundary found.
+ */
+function findLastSentenceBoundary(text: string): number {
+  const matches = [...text.matchAll(/[.!?]+\s/g)];
+  if (matches.length === 0) return 0;
+  const last = matches[matches.length - 1]!;
+  return last.index! + last[0].length;
 }

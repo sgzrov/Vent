@@ -30,7 +30,28 @@ This will:
 - **Load testing** — ramp, spike, sustained, and soak patterns with auto-detected breaking points
 - **Audio analysis** — echo detection, latency measurement, barge-in handling, silence detection
 
-Supports 6 adapters: WebSocket (`websocket`), LiveKit/WebRTC (`livekit`), Vapi, Retell, ElevenLabs, and Bland.
+## Adapters
+
+Vent supports 6 adapters. Each adapter determines how Vent connects to your agent and what data it can collect.
+
+| Adapter | Local dev | Custom endpoint | Platform-hosted | Observability |
+|---------|-----------|-----------------|-----------------|---------------|
+| `websocket` | Via relay | Via `agent_url` | — | Agent emits `vent:*` events |
+| `livekit` | Agent runs locally in dev mode, connects to LiveKit server | Any LiveKit server URL | LiveKit Cloud | Automatic via Agents SDK (`lk.agent.state`, `lk.transcription`) + `vent:*` enrichment |
+| `vapi` | — | — | Vapi only | Automatic via platform API + WebSocket events |
+| `retell` | — | — | Retell only | Automatic via platform API + WebRTC DataChannel |
+| `elevenlabs` | — | — | ElevenLabs only | Automatic via platform API + WebRTC DataChannel |
+| `bland` | — | — | Bland only | Automatic via platform API + HTTP webhooks |
+
+**Local dev** — test an agent running on your machine. `websocket` uses Vent's relay to bridge the worker to your local agent. `livekit` agents run locally in [dev mode](https://docs.livekit.io/agents/server/startup-modes/) and connect to a LiveKit server; Vent joins the same room — no relay needed.
+
+**Custom endpoint** — test an agent at a specific URL you control (e.g. a staging server). Only `websocket` and `livekit` support this.
+
+**Platform-hosted** — test agents deployed on a voice AI platform. Vapi, Retell, ElevenLabs, and Bland agents always run on the platform's infrastructure. You configure the agent there, Vent calls it and observes the results.
+
+**Observability** — platform adapters get component latency, tool calls, transcripts, cost, and metadata automatically. The `websocket` adapter gets the same data when the coding agent instruments the user's agent with `vent:*` events (documented in the SKILL file). The `livekit` adapter gets automatic observability from the Agents SDK plus optional `vent:*` enrichment via the `@vent-hq/livekit` helper.
+
+> **LiveKit adapter requirement:** The `livekit` adapter requires agents built with the [LiveKit Agents SDK](https://docs.livekit.io/agents/). It depends on Agents SDK signals (`lk.agent.state`, `lk.transcription`) for readiness detection, turn timing, and component latency. Custom LiveKit participants not using the Agents SDK should use the `websocket` adapter with a relay instead.
 
 ## Result Normalization
 
@@ -197,6 +218,12 @@ Production database migrations run inside Fly as part of the API deploy release 
 ## Exit Codes
 
 0=pass, 1=fail, 2=error
+
+## Packages
+
+| Package | Description |
+|---------|-------------|
+| [`@vent-hq/livekit`](packages/livekit/) | Helper for forwarding LiveKit Agents SDK observability into Vent |
 
 ## License
 

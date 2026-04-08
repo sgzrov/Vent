@@ -114,10 +114,14 @@ export class WsAudioChannel extends BaseAudioChannel {
   /** VAD remains authority for turn endings. Agents can opt in via speech-update frames. */
   hasPlatformEndOfTurn = false;
 
+  protected override outputSampleRate: number;
+  protected override pacingIntervalMs = 10; // 2x real-time (Pipecat: chunk_duration / 2)
+
   constructor(config: WsAudioChannelConfig) {
     super();
     this.config = config;
     this.targetSampleRate = config.sampleRate ?? INTERNAL_SAMPLE_RATE;
+    this.outputSampleRate = this.targetSampleRate;
     this.shouldNormalize = config.normalizeAudio ?? false;
     this.silenceThreshold = config.silenceThreshold ?? DEFAULT_SILENCE_THRESHOLD;
     this.maxInternalSilenceFrames = config.maxInternalSilenceFrames ?? DEFAULT_MAX_INTERNAL_SILENCE_FRAMES;
@@ -139,6 +143,7 @@ export class WsAudioChannel extends BaseAudioChannel {
       ws.on("open", () => {
         this.ws = ws;
         this.connectTimestamp = Date.now();
+        this._connectTimestampMs = this.connectTimestamp;
         this._stats.connectLatencyMs = Date.now() - connectStart;
         this.toolCalls = [];
         this.componentTimings = [];
@@ -185,48 +190,38 @@ export class WsAudioChannel extends BaseAudioChannel {
     });
   }
 
-  async sendAudio(pcm: Buffer, opts?: SendAudioOptions): Promise<void> {
+  protected async writeAudioFrame(samples: Int16Array, sampleRate: number): Promise<void> {
+    if (!this.ws) return;
+    const buf = Buffer.from(samples.buffer, samples.byteOffset, samples.byteLength);
+    this.ws.send(buf);
+  }
+
+  override sendAudio(pcm: Buffer, opts?: SendAudioOptions): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       throw new Error("WebSocket not connected");
     }
-    this._stats.bytesSent += pcm.length;
-    // Capture at 24kHz for recording before any resampling
-    this.captureCallerAudio(pcm, Date.now() - this.connectTimestamp);
-
-    // Pause comfort noise while sending speech
-    this.stopComfortNoise();
 
     const raw = opts?.raw ?? false;
 
-    // 1. Resample 24kHz → targetRate (no-op if same rate)
-    let outbound = this.targetSampleRate !== INTERNAL_SAMPLE_RATE
-      ? resample(pcm, INTERNAL_SAMPLE_RATE, this.targetSampleRate)
-      : pcm;
+    if (raw) {
+      // Raw path: bypass buffer, send directly (timing matters for interrupts/noise)
+      this._stats.bytesSent += pcm.length;
+      this.captureCallerAudio(pcm, Date.now() - this.connectTimestamp);
+      const outbound = this.targetSampleRate !== INTERNAL_SAMPLE_RATE
+        ? resample(pcm, INTERNAL_SAMPLE_RATE, this.targetSampleRate)
+        : pcm;
+      this.ws.send(outbound);
+      return;
+    }
 
-    // 2. Normalize (opt-in, skip if raw)
-    if (!raw && this.shouldNormalize) {
+    // Normal path: apply optional normalization, then delegate to base class
+    // (base class handles resampling, chunking, pacing via writeAudioFrame)
+    this.stopComfortNoise();
+    let outbound = pcm;
+    if (this.shouldNormalize) {
       outbound = this.normalizeCallerPcm(outbound);
     }
-
-    // 3. Pace at real-time speed (skip if raw — timing matters for interrupts/noise)
-    if (!raw) {
-      const fb = this.frameBytes;
-      for (let i = 0; i < outbound.length; i += fb) {
-        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) break;
-        const end = Math.min(i + fb, outbound.length);
-        this.ws.send(outbound.subarray(i, end));
-        if (i + fb < outbound.length) {
-          await sleep(COMFORT_NOISE_INTERVAL_MS);
-        }
-      }
-    } else {
-      this.ws.send(outbound);
-    }
-
-    // Resume comfort noise after speech
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.startComfortNoise();
-    }
+    super.sendAudio(outbound, opts);
   }
 
   async disconnect(): Promise<void> {
@@ -510,10 +505,6 @@ export class WsAudioChannel extends BaseAudioChannel {
       provider_warnings: [warning],
     });
   }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function normalizeWsMetadata(payload: Record<string, unknown>): Partial<CallMetadata> {
