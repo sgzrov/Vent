@@ -36,7 +36,7 @@
     "url": "git+https://github.com/vent-hq/vent.git",
     "directory": "packages/livekit"
   },
-  "homepage": "https://ventmcp.dev",
+  "homepage": "https://venthq.dev",
   "peerDependencies": {
     "@livekit/agents": "^1.0.0",
     "@livekit/rtc-node": "^0.13.0"
