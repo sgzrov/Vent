@@ -142,7 +142,7 @@ const WS_CONNECT_TIMEOUT_MS = 30_000;
 
 export class VapiAudioChannel extends BaseAudioChannel {
   protected override outputSampleRate = 16000;
-  protected override pacingIntervalMs = 20;
+  protected override pacingIntervalMs = 10; // 2x real-time (Pipecat: chunk_duration / 2)
 
   private config: VapiAudioChannelConfig;
   private ws: WebSocket | null = null;

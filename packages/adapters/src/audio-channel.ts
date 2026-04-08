@@ -194,7 +194,8 @@ export abstract class BaseAudioChannel extends EventEmitter implements AudioChan
   protected frameDurationMs = 20;
 
   /** Pacing interval between frames (ms). 0 = no pacing (WebRTC backpressure).
-   *  Set to frameDurationMs for WebSocket adapters (simulated audio clock). */
+   *  WebSocket adapters set to frameDurationMs/2 for 2x real-time delivery
+   *  (Pipecat pattern: audio arrives ahead of playback to prevent underruns). */
   protected pacingIntervalMs = 0;
 
   /** Monotonic clock for self-correcting pacing (Pipecat _write_audio_sleep). */

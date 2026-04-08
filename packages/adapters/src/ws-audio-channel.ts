@@ -115,7 +115,7 @@ export class WsAudioChannel extends BaseAudioChannel {
   hasPlatformEndOfTurn = false;
 
   protected override outputSampleRate: number;
-  protected override pacingIntervalMs = 20;
+  protected override pacingIntervalMs = 10; // 2x real-time (Pipecat: chunk_duration / 2)
 
   constructor(config: WsAudioChannelConfig) {
     super();

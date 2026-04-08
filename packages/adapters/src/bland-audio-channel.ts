@@ -126,7 +126,7 @@ export interface BlandCallResponse {
 
 export class BlandAudioChannel extends BaseAudioChannel {
   protected override outputSampleRate = 8000;
-  protected override pacingIntervalMs = 20;
+  protected override pacingIntervalMs = 10; // 2x real-time (Pipecat: chunk_duration / 2)
 
   private config: BlandAudioChannelConfig;
   private sharedServer: SharedSipServer | null = null;
