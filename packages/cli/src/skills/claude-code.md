@@ -312,6 +312,7 @@ LiveKit:
 }
 Credentials auto-resolve from `.env.local`, `.env`, or shell env: LIVEKIT_API_KEY, LIVEKIT_API_SECRET, LIVEKIT_URL. Only add these to the JSON if those env vars are not already available.
 livekit_agent_name is optional -- only needed if the agent registers with an explicit agent_name in WorkerOptions. Omit for automatic dispatch.
+The livekit adapter requires the LiveKit Agents SDK. It depends on Agents SDK signals (lk.agent.state, lk.transcription) for readiness detection, turn timing, and component latency. Custom LiveKit participants not using the Agents SDK should use the websocket adapter with a relay instead.
 max_concurrency: Free/Build=5, Ship=20, Scale=50+. Ask the user which tier they're on. If unknown, default to 5.
 </config_adapter_rules>
 </config_connection>
