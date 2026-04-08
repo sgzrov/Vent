@@ -83,6 +83,8 @@ export class ElevenLabsAudioChannel extends BaseAudioChannel {
   private realtimeProviderWarnings: ProviderWarning[] = [];
   private realtimeProviderMetadata: Record<string, unknown[]> = {};
 
+  protected override outputSampleRate = ElevenLabsAudioChannel.LIVEKIT_SAMPLE_RATE;
+
   constructor(config: ElevenLabsAudioChannelConfig) {
     super();
     this.config = config;
@@ -132,6 +134,7 @@ export class ElevenLabsAudioChannel extends BaseAudioChannel {
     });
     this.collecting = true;
     this.connectTimestamp = Date.now();
+    this._connectTimestampMs = this.connectTimestamp;
     this.agentTextBuffer = "";
     this.realtimeUserTranscripts = [];
     this.realtimeToolCalls = [];
@@ -273,6 +276,7 @@ export class ElevenLabsAudioChannel extends BaseAudioChannel {
 
   stopComfortNoise(): void {
     this.comfortNoiseActive = false;
+    this.clearAudioBuffer();
     if (this.audioSource) {
       this.audioSource.clearQueue();
     }
@@ -292,58 +296,42 @@ export class ElevenLabsAudioChannel extends BaseAudioChannel {
 
   override sendAudio(pcm: Buffer, opts?: SendAudioOptions): void {
     if (!this.audioSource || !this.collecting) return;
-    const raw = opts?.raw ?? false;
 
     if (this.comfortNoiseActive) {
       this.stopComfortNoise();
-    } else if (raw) {
-      this.audioSource.clearQueue();
     }
 
-    this._stats.bytesSent += pcm.length;
-    this.captureCallerAudio(pcm, Date.now() - this.connectTimestamp);
+    if (opts?.raw) {
+      // Raw sends (interrupts) bypass the buffer for low latency
+      this.audioSource.clearQueue();
+      this._stats.bytesSent += pcm.length;
+      this.captureCallerAudio(pcm, Date.now() - this.connectTimestamp);
 
-    const sampleRate = ElevenLabsAudioChannel.LIVEKIT_SAMPLE_RATE;
-    const resampled = resample(pcm, 24000, sampleRate);
-    const samples = new Int16Array(
-      resampled.buffer,
-      resampled.byteOffset,
-      resampled.length / 2
-    );
+      const sampleRate = ElevenLabsAudioChannel.LIVEKIT_SAMPLE_RATE;
+      const resampled = resample(pcm, 24000, sampleRate);
+      const samples = new Int16Array(resampled.buffer, resampled.byteOffset, resampled.length / 2);
+      const audioSource = this.audioSource;
+      const chunkSamples = Math.floor(sampleRate * 0.02);
 
-    const audioSource = this.audioSource;
-    const chunkSamples = Math.floor(sampleRate * 0.02); // 20ms = 960 samples at 48kHz
-
-    (async () => {
-      try {
-        for (let offset = 0; offset < samples.length; offset += chunkSamples) {
+      (async () => {
+        try {
+          for (let offset = 0; offset < samples.length; offset += chunkSamples) {
+            if (!this.collecting || !this.audioSource) return;
+            const end = Math.min(offset + chunkSamples, samples.length);
+            const chunk = new Int16Array(samples.subarray(offset, end));
+            await audioSource.captureFrame(new AudioFrame(chunk, sampleRate, 1, chunk.length));
+          }
           if (!this.collecting || !this.audioSource) return;
-          const end = Math.min(offset + chunkSamples, samples.length);
-          // CRITICAL: copy chunk into its own ArrayBuffer. AudioFrame.protoInfo()
-          // uses the ENTIRE underlying ArrayBuffer, not the subarray view.
-          const chunk = new Int16Array(samples.subarray(offset, end));
-          const frame = new AudioFrame(chunk, sampleRate, 1, chunk.length);
-          await audioSource.captureFrame(frame);
-        }
+          const silenceSamples = Math.floor(sampleRate * (RAW_INTERRUPT_TRAILING_SILENCE_MS / 1000));
+          const silence = new Int16Array(silenceSamples);
+          await audioSource.captureFrame(new AudioFrame(silence, sampleRate, 1, silenceSamples));
+        } catch { /* AudioSource closed */ }
+      })();
+      return;
+    }
 
-        // Keep a short silence tail on raw interrupts so the agent still sees
-        // end-of-user-turn without the full normal-turn delay.
-        if (!this.collecting || !this.audioSource) return;
-        const silenceSamples = Math.floor(
-          sampleRate * ((raw ? RAW_INTERRUPT_TRAILING_SILENCE_MS : 500) / 1000)
-        );
-        const silence = new Int16Array(silenceSamples);
-        const silenceFrame = new AudioFrame(silence, sampleRate, 1, silenceSamples);
-        await audioSource.captureFrame(silenceFrame);
-
-        // Resume comfort noise between turns
-        if (this.collecting && this.audioSource) {
-          this.startComfortNoise();
-        }
-      } catch {
-        // AudioSource closed during send — safe to ignore
-      }
-    })();
+    // Normal sends go through the base class buffer
+    super.sendAudio(pcm, opts);
   }
 
   async disconnect(): Promise<void> {

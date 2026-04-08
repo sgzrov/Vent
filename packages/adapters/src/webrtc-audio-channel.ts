@@ -250,6 +250,7 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
     super();
     this.config = config;
     this.livekitSampleRate = config.livekitSampleRate ?? 48000;
+    this.outputSampleRate = this.livekitSampleRate;
     this.enableRecordingCapture();
   }
 
@@ -312,6 +313,7 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
     });
     this.collecting = true;
     this.connectTimestamp = Date.now();
+    this._connectTimestampMs = this.connectTimestamp;
     this.toolCalls = [];
     this.turnTimings = [];
     this.currentTurnIndex = -1;
@@ -564,7 +566,7 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
 
   stopComfortNoise(): void {
     this.comfortNoiseActive = false;
-    // Clear the AudioSource queue so comfort noise doesn't bleed into real audio
+    this.clearAudioBuffer();
     if (this.audioSource) {
       this.audioSource.clearQueue();
     }
@@ -581,82 +583,48 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
   }
 
   override sendAudio(pcm: Buffer, opts?: SendAudioOptions): void {
-    if (!this.audioSource || !this.collecting) {
-      return;
-    }
-    const raw = opts?.raw ?? false;
+    if (!this.audioSource || !this.collecting) return;
 
-    // Stop comfort noise before sending real speech
     if (this.comfortNoiseActive) {
       this.stopComfortNoise();
-    } else if (raw) {
-      // Flush any queued frames so interrupts are not stuck behind stale audio.
-      this.audioSource.clearQueue();
     }
 
-    this._stats.bytesSent += pcm.length;
-    this.captureCallerAudio(pcm, Date.now() - this.connectTimestamp);
-
-    // Track turn timing (same pattern as Vapi adapter)
+    // Track turn timing
     this.currentTurnIndex++;
     this.turnTimings[this.currentTurnIndex] = { audioSentAt: Date.now() };
     this.lastAgentState = null;
 
-    // Resample 24kHz → LiveKit sample rate (48kHz for WebRTC/Opus)
-    const resampled = resample(pcm, 24000, this.livekitSampleRate);
-    const samples = new Int16Array(
-      resampled.buffer,
-      resampled.byteOffset,
-      resampled.length / 2
-    );
+    if (opts?.raw) {
+      // Raw sends (interrupts) bypass the buffer for low latency
+      this.audioSource.clearQueue();
+      this._stats.bytesSent += pcm.length;
+      this.captureCallerAudio(pcm, Date.now() - this.connectTimestamp);
 
-    // Fire-and-forget: send frames in background so collectUntilEndOfTurn can start
-    // immediately. captureFrame has backpressure (50ms internal buffer) so frames
-    // are paced at real-time rate automatically.
-    const audioSource = this.audioSource;
-    const sampleRate = this.livekitSampleRate;
-    const chunkSamples = Math.floor(sampleRate * 0.02); // 20ms = 960 samples at 48kHz
+      const sampleRate = this.livekitSampleRate;
+      const resampled = resample(pcm, 24000, sampleRate);
+      const samples = new Int16Array(resampled.buffer, resampled.byteOffset, resampled.length / 2);
+      const audioSource = this.audioSource;
+      const chunkSamples = Math.floor(sampleRate * 0.02);
 
-    (async () => {
-      try {
-        for (let offset = 0; offset < samples.length; offset += chunkSamples) {
+      (async () => {
+        try {
+          for (let offset = 0; offset < samples.length; offset += chunkSamples) {
+            if (!this.collecting || !this.audioSource) return;
+            const end = Math.min(offset + chunkSamples, samples.length);
+            const chunk = new Int16Array(samples.subarray(offset, end));
+            await audioSource.captureFrame(new AudioFrame(chunk, sampleRate, 1, chunk.length));
+          }
           if (!this.collecting || !this.audioSource) return;
-          const end = Math.min(offset + chunkSamples, samples.length);
-          // CRITICAL: copy chunk into its own ArrayBuffer. AudioFrame.protoInfo()
-          // uses `new Uint8Array(this.data.buffer)` which takes the ENTIRE underlying
-          // ArrayBuffer — not the subarray view. Without copying, the FFI layer
-          // receives wrong data and the agent hears garbage.
-          const chunk = new Int16Array(samples.subarray(offset, end));
-          const frame = new AudioFrame(chunk, sampleRate, 1, chunk.length);
-          await this.audioSource.captureFrame(frame);
-        }
+          const silenceSamples = Math.floor(sampleRate * (RAW_INTERRUPT_TRAILING_SILENCE_MS / 1000));
+          const silence = new Int16Array(silenceSamples);
+          await audioSource.captureFrame(new AudioFrame(silence, sampleRate, 1, silenceSamples));
+        } catch { /* AudioSource closed */ }
+      })();
+      return;
+    }
 
-        // Send a shorter silence tail for raw interrupt audio so the agent can
-        // detect end-of-user-turn without adding the full normal-turn delay.
-        if (!this.collecting || !this.audioSource) return;
-        const silenceSamples = Math.floor(
-          sampleRate * ((raw ? RAW_INTERRUPT_TRAILING_SILENCE_MS : 500) / 1000)
-        );
-        const silence = new Int16Array(silenceSamples);
-        const silenceFrame = new AudioFrame(silence, sampleRate, 1, silenceSamples);
-        await this.audioSource.captureFrame(silenceFrame);
-
-        console.log(
-          `[livekit] sendAudio complete: ${Math.ceil(samples.length / chunkSamples)} frames, ` +
-          `${pcm.length} source bytes raw=${raw}`
-        );
-
-        // Resume comfort noise after speech ends. A real caller's mic
-        // produces constant ambient noise — this keeps the agent's
-        // VAD/STT pipeline warm between turns so the next utterance
-        // isn't clipped. (See LiveKit agents#3261)
-        if (this.collecting && this.audioSource) {
-          this.startComfortNoise();
-        }
-      } catch {
-        // AudioSource was closed during send (disconnect called mid-turn) — safe to ignore
-      }
-    })();
+    // Normal sends go through the base class buffer
+    super.sendAudio(pcm, opts);
   }
 
   async disconnect(): Promise<void> {
