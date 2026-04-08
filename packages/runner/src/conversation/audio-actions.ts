@@ -96,9 +96,9 @@ async function executeInterrupt(
   const preInterruptAudio = await collectForDurationSafe(ctx.channel, 1000);
   const preText = await transcribeAudio(preInterruptAudio);
 
-  // Send interrupt
+  // Send interrupt — clear stale audio first, then send through buffer
   const interruptTime = Date.now();
-  await ctx.channel.sendAudio(interruptAudio, { raw: true });
+  ctx.channel.sendAudio(interruptAudio);
 
   // Collect post-interrupt response
   ctx.transcriber.resetForNextTurn();
@@ -165,8 +165,8 @@ async function executeInjectNoise(
     : generateBabbleNoise;
   const noise = noiseGenerator(noiseDurationMs);
 
-  // Send noise while agent is speaking (raw: skip send guards)
-  await ctx.channel.sendAudio(noise, { raw: true });
+  // Send noise while agent is speaking
+  ctx.channel.sendAudio(noise);
 
   // Collect rest of agent response
   ctx.transcriber.resetForNextTurn();

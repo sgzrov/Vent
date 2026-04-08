@@ -567,16 +567,15 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
   stopComfortNoise(): void {
     this.comfortNoiseActive = false;
     this.clearAudioBuffer();
-    if (this.audioSource) {
-      this.audioSource.clearQueue();
-    }
+  }
+
+  protected override clearTransportQueue(): void {
+    this.audioSource?.clearQueue();
   }
 
   /** Write a single 20ms audio frame to LiveKit's AudioSource. */
   protected async writeAudioFrame(samples: Int16Array, sampleRate: number): Promise<void> {
     if (!this.audioSource || !this.collecting) return;
-    // CRITICAL: copy into standalone ArrayBuffer. AudioFrame.protoInfo()
-    // uses the ENTIRE underlying ArrayBuffer, not the subarray view.
     const copied = new Int16Array(samples);
     const frame = new AudioFrame(copied, sampleRate, 1, copied.length);
     await this.audioSource.captureFrame(frame);
@@ -584,46 +583,13 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
 
   override sendAudio(pcm: Buffer, opts?: SendAudioOptions): void {
     if (!this.audioSource || !this.collecting) return;
-
-    if (this.comfortNoiseActive) {
-      this.stopComfortNoise();
-    }
+    if (this.comfortNoiseActive) this.stopComfortNoise();
 
     // Track turn timing
     this.currentTurnIndex++;
     this.turnTimings[this.currentTurnIndex] = { audioSentAt: Date.now() };
     this.lastAgentState = null;
 
-    if (opts?.raw) {
-      // Raw sends (interrupts) bypass the buffer for low latency
-      this.audioSource.clearQueue();
-      this._stats.bytesSent += pcm.length;
-      this.captureCallerAudio(pcm, Date.now() - this.connectTimestamp);
-
-      const sampleRate = this.livekitSampleRate;
-      const resampled = resample(pcm, 24000, sampleRate);
-      const samples = new Int16Array(resampled.buffer, resampled.byteOffset, resampled.length / 2);
-      const audioSource = this.audioSource;
-      const chunkSamples = Math.floor(sampleRate * 0.02);
-
-      (async () => {
-        try {
-          for (let offset = 0; offset < samples.length; offset += chunkSamples) {
-            if (!this.collecting || !this.audioSource) return;
-            const end = Math.min(offset + chunkSamples, samples.length);
-            const chunk = new Int16Array(samples.subarray(offset, end));
-            await audioSource.captureFrame(new AudioFrame(chunk, sampleRate, 1, chunk.length));
-          }
-          if (!this.collecting || !this.audioSource) return;
-          const silenceSamples = Math.floor(sampleRate * (RAW_INTERRUPT_TRAILING_SILENCE_MS / 1000));
-          const silence = new Int16Array(silenceSamples);
-          await audioSource.captureFrame(new AudioFrame(silence, sampleRate, 1, silenceSamples));
-        } catch { /* AudioSource closed */ }
-      })();
-      return;
-    }
-
-    // Normal sends go through the base class buffer
     super.sendAudio(pcm, opts);
   }
 

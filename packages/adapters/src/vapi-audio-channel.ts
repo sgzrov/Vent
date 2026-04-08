@@ -319,28 +319,10 @@ export class VapiAudioChannel extends BaseAudioChannel {
       `pcm24kBytes=${pcm.length} raw=${opts?.raw === true}`
     );
 
-    const raw = opts?.raw ?? false;
-
-    if (raw) {
-      // Raw send path: bypass buffer for interrupts — send directly over WS
-      this._stats.bytesSent += pcm.length;
-      this.captureCallerAudio(pcm, Date.now() - this.connectTimestamp);
-      const resampled = resample(pcm, 24000, 16000);
-      console.log(
-        `    [vapi-send] turn=${this.currentTurnIndex} raw_send t=${this.relativeNowMs()}ms ` +
-        `pcm16kBytes=${resampled.length}`
-      );
-      this.ws.send(resampled);
-      return;
-    }
-
-    // Normal path: normalize PCM to trim/collapse silence, then go through
-    // the base class buffer which handles resampling (24kHz→16kHz) and pacing.
+    // All audio goes through the base class buffer (Pipecat pattern).
+    // For interrupts: caller clears buffer first, then sends normally.
     const normalized = normalizeCallerPcmForVapi(pcm, this.currentTurnIndex, this.relativeNowMs.bind(this));
     super.sendAudio(normalized);
-
-    // Resume comfort noise after speech — keeps WebSocket alive while agent processes
-    this.startComfortNoise();
   }
 
   startComfortNoise(): void {

@@ -287,12 +287,18 @@ export abstract class BaseAudioChannel extends EventEmitter implements AudioChan
     }
   }
 
-  /** Clear the audio buffer and queue (for interruptions). */
+  /** Clear both the audio buffer/queue AND the transport's internal queue.
+   *  Call on interruption to stop all pending audio immediately. */
   protected clearAudioBuffer(): void {
     this._audioBuffer = new Int16Array(0);
     this._audioQueue = [];
-    this._nextSendTime = 0; // reset pacing clock
+    this._nextSendTime = 0;
+    this.clearTransportQueue();
   }
+
+  /** Clear the transport's internal queue (e.g. LiveKit AudioSource, Twilio buffer).
+   *  Override in subclass. Base implementation is a no-op. */
+  protected clearTransportQueue(): void {}
 
   private _startAudioDrain(): void {
     if (this._audioDrainRunning) return;

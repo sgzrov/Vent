@@ -710,7 +710,7 @@ export async function runConversationCall(
         const interruptAudio = await plannedInterrupt.audioPromise;
         const interruptTime = Date.now();
         sendTime = Date.now();
-        await channel.sendAudio(interruptAudio, { raw: true });
+        channel.sendAudio(interruptAudio);
 
         const interruptCallerTimestamp = performance.now() - startTime;
         const interruptAudioDurationMs = Math.round((interruptAudio.length / 2 / 24000) * 1000);

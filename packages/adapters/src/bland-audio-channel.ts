@@ -233,38 +233,20 @@ export class BlandAudioChannel extends BaseAudioChannel {
     }));
   }
 
+  /** Send Twilio "clear" to flush stale audio from the SIP buffer. */
+  protected override clearTransportQueue(): void {
+    if (this.ws && this.streamSid) {
+      this.ws.send(JSON.stringify({ event: "clear", streamSid: this.streamSid }));
+    }
+  }
+
   override sendAudio(pcm: Buffer, opts?: SendAudioOptions): void {
     if (!this.ws || !this.streamSid) {
       throw new Error("Bland SIP channel not connected");
     }
-
-    const raw = opts?.raw ?? false;
-
-    if (raw) {
-      // Raw path: bypass buffer, send directly (timing matters for interrupts/noise)
-      // Clear stale audio on interrupts
-      this.ws.send(JSON.stringify({ event: "clear", streamSid: this.streamSid }));
-      this._stats.bytesSent += pcm.length;
-      this.captureCallerAudio(pcm, Date.now() - (this.callStartedAt ?? Date.now()));
-      const pcm8k = resample(pcm, 24000, 8000);
-      const mulaw = pcmToMulaw(pcm8k);
-
-      const CHUNK_SIZE = 160; // 20ms at 8kHz mulaw
-      for (let offset = 0; offset < mulaw.length; offset += CHUNK_SIZE) {
-        const chunk = mulaw.subarray(offset, Math.min(offset + CHUNK_SIZE, mulaw.length));
-        this.ws.send(
-          JSON.stringify({
-            event: "media",
-            streamSid: this.streamSid,
-            media: { payload: chunk.toString("base64") },
-          }),
-        );
-      }
-      return;
-    }
-
-    // Normal path: base class handles resampling 24k→8k, chunking, pacing.
-    // writeAudioFrame handles mulaw encoding + JSON serialization.
+    // All audio goes through the base class buffer (Pipecat pattern).
+    // For interrupts: caller clears buffer first (clearAudioBuffer → clearTransportQueue
+    // sends Twilio "clear"), then sends normally.
     this.stopComfortNoise();
     super.sendAudio(pcm, opts);
   }
