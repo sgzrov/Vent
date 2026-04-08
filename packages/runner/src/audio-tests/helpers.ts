@@ -45,6 +45,7 @@ export async function collectUntilEndOfTurn(
   const silenceThresholdMs = opts.silenceThresholdMs ?? 800;
   const debugLabel = opts.debugLabel ?? "collect";
   const platformDrainMs = opts.preferPlatformEOT ? (channel.platformEndOfTurnDrainMs ?? 0) : 0;
+  const platformSettleMs = opts.preferPlatformEOT ? (channel.platformEndOfTurnSettleMs ?? 500) : 500;
   const postToolCallContinuationMs = channel.postToolCallContinuationMs ?? 0;
   const postVadContinuationMs = channel.postVadContinuationMs ?? 0;
   const audibleDrainRmsThreshold = 150;
@@ -93,6 +94,8 @@ export async function collectUntilEndOfTurn(
       let toolCallInProgress = false;
       let lastToolCallCompletedAt: number | null = null;
       let platformSpeechStartedAt: number | null = null;
+      /** True when platform confirmed agent silence and no platformSpeechStart has fired since. */
+      let platformConfirmedSilent = false;
 
       const clearDeferredEndOfTurn = () => {
         if (!vadDeferTimer) return;
@@ -188,7 +191,7 @@ export async function collectUntilEndOfTurn(
         lastChunkAt = now;
         if (rms > audibleDrainRmsThreshold) {
           lastAudibleAudioAt = now;
-          if (vadDeferTimer) {
+          if (vadDeferTimer && !platformConfirmedSilent) {
             console.log(`    [vad] Audible audio arrived during continuation window — extending turn`);
             clearDeferredEndOfTurn();
             clearPlatformResolve();
@@ -197,7 +200,7 @@ export async function collectUntilEndOfTurn(
             platformEOTFired = false;
             vad.reset();
           }
-          if (platformDrainTimer) {
+          if (platformDrainTimer && !platformConfirmedSilent) {
             console.log(`    [vad] Audible audio arrived during drain window — extending turn`);
             schedulePlatformDrain(platformDrainReason || "end_of_turn confirmed", platformDrainMs);
           }
@@ -225,7 +228,6 @@ export async function collectUntilEndOfTurn(
             console.log(`    [collect:${debugLabel}] speech_onset rms=${Math.round(rms)}`);
           }
           speechStartedAt = now;
-          platformSpeechStartedAt = now;
           if (silenceStartedAt !== null) {
             const silenceDurationMs = now - silenceStartedAt;
             maxInternalSilenceMs = Math.max(maxInternalSilenceMs, silenceDurationMs);
@@ -234,7 +236,9 @@ export async function collectUntilEndOfTurn(
 
           // VAD detected new speech after it already fired end_of_turn —
           // the agent resumed speaking. Cancel the deferred resolve.
-          if (vadEOTFired || platformEOTFired) {
+          // But if the platform confirmed silence, trust it over VAD fluctuations —
+          // only onPlatformSpeechStart should override platform EOT.
+          if ((vadEOTFired || platformEOTFired) && !platformConfirmedSilent) {
             clearDeferredEndOfTurn();
             clearPlatformResolve();
             clearPlatformDrain();
@@ -280,8 +284,6 @@ export async function collectUntilEndOfTurn(
               }, postVadContinuationMs);
             }
           } else if (opts.preferPlatformEOT && !platformEOTFired) {
-            // VAD says done, but platform hasn't confirmed — defer for up to 3s.
-            // If the agent resumes speaking, the speech detection above cancels this.
             if (!vadDeferTimer) {
               vadEOTFired = true;
               console.log(`    [vad] end_of_turn detected — waiting up to 3000ms for platformEndOfTurn`);
@@ -292,7 +294,7 @@ export async function collectUntilEndOfTurn(
                 resolve();
               }, 3000);
             }
-          } else {
+          } else if (!platformDrainTimer) {
             resolveAfterPlatformDrain("end_of_turn detected");
           }
         }
@@ -300,6 +302,7 @@ export async function collectUntilEndOfTurn(
 
       const onPlatformSpeechStart = () => {
         platformSpeechStartedAt = Date.now();
+        platformConfirmedSilent = false;
         if (!vadDeferTimer && !platformDrainTimer && !platformEOTResolveTimer && !vadEOTFired && !platformEOTFired) {
           return;
         }
@@ -351,26 +354,25 @@ export async function collectUntilEndOfTurn(
       const onPlatformEOT = () => {
         if (!opts.preferPlatformEOT) return;
         platformEOTFired = true;
+        platformConfirmedSilent = true;
         console.log(`    [vad] platformEndOfTurn fired vadEOTFired=${vadEOTFired} toolCallInProgress=${toolCallInProgress}`);
         if (toolCallInProgress) {
           console.log(`    [vad] platformEndOfTurn ignored while tool call is active`);
           return;
         }
+        // Clear the 3s VAD defer timer if VAD already fired — platform has confirmed.
         if (vadEOTFired) {
-          // VAD already fired — platform confirmed, resolve once playback drains.
           clearDeferredEndOfTurn();
-          clearPlatformResolve();
-          resolveAfterPlatformDrain("platformEndOfTurn confirmed end_of_turn");
-          return;
         }
-        if (speechOnsetAt !== null && !platformEOTResolveTimer) {
-          // Platform confirmed the agent stopped before VAD declared end_of_turn.
-          // Give a short grace period for any trailing chunk/VAD update, then resolve.
-          console.log(`    [vad] platformEndOfTurn arrived before VAD end_of_turn — waiting briefly for trailing audio`);
+        // Always use settle timer regardless of vadEOTFired. VAD end_of_turn can
+        // trigger on brief TTS gaps between sentences — not true end of response.
+        // The settle window lets agent_start_talking cancel via onPlatformSpeechStart.
+        if (!platformEOTResolveTimer) {
+          console.log(`    [vad] platformEndOfTurn — waiting ${platformSettleMs}ms settle (vadEOTFired=${vadEOTFired})`);
           platformEOTResolveTimer = setTimeout(() => {
             platformEOTResolveTimer = null;
-            resolveAfterPlatformDrain("platformEndOfTurn after speech");
-          }, 500);
+            resolveAfterPlatformDrain("platformEndOfTurn after settle");
+          }, platformSettleMs);
         }
       };
 

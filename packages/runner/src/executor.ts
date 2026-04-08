@@ -65,6 +65,33 @@ function usesVentOwnedRecording(adapter: AudioChannelConfig["adapter"]): boolean
   return adapter === "livekit" || adapter === "websocket";
 }
 
+async function reuploadPlatformRecording(
+  platformUrl: string,
+  result: ConversationCallResult,
+  runId: string,
+): Promise<void> {
+  const storage = getStorageClient();
+  if (!storage) return;
+
+  const res = await fetch(platformUrl);
+  if (!res.ok || !res.body) return;
+
+  const contentType = res.headers.get("content-type") ?? "audio/wav";
+  const ext = contentType.includes("mp3") ? "mp3" : contentType.includes("ogg") ? "ogg" : "wav";
+  const baseName = slugifyRecordingLabel(result.name ?? result.caller_prompt.slice(0, 48));
+  const key = `recordings/${runId}/${baseName}-${randomUUID()}.${ext}`;
+
+  const buf = Buffer.from(await res.arrayBuffer());
+  await storage.upload(key, buf, contentType);
+
+  const recordingUrl = await buildRecordingUrl(key, storage);
+  result.call_metadata = {
+    platform: result.call_metadata!.platform,
+    ...result.call_metadata,
+    recording_url: recordingUrl,
+  };
+}
+
 async function attachRecordingUrl(
   result: ConversationCallResult,
   channel: ReturnType<typeof createAudioChannel>,
@@ -75,6 +102,13 @@ async function attachRecordingUrl(
   if (result.call_metadata?.recording_url) {
     await activeUpload?.abort().catch(() => {});
     await channel.discardCallRecording?.().catch(() => {});
+    if (runId) {
+      try {
+        await reuploadPlatformRecording(result.call_metadata.recording_url, result, runId);
+      } catch (err) {
+        console.warn(`reuploadPlatformRecording failed: ${(err as Error).message}`);
+      }
+    }
     return;
   }
   if (!runId) {

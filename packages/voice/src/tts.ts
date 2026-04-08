@@ -143,6 +143,40 @@ export class TTSSession {
   }
 
   /**
+   * Start a streaming TTS session. Audio listener is set up BEFORE any text
+   * is sent, so audio chunks from Deepgram are captured as they arrive.
+   *
+   * Usage:
+   *   const stream = ttsSession.startStreaming();
+   *   stream.sendText("First sentence. ");  // audio starts flowing immediately
+   *   stream.sendText("Second sentence. "); // more audio flows
+   *   const audioChunks = await stream.finish(); // flush + collect remaining
+   *
+   * Audio chunks are available via the onAudio callback passed to startStreaming.
+   */
+  startStreaming(onAudio: (chunk: Buffer) => void): TTSStream {
+    if (!this.connected || !this.live) {
+      throw new Error("TTS session not connected");
+    }
+
+    // Replace default Audio handler to pipe chunks to the caller
+    this.live!.removeAllListeners(LiveTTSEvents.Audio);
+    this.audioChunks = [];
+
+    this.live!.on(LiveTTSEvents.Audio, (data: Buffer) => {
+      onAudio(data);
+    });
+
+    return new TTSStream(this.live!, () => {
+      // Restore default Audio handler on finish
+      this.live!.removeAllListeners(LiveTTSEvents.Audio);
+      this.live!.on(LiveTTSEvents.Audio, (data: Buffer) => {
+        this.audioChunks.push(data);
+      });
+    });
+  }
+
+  /**
    * Barge-in: clear the current synthesis buffer.
    * Discards any pending audio and waits for server confirmation.
    */
@@ -203,5 +237,48 @@ export async function synthesize(text: string, config?: TTSConfig): Promise<Buff
     return await session.synthesize(text);
   } finally {
     await session.close();
+  }
+}
+
+/**
+ * Represents an active TTS streaming session. Text can be sent incrementally
+ * via sendText(). Audio chunks flow back immediately via the onAudio callback.
+ * Call finish() to flush remaining buffer and wait for completion.
+ */
+class TTSStream {
+  private live: ReturnType<ReturnType<typeof createClient>["speak"]["live"]>;
+  private cleanup: () => void;
+
+  constructor(
+    live: ReturnType<ReturnType<typeof createClient>["speak"]["live"]>,
+    cleanup: () => void,
+  ) {
+    this.live = live;
+    this.cleanup = cleanup;
+  }
+
+  /** Send text to Deepgram. Audio starts flowing back immediately. */
+  sendText(text: string): void {
+    if (!text.trim()) return;
+    this.live.sendText(text);
+  }
+
+  /**
+   * Flush remaining buffer and wait for Flushed confirmation.
+   * Restores the default Audio handler after completion.
+   */
+  async finish(): Promise<void> {
+    this.live.flush();
+    await new Promise<void>((resolve) => {
+      const onFlushed = () => {
+        resolve();
+      };
+      this.live.once(LiveTTSEvents.Flushed, onFlushed);
+      // Safety timeout
+      setTimeout(() => {
+        resolve();
+      }, 5000);
+    });
+    this.cleanup();
   }
 }

@@ -61,6 +61,9 @@ export interface AudioChannel {
   startComfortNoise?(): void;
   /** Stop comfort noise. */
   stopComfortNoise?(): void;
+  /** Flush any buffered audio, add silence tail, and resume comfort noise.
+   *  Call after all sendAudio() calls for a turn are complete. */
+  flushAudioBuffer?(): Promise<void>;
   disconnect(): Promise<void>;
   readonly connected: boolean;
   readonly stats: ChannelStats;
@@ -89,6 +92,11 @@ export interface AudioChannel {
   /** Optional quiet window after platformEndOfTurn before Vent starts the next turn.
    *  Some platforms signal end-of-turn slightly before playback has fully drained. */
   platformEndOfTurnDrainMs?: number;
+  /** Grace period after platformEndOfTurn before starting the drain timer.
+   *  Some platforms (Retell) fire agent_stop_talking between sentences, not just
+   *  at end of full response. A longer settle window lets agent_start_talking
+   *  cancel the resolution before we commit. Defaults to 500ms if unset. */
+  platformEndOfTurnSettleMs?: number;
   /** Optional continuation window after a tool call completes.
    *  Some platforms briefly speak filler, wait for the tool result, then continue
    *  the same assistant turn after a short pause. */
