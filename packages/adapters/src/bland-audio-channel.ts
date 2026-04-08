@@ -125,6 +125,9 @@ export interface BlandCallResponse {
 }
 
 export class BlandAudioChannel extends BaseAudioChannel {
+  protected override outputSampleRate = 8000;
+  protected override pacingIntervalMs = 20;
+
   private config: BlandAudioChannelConfig;
   private sharedServer: SharedSipServer | null = null;
   private channelId: string;
@@ -140,10 +143,6 @@ export class BlandAudioChannel extends BaseAudioChannel {
   private realtimeCitations: unknown[] = [];
   private firstAudioReceivedAt: number | null = null;
   private firstNonSilentAudioAt: number | null = null;
-
-  // Mark event tracking — resolves when Twilio confirms audio playback is complete
-  private pendingMarks = new Map<string, () => void>();
-  private markCounter = 0;
 
   // Comfort noise — keeps SIP line active while pipeline processes
   private comfortNoiseInterval: ReturnType<typeof setInterval> | null = null;
@@ -223,71 +222,51 @@ export class BlandAudioChannel extends BaseAudioChannel {
     console.log(`[bland] Connected: call_id=${this.callId}, callSid=${this.callSid}, took ${this._stats.connectLatencyMs}ms`);
   }
 
-  /**
-   * Send caller audio to Bland via Twilio media stream.
-   *
-   * A "clear" event flushes stale buffered audio from a previous turn.
-   * After sending, a Twilio "mark" event confirms playback is complete,
-   * preventing us from collecting the agent response while our audio is
-   * still playing on the SIP line.
-   */
-  /** No-op — Bland sends audio directly over SIP/WebSocket in sendAudio. */
-  protected async writeAudioFrame(_samples: Int16Array, _sampleRate: number): Promise<void> {}
+  protected async writeAudioFrame(samples: Int16Array, sampleRate: number): Promise<void> {
+    if (!this.ws || !this.streamSid) return;
+    const pcmBuf = Buffer.from(samples.buffer, samples.byteOffset, samples.byteLength);
+    const mulaw = pcmToMulaw(pcmBuf);
+    this.ws.send(JSON.stringify({
+      event: "media",
+      streamSid: this.streamSid,
+      media: { payload: mulaw.toString("base64") },
+    }));
+  }
 
-  override async sendAudio(pcm: Buffer, opts?: SendAudioOptions): Promise<void> {
+  override sendAudio(pcm: Buffer, opts?: SendAudioOptions): void {
     if (!this.ws || !this.streamSid) {
       throw new Error("Bland SIP channel not connected");
     }
 
     const raw = opts?.raw ?? false;
 
-    // Clear any stale audio still buffered from a previous turn
-    // (skip for raw sends like interrupts — we want audio to arrive immediately)
-    if (!raw) {
+    if (raw) {
+      // Raw path: bypass buffer, send directly (timing matters for interrupts/noise)
+      // Clear stale audio on interrupts
       this.ws.send(JSON.stringify({ event: "clear", streamSid: this.streamSid }));
+      this._stats.bytesSent += pcm.length;
+      this.captureCallerAudio(pcm, Date.now() - (this.callStartedAt ?? Date.now()));
+      const pcm8k = resample(pcm, 24000, 8000);
+      const mulaw = pcmToMulaw(pcm8k);
+
+      const CHUNK_SIZE = 160; // 20ms at 8kHz mulaw
+      for (let offset = 0; offset < mulaw.length; offset += CHUNK_SIZE) {
+        const chunk = mulaw.subarray(offset, Math.min(offset + CHUNK_SIZE, mulaw.length));
+        this.ws.send(
+          JSON.stringify({
+            event: "media",
+            streamSid: this.streamSid,
+            media: { payload: chunk.toString("base64") },
+          }),
+        );
+      }
+      return;
     }
 
-    this._stats.bytesSent += pcm.length;
-    this.captureCallerAudio(pcm, Date.now() - (this.callStartedAt ?? Date.now()));
-    const pcm8k = resample(pcm, 24000, 8000);
-    const mulaw = pcmToMulaw(pcm8k);
-
-    const CHUNK_SIZE = 160; // 20ms at 8kHz mulaw
-    for (let offset = 0; offset < mulaw.length; offset += CHUNK_SIZE) {
-      const chunk = mulaw.subarray(offset, Math.min(offset + CHUNK_SIZE, mulaw.length));
-      this.ws.send(
-        JSON.stringify({
-          event: "media",
-          streamSid: this.streamSid,
-          media: { payload: chunk.toString("base64") },
-        }),
-      );
-    }
-
-    // Mark await: wait for Twilio to confirm our audio finished playing.
-    // Skip for raw sends (interrupts, noise injection) where timing is critical.
-    if (!raw) {
-      const markName = `vent-eot-${++this.markCounter}`;
-      const playbackDone = new Promise<void>((resolve) => {
-        this.pendingMarks.set(markName, resolve);
-        setTimeout(() => {
-          if (this.pendingMarks.delete(markName)) {
-            console.warn(`[bland] Mark timeout: ${markName} not confirmed after 5s`);
-            resolve();
-          }
-        }, 5_000);
-      });
-
-      this.ws.send(
-        JSON.stringify({
-          event: "mark",
-          streamSid: this.streamSid,
-          mark: { name: markName },
-        }),
-      );
-
-      await playbackDone;
-    }
+    // Normal path: base class handles resampling 24k→8k, chunking, pacing.
+    // writeAudioFrame handles mulaw encoding + JSON serialization.
+    this.stopComfortNoise();
+    super.sendAudio(pcm, opts);
   }
 
   /**
@@ -325,9 +304,6 @@ export class BlandAudioChannel extends BaseAudioChannel {
 
   async disconnect(): Promise<void> {
     this.stopComfortNoise();
-    // Resolve any pending mark promises so sendAudio doesn't hang
-    for (const resolve of this.pendingMarks.values()) resolve();
-    this.pendingMarks.clear();
 
     // EOT analysis: dump interleaved timeline of audio transitions + webhooks
     if (this.audioTransitions.length > 0 || this.webhookLog.length > 0) {
@@ -580,6 +556,7 @@ export class BlandAudioChannel extends BaseAudioChannel {
   private setupMediaHandlers(): void {
     if (!this.ws) return;
     this.callStartedAt = Date.now();
+    this._connectTimestampMs = this.callStartedAt;
 
     this.ws.on("message", (data: Buffer | ArrayBuffer | Buffer[]) => {
       let raw: string;
@@ -591,22 +568,11 @@ export class BlandAudioChannel extends BaseAudioChannel {
         raw = Buffer.concat(data as Buffer[]).toString();
       }
 
-      let msg: { event: string; media?: { payload: string }; mark?: { name: string } };
+      let msg: { event: string; media?: { payload: string } };
       try {
         msg = JSON.parse(raw);
       } catch {
         return;
-      }
-
-      // Handle mark confirmations — Twilio sends these when buffered audio
-      // playback reaches the mark we placed after our caller audio.
-      if (msg.event === "mark" && msg.mark?.name) {
-        console.log(`[bland] Mark received: ${msg.mark.name} (pending: ${[...this.pendingMarks.keys()].join(", ")})`);
-        const resolve = this.pendingMarks.get(msg.mark.name);
-        if (resolve) {
-          this.pendingMarks.delete(msg.mark.name);
-          resolve();
-        }
       }
 
       if (msg.event === "media" && msg.media?.payload) {
@@ -657,9 +623,6 @@ export class BlandAudioChannel extends BaseAudioChannel {
     });
 
     this.ws.on("close", () => {
-      // Resolve any pending mark promises so sendAudio doesn't hang on unexpected disconnect
-      for (const resolve of this.pendingMarks.values()) resolve();
-      this.pendingMarks.clear();
       this.emit("disconnected");
     });
 

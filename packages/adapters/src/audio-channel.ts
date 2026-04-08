@@ -193,6 +193,13 @@ export abstract class BaseAudioChannel extends EventEmitter implements AudioChan
   /** Frame duration in ms for chunking. */
   protected frameDurationMs = 20;
 
+  /** Pacing interval between frames (ms). 0 = no pacing (WebRTC backpressure).
+   *  Set to frameDurationMs for WebSocket adapters (simulated audio clock). */
+  protected pacingIntervalMs = 0;
+
+  /** Monotonic clock for self-correcting pacing (Pipecat _write_audio_sleep). */
+  private _nextSendTime = 0;
+
   abstract connect(): Promise<void>;
   abstract disconnect(): Promise<void>;
   abstract get connected(): boolean;
@@ -283,11 +290,13 @@ export abstract class BaseAudioChannel extends EventEmitter implements AudioChan
   protected clearAudioBuffer(): void {
     this._audioBuffer = new Int16Array(0);
     this._audioQueue = [];
+    this._nextSendTime = 0; // reset pacing clock
   }
 
   private _startAudioDrain(): void {
     if (this._audioDrainRunning) return;
     this._audioDrainRunning = true;
+    this._nextSendTime = 0;
 
     (async () => {
       try {
@@ -295,6 +304,19 @@ export abstract class BaseAudioChannel extends EventEmitter implements AudioChan
           if (this._audioQueue.length > 0) {
             const { samples, sampleRate } = this._audioQueue.shift()!;
             await this.writeAudioFrame(samples, sampleRate);
+
+            // Pipecat-style self-correcting clock pacing for WebSocket transports.
+            // WebRTC adapters leave pacingIntervalMs = 0 (captureFrame has backpressure).
+            if (this.pacingIntervalMs > 0) {
+              const now = performance.now();
+              const sleep = Math.max(0, this._nextSendTime - now);
+              if (sleep > 0) {
+                await new Promise<void>((r) => setTimeout(r, sleep));
+              }
+              this._nextSendTime = sleep === 0
+                ? performance.now() + this.pacingIntervalMs
+                : this._nextSendTime + this.pacingIntervalMs;
+            }
           } else {
             // Wait for new frames or timeout
             await new Promise<void>((r) => {
