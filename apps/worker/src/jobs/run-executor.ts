@@ -29,7 +29,7 @@ async function emitEvent(
   try {
     // POST to API — it handles both DB write and SSE broadcast.
     // (Don't write to DB here too, or events get duplicated.)
-    const apiUrl = process.env["API_URL"] ?? "https://vent-api.fly.dev";
+    const apiUrl = process.env["API_URL"]!;
     const secret = process.env["RUNNER_CALLBACK_SECRET"] ?? "";
     await fetch(`${apiUrl}/internal/run-event`, {
       method: "POST",
@@ -93,7 +93,7 @@ async function resolvePlatformConfig(
 // ---------------------------------------------------------------------------
 
 async function executeRemoteRun(db: Database, job: RunJob): Promise<void> {
-  const apiUrl = process.env["API_URL"] ?? "https://vent-api.fly.dev";
+  const apiUrl = process.env["API_URL"]!;
   const callbackSecret = process.env["RUNNER_CALLBACK_SECRET"] ?? "";
   const callbackUrl = `${apiUrl}/internal/runner-callback`;
 
@@ -182,7 +182,7 @@ async function executeRemoteRun(db: Database, job: RunJob): Promise<void> {
 // ---------------------------------------------------------------------------
 
 async function executeSessionRun(db: Database, job: RunJob, relayMachineId: string): Promise<void> {
-  const apiUrl = process.env["API_URL"] ?? "https://vent-api.fly.dev";
+  const apiUrl = process.env["API_URL"]!;
   const callbackSecret = process.env["RUNNER_CALLBACK_SECRET"] ?? "";
   const callbackUrl = `${apiUrl}/internal/runner-callback`;
 

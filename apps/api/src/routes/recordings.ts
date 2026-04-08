@@ -100,6 +100,20 @@ export async function recordingRoutes(app: FastifyInstance) {
       return reply.status(404).send({ error: "Recording not found" });
     }
 
-    return reply.redirect(downloadUrl);
+    // Proxy audio instead of redirecting — R2 presigned URLs may set
+    // Content-Disposition: attachment which forces a download.
+    const upstream = await fetch(downloadUrl);
+    if (!upstream.ok || !upstream.body) {
+      return reply.status(502).send({ error: "Failed to fetch recording" });
+    }
+
+    const contentType =
+      upstream.headers.get("content-type") ?? "audio/wav";
+
+    return reply
+      .header("Content-Type", contentType)
+      .header("Content-Disposition", "inline")
+      .header("Cache-Control", "private, max-age=3600")
+      .send(upstream.body);
   });
 }

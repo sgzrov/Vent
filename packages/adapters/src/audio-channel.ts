@@ -182,6 +182,7 @@ export abstract class BaseAudioChannel extends EventEmitter implements AudioChan
   private _audioQueue: { samples: Int16Array; sampleRate: number }[] = [];
   private _audioDrainRunning = false;
   private _audioDrainNotify: (() => void) | null = null;
+  private _audioDrainStopping = false;
   protected _connectTimestampMs = 0;
 
   /** Input sample rate for all adapters (16-bit mono PCM). */
@@ -270,16 +271,16 @@ export abstract class BaseAudioChannel extends EventEmitter implements AudioChan
     const silence = new Int16Array(silenceSamples);
     this._audioQueue.push({ samples: silence, sampleRate: this.outputSampleRate });
 
-    // Wake drain
+    // Signal drain loop to exit after processing remaining queue
+    this._audioDrainStopping = true;
     this._audioDrainNotify?.();
     this._audioDrainNotify = null;
 
-    // Wait for queue to drain
-    while (this._audioQueue.length > 0) {
+    // Wait for drain loop to finish
+    while (this._audioDrainRunning) {
       await new Promise<void>((r) => setTimeout(r, 10));
     }
-    // Wait for drain loop to finish current frame
-    await new Promise<void>((r) => setTimeout(r, 25));
+    this._audioDrainStopping = false;
 
     // Resume comfort noise (if adapter implements it)
     if ("startComfortNoise" in this && typeof (this as any).startComfortNoise === "function") {
@@ -293,6 +294,9 @@ export abstract class BaseAudioChannel extends EventEmitter implements AudioChan
     this._audioBuffer = new Int16Array(0);
     this._audioQueue = [];
     this._nextSendTime = 0;
+    this._audioDrainStopping = true;
+    this._audioDrainNotify?.();
+    this._audioDrainNotify = null;
     this.clearTransportQueue();
   }
 
@@ -303,6 +307,7 @@ export abstract class BaseAudioChannel extends EventEmitter implements AudioChan
   private _startAudioDrain(): void {
     if (this._audioDrainRunning) return;
     this._audioDrainRunning = true;
+    this._audioDrainStopping = false;
     this._nextSendTime = 0;
 
     (async () => {
@@ -324,15 +329,15 @@ export abstract class BaseAudioChannel extends EventEmitter implements AudioChan
                 ? performance.now() + this.pacingIntervalMs
                 : this._nextSendTime + this.pacingIntervalMs;
             }
+          } else if (this._audioDrainStopping) {
+            // Only exit when explicitly told to (flushAudioBuffer or disconnect)
+            break;
           } else {
-            // Wait for new frames or timeout
+            // Wait for new frames — do NOT exit on empty buffer.
+            // Streaming TTS sends chunks with gaps between them.
             await new Promise<void>((r) => {
               this._audioDrainNotify = r;
-              setTimeout(r, 100);
             });
-            if (this._audioQueue.length === 0 && this._audioBuffer.length === 0) {
-              break;
-            }
           }
         }
       } catch {
