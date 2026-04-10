@@ -60,6 +60,10 @@ export class ElevenLabsAudioChannel extends BaseAudioChannel {
   private static readonly LIVEKIT_SAMPLE_RATE = 48000;
   private static readonly AGENT_READY_TIMEOUT = 30_000;
 
+  /** Send user_activity keep-alive every 20s to prevent ElevenLabs turn timeout.
+   *  ElevenLabs docs recommend 30-60s; we use 20s for safety margin. */
+  private static readonly USER_ACTIVITY_INTERVAL_MS = 20_000;
+
   /** Max amplitude below which a frame is considered silent.
    *  TTS output is clean digital audio — near-zero means no speech.
    *  Pipecat uses 20; slightly generous for WebRTC codec floor noise. */
@@ -106,6 +110,9 @@ export class ElevenLabsAudioChannel extends BaseAudioChannel {
   private realtimeToolCallIndexById = new Map<string, number>();
   private realtimeProviderWarnings: ProviderWarning[] = [];
   private realtimeProviderMetadata: Record<string, unknown[]> = {};
+
+  // user_activity keep-alive to prevent ElevenLabs turn timeout
+  private _userActivityTimer: ReturnType<typeof setInterval> | null = null;
 
   // Agent audio silence detection (mirrors ElevenLabs SDK playback-drain detection)
   private _agentSpeaking = false;
@@ -269,6 +276,17 @@ export class ElevenLabsAudioChannel extends BaseAudioChannel {
       );
     }
 
+    // ── user_activity keep-alive ─────────────────────────────────
+    // Prevents ElevenLabs turn timeout during long silences (tool calls, wait mode).
+    this._userActivityTimer = setInterval(() => {
+      if (!this.collecting || !this.room?.localParticipant) return;
+      const msg = JSON.stringify({ type: "user_activity" });
+      this.room.localParticipant.publishData(
+        Buffer.from(msg),
+        { reliable: true },
+      ).catch(() => {/* ignore */});
+    }, ElevenLabsAudioChannel.USER_ACTIVITY_INTERVAL_MS);
+
     this._stats.connectLatencyMs = Date.now() - connectStart;
   }
 
@@ -330,6 +348,10 @@ export class ElevenLabsAudioChannel extends BaseAudioChannel {
   async disconnect(): Promise<void> {
     this.collecting = false;
     this.stopComfortNoise();
+    if (this._userActivityTimer) {
+      clearInterval(this._userActivityTimer);
+      this._userActivityTimer = null;
+    }
     if (this._noFramesFallbackTimer) {
       clearTimeout(this._noFramesFallbackTimer);
       this._noFramesFallbackTimer = null;
