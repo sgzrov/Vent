@@ -146,15 +146,14 @@ export class ElevenLabsAudioChannel extends BaseAudioChannel {
     // Connect to ElevenLabs' LiveKit Cloud
     this.room = new Room();
 
-    // On Fly.io, force TURN relay (same as Retell/LiveKit adapters)
-    const isFlyIo = !!process.env["FLY_MACHINE_ID"];
-    const rtcConfig = isFlyIo
-      ? {
-          iceTransportType: IceTransportType.TRANSPORT_RELAY,
-          continualGatheringPolicy: ContinualGatheringPolicy.GATHER_CONTINUALLY,
-          iceServers: [],
-        }
-      : undefined;
+    // ElevenLabs' LiveKit (livekit.rtc.elevenlabs.io) does not provide TURN
+    // servers via signaling, unlike Retell's LiveKit Cloud. Use TRANSPORT_ALL
+    // so the peer connection can establish via direct UDP/TCP.
+    const rtcConfig = {
+      iceTransportType: IceTransportType.TRANSPORT_ALL,
+      continualGatheringPolicy: ContinualGatheringPolicy.GATHER_CONTINUALLY,
+      iceServers: [],
+    };
 
     await this.room.connect(ElevenLabsAudioChannel.ELEVENLABS_LIVEKIT_URL, token, {
       autoSubscribe: true,
