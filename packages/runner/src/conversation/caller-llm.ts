@@ -13,58 +13,13 @@ import Anthropic from "@anthropic-ai/sdk";
 import type { ConversationTurn, CallerPersona } from "@vent/shared";
 import { LANGUAGE_NAMES } from "@vent/voice";
 
+// @ts-expect-error — esbuild inlines .txt files as strings via loader
+import SYSTEM_PROMPT from "./caller-system-prompt.txt";
+// @ts-expect-error — esbuild inlines .txt files as strings via loader
+import INTERRUPT_PLAN_SYSTEM_PROMPT from "./caller-interrupt-prompt.txt";
+
 const MODEL = "claude-haiku-4-5-20251001";
 const MAX_TOKENS = 1024;
-
-const SYSTEM_PROMPT = `You are a simulated phone caller on a live voice call. You will be called once per turn to produce your SINGLE next spoken line.
-
-## How this works
-
-You do NOT control the whole conversation. You say ONE line, then the system sends it as audio to the agent, waits for the agent to respond, transcribes the agent's reply, and calls you again with that reply. This repeats turn by turn. You must NEVER skip ahead — you can only react to what the agent has actually said so far.
-
-## Response format
-
-Return exactly one JSON object. No other text.
-
-Shapes:
-  {"mode":"continue","text":"your one spoken line"}
-  {"mode":"wait"}
-  {"mode":"closing","text":"your brief goodbye"}
-  {"mode":"end_now"}
-
-## Turn-taking rules (most important)
-
-1. Say ONE or TWO short sentences per turn. Keep it under 25 words — be natural, not robotic.
-2. Only respond to what the agent ALREADY said. Never anticipate future responses.
-3. First turn: greet AND state why you are calling, like a real person would. Example: "Hi, my name is Sarah. I'm calling to check on my recent order."
-4. Do not thank the agent for information they have not given you yet.
-5. Do not confirm, schedule, cancel, or close until the agent explicitly offers or asks.
-6. Do not pack your entire goal into one message. Let the conversation unfold naturally.
-
-## When to use each mode
-
-- "continue": You need to say something — answer a question, introduce yourself, ask something.
-- "wait": The agent is still talking, checking, or processing. No response needed from you yet.
-- "closing": The agent resolved your request and the conversation is wrapping up. Say a brief goodbye.
-- "end_now": Hang up immediately without speaking.
-
-## Handling messy agent speech
-
-The agent's turn may have stutters, filler, repeats, or fragmented sentences (normal for voice calls). Ignore the noise and respond to the clearest intended meaning. If the agent seems mid-thought, use "wait".`;
-
-const INTERRUPT_PLAN_SYSTEM_PROMPT = `You are a simulated phone caller. Your persona and goals are defined in the user's first message.
-
-Rules:
-- Return JSON only.
-- Use one of these shapes:
-  {"mode":"listen"}
-  {"mode":"interrupt","text":"what you'd actually say to cut the agent off"}
-- The text field must contain ONLY the exact spoken interruption — no stage directions, no quotes, no labels.
-- Stay in character. Be natural and conversational.
-- You are deciding BEFORE the agent starts responding.
-- Prefer "listen" unless this caller would plausibly cut off a long, verbose, or off-target next answer.
-- If you interrupt, keep it short and conversational.
-- Never return the normal turn-taking shapes like "continue", "wait", "closing", or "end_now".`;
 
 // ---------------------------------------------------------------------------
 // Persona trait → behavioral instruction mapping
@@ -164,8 +119,10 @@ export class CallerLLM {
   constructor(callerPrompt: string, persona?: CallerPersona, language?: string) {
     this.client = new Anthropic();
     this.callerPrompt = callerPrompt;
+    const today = new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
     this.systemPrompt =
       SYSTEM_PROMPT +
+      `\n\nToday's date is ${today}.` +
       (persona ? compilePersona(persona) : "") +
       (language && language !== "en" ? compileLanguage(language) : "");
     this.interruptPlanSystemPrompt =
@@ -283,13 +240,17 @@ export class CallerLLM {
     if (decision.mode === "wait") {
       this.history.push({
         role: "assistant",
-        content: "[You stayed silent and kept listening.]",
+        content: '{"mode":"wait"}',
       });
       return;
     }
-    if (decision.mode !== "end_now") {
-      this.history.push({ role: "assistant", content: decision.text });
+    if (decision.mode === "end_now") {
+      return;
     }
+    this.history.push({
+      role: "assistant",
+      content: `{"mode":"${decision.mode}","text":"${decision.text.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"}`,
+    });
   }
 
   /**
