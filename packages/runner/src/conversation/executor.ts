@@ -396,6 +396,12 @@ export async function runConversationCall(
         );
 
         if (timedOut && stats.speechOnsetAt === null) {
+          // After a closing turn, silence means the agent hung up — that's normal
+          if (shouldStopAfterAgentReply) {
+            channel.off("audio", feedSTT);
+            console.log(`    [closing] Agent silent after caller goodbye — ending call normally`);
+            break;
+          }
           channel.off("audio", feedSTT);
           throw new Error(
             `Agent stopped responding — no speech detected for 30s after turn ${turn + 1}. ` +

@@ -85,7 +85,7 @@ export class ElevenLabsAudioChannel extends BaseAudioChannel {
   platformEndOfTurnDrainMs = 0;
 
   /** Settle window for TTS sentence gaps. Combined with 350ms silence = ~950ms total. */
-  platformEndOfTurnSettleMs = 600;
+  platformEndOfTurnSettleMs = 1500;
 
   private config: ElevenLabsAudioChannelConfig;
   private client: ElevenLabsClient;
@@ -279,12 +279,16 @@ export class ElevenLabsAudioChannel extends BaseAudioChannel {
     // ── user_activity keep-alive ─────────────────────────────────
     // Prevents ElevenLabs turn timeout during long silences (tool calls, wait mode).
     this._userActivityTimer = setInterval(() => {
-      if (!this.collecting || !this.room?.localParticipant) return;
+      if (!this.room?.localParticipant) return;
       const msg = JSON.stringify({ type: "user_activity" });
       this.room.localParticipant.publishData(
         Buffer.from(msg),
         { reliable: true },
-      ).catch(() => {/* ignore */});
+      ).then(() => {
+        console.log(`[elevenlabs] user_activity keep-alive sent`);
+      }).catch((err) => {
+        console.log(`[elevenlabs] user_activity send failed: ${err}`);
+      });
     }, ElevenLabsAudioChannel.USER_ACTIVITY_INTERVAL_MS);
 
     this._stats.connectLatencyMs = Date.now() - connectStart;
