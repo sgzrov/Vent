@@ -1,7 +1,11 @@
 import { Worker } from "bullmq";
 import IORedis from "ioredis";
+import { writeFileSync, mkdirSync } from "node:fs";
 import { SharedSipServer } from "@vent/adapters";
 import { executeRun } from "./jobs/run-executor.js";
+
+const LOG_DIR = "/tmp/vent-run-logs";
+try { mkdirSync(LOG_DIR, { recursive: true }); } catch {}
 
 const redisUrl = process.env["REDIS_URL"] ?? "redis://localhost:6379";
 const connection = new IORedis(redisUrl, { maxRetriesPerRequest: null });
@@ -29,17 +33,46 @@ function createWorkerForQueue(queueName: string) {
       };
 
       console.log(`[${queueName}] Processing run ${data.run_id} (adapter: ${data.adapter ?? "unknown"}${data.agent_session_id ? ", session" : ""})`);
-      await executeRun({
-        run_id: data.run_id,
-        adapter: data.adapter,
-        call_spec: data.call_spec,
-        voice_config: data.voice_config,
-        start_command: data.start_command,
-        health_endpoint: data.health_endpoint,
-        agent_url: data.agent_url,
-        platform_connection_id: data.platform_connection_id ?? null,
-        agent_session_id: data.agent_session_id,
-      });
+
+      // Capture all console output for the run so we can dump it at the end.
+      // Fly only keeps the last 100 log lines — this ensures we can see the full run.
+      const logLines: string[] = [];
+      const origLog = console.log;
+      const origErr = console.error;
+      console.log = (...args: unknown[]) => {
+        const line = args.map(a => typeof a === "string" ? a : JSON.stringify(a)).join(" ");
+        logLines.push(line);
+        origLog.apply(console, args);
+      };
+      console.error = (...args: unknown[]) => {
+        const line = args.map(a => typeof a === "string" ? a : JSON.stringify(a)).join(" ");
+        logLines.push(`[ERROR] ${line}`);
+        origErr.apply(console, args);
+      };
+
+      try {
+        await executeRun({
+          run_id: data.run_id,
+          adapter: data.adapter,
+          call_spec: data.call_spec,
+          voice_config: data.voice_config,
+          start_command: data.start_command,
+          health_endpoint: data.health_endpoint,
+          agent_url: data.agent_url,
+          platform_connection_id: data.platform_connection_id ?? null,
+          agent_session_id: data.agent_session_id,
+        });
+      } finally {
+        console.log = origLog;
+        console.error = origErr;
+        const logPath = `${LOG_DIR}/${data.run_id}.log`;
+        try {
+          writeFileSync(logPath, logLines.join("\n") + "\n");
+          origLog(`[run-log] Full log written to ${logPath} (${logLines.length} lines)`);
+        } catch (e) {
+          origErr(`[run-log] Failed to write log: ${e}`);
+        }
+      }
     },
     {
       connection,
