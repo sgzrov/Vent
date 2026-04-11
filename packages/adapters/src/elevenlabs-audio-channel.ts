@@ -15,6 +15,10 @@
  *   7. getComponentTimings() — LLM TTFB from transcript turn metrics
  *   8. getTranscripts() — platform STT transcripts for cross-referencing
  *
+ * Agent end-of-turn detection: ElevenLabs has no "agent_stop_talking" signal.
+ * We detect it from audio silence (350ms threshold), mirroring their SDK's
+ * playback-drain approach and Pipecat's BOT_VAD_STOP pattern.
+ *
  * Post-call data (tool calls, metadata, latency) fetched via SDK
  * client.conversationalAi.conversations.get(). Native audio is fetched via
  * client.conversationalAi.conversations.audio.get().
@@ -56,8 +60,32 @@ export class ElevenLabsAudioChannel extends BaseAudioChannel {
   private static readonly LIVEKIT_SAMPLE_RATE = 48000;
   private static readonly AGENT_READY_TIMEOUT = 30_000;
 
-  /** ElevenLabs signals agent speech via DataChannel events. */
+  /** Send user_activity keep-alive every 20s to prevent ElevenLabs turn timeout.
+   *  ElevenLabs docs recommend 30-60s; we use 20s for safety margin. */
+  private static readonly USER_ACTIVITY_INTERVAL_MS = 20_000;
+
+  /** Max amplitude below which a frame is considered silent.
+   *  TTS output is clean digital audio — near-zero means no speech.
+   *  Pipecat uses 20; slightly generous for WebRTC codec floor noise. */
+  private static readonly SILENCE_MAX_AMPLITUDE = 30;
+
+  /** Continuous silence (ms) before emitting platformEndOfTurn.
+   *  Matches Pipecat's BOT_VAD_STOP_SECS (0.35s). */
+  private static readonly SILENCE_DURATION_MS = 350;
+
+  /** If no audio frames arrive for this long, force platformEndOfTurn.
+   *  Matches Pipecat's BOT_VAD_STOP_FALLBACK_SECS (3s). */
+  private static readonly NO_FRAMES_FALLBACK_MS = 3_000;
+
+  /** ElevenLabs has no explicit "agent stopped talking" signal — we detect
+   *  it from audio silence, mirroring their SDK's playback-drain approach. */
   hasPlatformEndOfTurn = true;
+
+  /** Audio has already drained by the time silence is detected — no extra wait. */
+  platformEndOfTurnDrainMs = 0;
+
+  /** Settle window for TTS sentence gaps. Combined with 350ms silence = ~950ms total. */
+  platformEndOfTurnSettleMs = 1500;
 
   private config: ElevenLabsAudioChannelConfig;
   private client: ElevenLabsClient;
@@ -82,6 +110,14 @@ export class ElevenLabsAudioChannel extends BaseAudioChannel {
   private realtimeToolCallIndexById = new Map<string, number>();
   private realtimeProviderWarnings: ProviderWarning[] = [];
   private realtimeProviderMetadata: Record<string, unknown[]> = {};
+
+  // user_activity keep-alive to prevent ElevenLabs turn timeout
+  private _userActivityTimer: ReturnType<typeof setInterval> | null = null;
+
+  // Agent audio silence detection (mirrors ElevenLabs SDK playback-drain detection)
+  private _agentSpeaking = false;
+  private _silenceStartedAt: number | null = null;
+  private _noFramesFallbackTimer: ReturnType<typeof setTimeout> | null = null;
 
   protected override outputSampleRate = ElevenLabsAudioChannel.LIVEKIT_SAMPLE_RATE;
 
@@ -117,15 +153,14 @@ export class ElevenLabsAudioChannel extends BaseAudioChannel {
     // Connect to ElevenLabs' LiveKit Cloud
     this.room = new Room();
 
-    // On Fly.io, force TURN relay (same as Retell/LiveKit adapters)
-    const isFlyIo = !!process.env["FLY_MACHINE_ID"];
-    const rtcConfig = isFlyIo
-      ? {
-          iceTransportType: IceTransportType.TRANSPORT_RELAY,
-          continualGatheringPolicy: ContinualGatheringPolicy.GATHER_CONTINUALLY,
-          iceServers: [],
-        }
-      : undefined;
+    // ElevenLabs' LiveKit (livekit.rtc.elevenlabs.io) does not provide TURN
+    // servers via signaling, unlike Retell's LiveKit Cloud. Use TRANSPORT_ALL
+    // so the peer connection can establish via direct UDP/TCP.
+    const rtcConfig = {
+      iceTransportType: IceTransportType.TRANSPORT_ALL,
+      continualGatheringPolicy: ContinualGatheringPolicy.GATHER_CONTINUALLY,
+      iceServers: [],
+    };
 
     await this.room.connect(ElevenLabsAudioChannel.ELEVENLABS_LIVEKIT_URL, token, {
       autoSubscribe: true,
@@ -241,6 +276,21 @@ export class ElevenLabsAudioChannel extends BaseAudioChannel {
       );
     }
 
+    // ── user_activity keep-alive ─────────────────────────────────
+    // Prevents ElevenLabs turn timeout during long silences (tool calls, wait mode).
+    this._userActivityTimer = setInterval(() => {
+      if (!this.room?.localParticipant) return;
+      const msg = JSON.stringify({ type: "user_activity" });
+      this.room.localParticipant.publishData(
+        Buffer.from(msg),
+        { reliable: true },
+      ).then(() => {
+        console.log(`[elevenlabs] user_activity keep-alive sent`);
+      }).catch((err) => {
+        console.log(`[elevenlabs] user_activity send failed: ${err}`);
+      });
+    }, ElevenLabsAudioChannel.USER_ACTIVITY_INTERVAL_MS);
+
     this._stats.connectLatencyMs = Date.now() - connectStart;
   }
 
@@ -302,6 +352,16 @@ export class ElevenLabsAudioChannel extends BaseAudioChannel {
   async disconnect(): Promise<void> {
     this.collecting = false;
     this.stopComfortNoise();
+    if (this._userActivityTimer) {
+      clearInterval(this._userActivityTimer);
+      this._userActivityTimer = null;
+    }
+    if (this._noFramesFallbackTimer) {
+      clearTimeout(this._noFramesFallbackTimer);
+      this._noFramesFallbackTimer = null;
+    }
+    this._agentSpeaking = false;
+    this._silenceStartedAt = null;
     this.disconnectTimestamp = Date.now();
     if (this.audioSource) {
       await this.audioSource.close();
@@ -560,6 +620,8 @@ export class ElevenLabsAudioChannel extends BaseAudioChannel {
 
         case "interruption": {
           // Agent was interrupted — signals end of agent turn
+          this._agentSpeaking = false;
+          this._silenceStartedAt = null;
           this.emit("platformEndOfTurn");
           break;
         }
@@ -840,6 +902,65 @@ export class ElevenLabsAudioChannel extends BaseAudioChannel {
     return toolCalls;
   }
 
+  // ── Agent audio silence detection ──────────────────────────────
+
+  /** Check if a PCM frame is effectively silent (max amplitude below threshold). */
+  private static isSilentFrame(pcm: Buffer): boolean {
+    const int16 = new Int16Array(pcm.buffer, pcm.byteOffset, pcm.length / 2);
+    let maxAmp = 0;
+    for (let i = 0; i < int16.length; i++) {
+      const abs = int16[i]! < 0 ? -int16[i]! : int16[i]!;
+      if (abs > maxAmp) maxAmp = abs;
+    }
+    return maxAmp < ElevenLabsAudioChannel.SILENCE_MAX_AMPLITUDE;
+  }
+
+  /**
+   * Monitor incoming agent audio for silence → emit platformEndOfTurn / platformSpeechStart.
+   * Mirrors ElevenLabs SDK's playback-drain detection and Pipecat's BOT_VAD_STOP pattern.
+   */
+  private processAgentAudioSilence(pcm24k: Buffer): void {
+    const now = Date.now();
+    this.resetNoFramesFallback();
+
+    const silent = ElevenLabsAudioChannel.isSilentFrame(pcm24k);
+
+    if (silent) {
+      if (this._agentSpeaking) {
+        if (this._silenceStartedAt === null) {
+          this._silenceStartedAt = now;
+        }
+        if (now - this._silenceStartedAt >= ElevenLabsAudioChannel.SILENCE_DURATION_MS) {
+          this._agentSpeaking = false;
+          this._silenceStartedAt = null;
+          this.emit("platformEndOfTurn");
+        }
+      }
+    } else {
+      this._silenceStartedAt = null;
+      if (!this._agentSpeaking) {
+        this._agentSpeaking = true;
+        this.emit("platformSpeechStart");
+      }
+    }
+  }
+
+  /** Reset the no-frames fallback timer. If no frames arrive for 3s while
+   *  agent is speaking, force platformEndOfTurn as a safety net. */
+  private resetNoFramesFallback(): void {
+    if (this._noFramesFallbackTimer) {
+      clearTimeout(this._noFramesFallbackTimer);
+    }
+    if (!this.collecting) return;
+    this._noFramesFallbackTimer = setTimeout(() => {
+      this._noFramesFallbackTimer = null;
+      if (!this.collecting || !this._agentSpeaking) return;
+      this._agentSpeaking = false;
+      this._silenceStartedAt = null;
+      this.emit("platformEndOfTurn");
+    }, ElevenLabsAudioChannel.NO_FRAMES_FALLBACK_MS);
+  }
+
   private startReadingTrack(track: RemoteTrack): void {
     const sampleRate = ElevenLabsAudioChannel.LIVEKIT_SAMPLE_RATE;
     const stream = new AudioStream(track, sampleRate, 1);
@@ -860,6 +981,7 @@ export class ElevenLabsAudioChannel extends BaseAudioChannel {
           // Resample from LiveKit 48kHz → 24kHz for consumers
           const pcm24k = resample(frameBuffer, sampleRate, 24000);
           this.captureAgentAudio(pcm24k, Date.now() - this.connectTimestamp);
+          this.processAgentAudioSilence(pcm24k);
           this.emit("audio", pcm24k);
         }
       } catch (err) {

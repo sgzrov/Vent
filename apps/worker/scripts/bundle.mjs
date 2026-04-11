@@ -14,6 +14,7 @@ await build({
   target: "node20",
   outdir: "dist",
   packages: "external",
+  loader: { ".txt": "text" },
   alias: {
     "@vent/shared": path.resolve(packages, "shared/src/index.ts"),
     "@vent/db": path.resolve(packages, "db/src/index.ts"),

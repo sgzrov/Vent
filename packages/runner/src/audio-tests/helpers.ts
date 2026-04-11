@@ -223,6 +223,7 @@ export async function collectUntilEndOfTurn(
         // Track silence → speech transition (mid-response pause resolved)
         if (state === "speech" && prevState !== "speech") {
           speechSegments++;
+          startTimeout(); // Agent is still active — reset the safety timeout
           if (speechOnsetAt === null) speechOnsetAt = now;
           if (speechOnsetAt === now) {
             console.log(`    [collect:${debugLabel}] speech_onset rms=${Math.round(rms)}`);
@@ -376,19 +377,26 @@ export async function collectUntilEndOfTurn(
         }
       };
 
-      const timeout = setTimeout(() => {
-        timedOut = true;
-        const avgSpeechRms = speechChunkCount > 0 ? Math.round(speechChunkRmsSum / speechChunkCount) : 0;
-        console.log(
-          `    [collect:${debugLabel}] timeout firstChunk=${firstChunkAt !== null} speechOnset=${speechOnsetAt !== null} ` +
-          `lastChunkAge=${lastChunkAt != null ? Date.now() - lastChunkAt : "n/a"}ms ` +
-          `lastAudibleAge=${lastAudibleAudioAt != null ? Date.now() - lastAudibleAudioAt : "n/a"}ms`
-        );
-        console.log(`    [vad-diag] collection timed out: chunks=${chunks.length} speechSegments=${speechSegments} speechOnset=${speechOnsetAt !== null}`);
-        console.log(`    [vad-diag] energy: <100=${energyBuckets.below100} 100-250=${energyBuckets.r100_250} 250-500=${energyBuckets.r250_500} 500-1k=${energyBuckets.r500_1000} 1k-3k=${energyBuckets.r1000_3000} >3k=${energyBuckets.above3000} maxRms=${Math.round(maxRms)} avgSpeechRms=${avgSpeechRms}`);
-        cleanup();
-        resolve();
-      }, timeoutMs);
+      // Resettable timeout — resets on every speech segment so we only
+      // time out after prolonged silence, never mid-speech.
+      let timeout: ReturnType<typeof setTimeout>;
+      const startTimeout = () => {
+        clearTimeout(timeout);
+        timeout = setTimeout(() => {
+          timedOut = true;
+          const avgSpeechRms = speechChunkCount > 0 ? Math.round(speechChunkRmsSum / speechChunkCount) : 0;
+          console.log(
+            `    [collect:${debugLabel}] timeout firstChunk=${firstChunkAt !== null} speechOnset=${speechOnsetAt !== null} ` +
+            `lastChunkAge=${lastChunkAt != null ? Date.now() - lastChunkAt : "n/a"}ms ` +
+            `lastAudibleAge=${lastAudibleAudioAt != null ? Date.now() - lastAudibleAudioAt : "n/a"}ms`
+          );
+          console.log(`    [vad-diag] collection timed out: chunks=${chunks.length} speechSegments=${speechSegments} speechOnset=${speechOnsetAt !== null}`);
+          console.log(`    [vad-diag] energy: <100=${energyBuckets.below100} 100-250=${energyBuckets.r100_250} 250-500=${energyBuckets.r250_500} 500-1k=${energyBuckets.r500_1000} 1k-3k=${energyBuckets.r1000_3000} >3k=${energyBuckets.above3000} maxRms=${Math.round(maxRms)} avgSpeechRms=${avgSpeechRms}`);
+          cleanup();
+          resolve();
+        }, timeoutMs);
+      };
+      startTimeout();
 
       const onDisconnected = () => {
         console.log(`    [collect:${debugLabel}] channel_disconnected`);
