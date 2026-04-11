@@ -369,22 +369,8 @@ export async function executeCall(opts: ExecuteCallOpts): Promise<ExecuteCallRes
   let result: ConversationCallResult;
 
   try {
-    // Per-call timeout: scales with max_turns to accommodate agents that
-    // use tool calls (each turn can take 15-20s with STT → LLM → tools → TTS).
-    // Minimum 120s, plus 25s per turn beyond the baseline 4 turns.
-    const CALL_TIMEOUT_MS = Math.max(120_000, (spec.max_turns ?? 10) * 25_000);
-    const callResult = await Promise.race([
-      (async () => {
-        await channel.connect();
-        return await runConversationCall(spec, channel);
-      })(),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error(
-          `Call "${callName}" timed out after ${CALL_TIMEOUT_MS / 1000}s. ` +
-          `The agent may have connected but not produced audio.`
-        )), CALL_TIMEOUT_MS)
-      ),
-    ]);
+    await channel.connect();
+    const callResult = await runConversationCall(spec, channel);
     result = callResult;
     await attachRecordingUrl(result, channel, perCallChannelConfig, recordingUpload, runId);
     console.log(`    Status: ${result.status} (${result.duration_ms}ms)`);
