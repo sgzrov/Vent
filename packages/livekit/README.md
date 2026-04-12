@@ -4,13 +4,9 @@ Thin helper for forwarding LiveKit Agents SDK observability into Vent.
 
 ## Install
 
-Once the package is published to the `vent-hq` npm org:
-
 ```bash
 npm install @vent-hq/livekit
 ```
-
-Until then, consume it from this repo/workspace.
 
 ## What it does
 

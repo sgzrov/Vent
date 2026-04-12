@@ -2,7 +2,6 @@ const LIVEKIT_VENT_TOPICS = {
   callMetadata: "vent:call-metadata",
   debugUrl: "vent:debug-url",
   warning: "vent:warning",
-  sessionReport: "vent:session-report",
   metrics: "vent:metrics",
   functionToolsExecuted: "vent:function-tools-executed",
   conversationItem: "vent:conversation-item",
@@ -86,9 +85,6 @@ export interface LiveKitSessionLike extends LiveKitEventEmitterLike {
 
 export interface LiveKitJobContextLike {
   room?: LiveKitRoomLike;
-  addShutdownCallback?(callback: () => void | Promise<void>): void;
-  makeSessionReport?(session?: unknown): unknown | Promise<unknown>;
-  make_session_report?(session?: unknown): unknown | Promise<unknown>;
 }
 
 export interface VentLiveKitLogger {
@@ -112,7 +108,6 @@ export interface VentLiveKitBridge {
   publishDebugUrl(label: string, url: string): Promise<void>;
   publishWarning(message: string, extras?: Record<string, unknown>): Promise<void>;
   publishSessionUsage(usage: Record<string, unknown>): Promise<void>;
-  flushSessionReport(): Promise<void>;
   dispose(): void;
 }
 
@@ -129,7 +124,6 @@ export function instrumentLiveKitAgent(options: InstrumentLiveKitAgentOptions): 
   const logger = options.logger ?? defaultLogger;
   const reliable = options.reliable ?? true;
   const teardownFns: Array<() => void> = [];
-  let sessionReportPublished = false;
 
   const publish = async (topic: VentTopic, payload: Record<string, unknown>): Promise<void> => {
     const message = {
@@ -170,13 +164,55 @@ export function instrumentLiveKitAgent(options: InstrumentLiveKitAgentOptions): 
   };
 
   const publishFunctionToolsExecuted = async (event: Record<string, unknown>): Promise<void> => {
+    const functionCalls = event["function_calls"] as Array<Record<string, unknown>> | undefined;
+    const functionCallOutputs = event["function_call_outputs"] as Array<Record<string, unknown> | null> | undefined;
+
+    // Merge function_calls + function_call_outputs into a tool_calls array
+    // that the Vent adapter can extract (name, arguments as dict, result, successful).
+    const toolCalls: Array<Record<string, unknown>> = [];
+    if (Array.isArray(functionCalls)) {
+      for (let i = 0; i < functionCalls.length; i++) {
+        const fc = functionCalls[i];
+        if (!fc) continue;
+        const output = Array.isArray(functionCallOutputs) ? functionCallOutputs[i] : undefined;
+
+        let parsedArgs: unknown = fc["arguments"];
+        if (typeof parsedArgs === "string") {
+          try { parsedArgs = JSON.parse(parsedArgs); } catch { /* keep as string */ }
+        }
+
+        toolCalls.push({
+          name: fc["name"],
+          arguments: parsedArgs,
+          call_id: fc["call_id"],
+          result: output?.["output"] ?? undefined,
+          successful: output ? !(output["is_error"]) : undefined,
+        });
+      }
+    }
+
     await publish(LIVEKIT_VENT_TOPICS.functionToolsExecuted, {
       event: "function_tools_executed",
+      tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
       ...event,
     });
   };
 
   const publishConversationItem = async (event: Record<string, unknown>): Promise<void> => {
+    // ChatMessage.content can contain AudioContent (AudioFrame) and
+    // ImageContent (VideoFrame) which aren't JSON-serializable.
+    // Strip binary content, keep only text.
+    const item = event["item"] as Record<string, unknown> | undefined;
+    if (item && Array.isArray(item["content"])) {
+      item["content"] = (item["content"] as unknown[]).filter((c) => {
+        if (typeof c === "string") return true;
+        if (c && typeof c === "object" && "type" in c) {
+          const t = (c as Record<string, unknown>)["type"];
+          return t !== "audio_content" && t !== "image_content";
+        }
+        return true;
+      });
+    }
     await publish(LIVEKIT_VENT_TOPICS.conversationItem, {
       event: "conversation_item_added",
       ...event,
@@ -192,23 +228,6 @@ export function instrumentLiveKitAgent(options: InstrumentLiveKitAgentOptions): 
 
   const publishSessionUsage = async (usage: Record<string, unknown>): Promise<void> => {
     await publish(LIVEKIT_VENT_TOPICS.sessionUsage, { usage });
-  };
-
-  const flushSessionReport = async (): Promise<void> => {
-    if (sessionReportPublished || !options.ctx) return;
-    const makeSessionReport = options.ctx.makeSessionReport ?? options.ctx.make_session_report;
-    if (!makeSessionReport) return;
-
-    sessionReportPublished = true;
-    try {
-      const report = await makeSessionReport(options.session);
-      if (report && typeof report === "object") {
-        await publish(LIVEKIT_VENT_TOPICS.sessionReport, { report: sanitizeForJson(report) as Record<string, unknown> });
-      }
-    } catch (error) {
-      sessionReportPublished = false;
-      logger.warn("Failed to publish LiveKit session report", error);
-    }
   };
 
   const safePublish = (operation: () => Promise<void>, context: string) => {
@@ -235,6 +254,11 @@ export function instrumentLiveKitAgent(options: InstrumentLiveKitAgentOptions): 
       safePublish(() => publishUserInputTranscribed(asRecord(event)), "user_input_transcribed event");
     }));
 
+    teardownFns.push(subscribe(options.session, "session_usage_updated", (event) => {
+      const payload = asRecord(event);
+      safePublish(() => publishSessionUsage(asRecord(payload["usage"]) ?? payload), "session_usage_updated event");
+    }));
+
     teardownFns.push(subscribe(options.session, "close", (event) => {
       const payload = asRecord(event);
       const closeError = payload["error"];
@@ -244,14 +268,7 @@ export function instrumentLiveKitAgent(options: InstrumentLiveKitAgentOptions): 
           "close warning",
         );
       }
-      safePublish(flushSessionReport, "session report");
     }));
-  }
-
-  if (options.ctx?.addShutdownCallback) {
-    options.ctx.addShutdownCallback(async () => {
-      await flushSessionReport();
-    });
   }
 
   const extraMetadata = filterSessionMetadataForInAgentOnlySignals(options.sessionMetadata, room);
@@ -268,7 +285,6 @@ export function instrumentLiveKitAgent(options: InstrumentLiveKitAgentOptions): 
     publishDebugUrl,
     publishWarning,
     publishSessionUsage,
-    flushSessionReport,
     dispose() {
       for (const teardown of teardownFns.splice(0)) {
         teardown();
