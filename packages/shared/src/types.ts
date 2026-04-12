@@ -477,6 +477,15 @@ export interface ComponentLatencyMetrics {
 // Platform call metadata (from GET /call/{id})
 // ============================================================
 
+/** Per-model LLM usage (token counts for cost estimation). */
+export interface UsageEntry {
+  type: string;
+  provider: string;
+  model: string;
+  input_tokens?: number;
+  output_tokens?: number;
+}
+
 /** Per-component cost breakdown from platform API */
 export interface CostBreakdown {
   stt_usd?: number;
@@ -516,6 +525,8 @@ export interface CallMetadata {
   variables?: Record<string, unknown>;
   /** Provider/runtime warnings retained in a normalized structure. */
   provider_warnings?: ProviderWarning[];
+  /** Per-model usage data (token counts, characters, audio duration) from in-agent events. */
+  usage?: UsageEntry[];
   /** Provider-native artifacts that are valuable to retain but not worth fully normalizing yet. */
   provider_metadata?: Record<string, unknown>;
   /** Call transfers that occurred during the call */

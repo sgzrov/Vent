@@ -122,6 +122,8 @@ export interface BlandCallResponse {
     }>;
   };
   is_proxy_agent_call?: boolean;
+  transferred_to?: string;
+  transferred_at?: string;
 }
 
 export class BlandAudioChannel extends BaseAudioChannel {
@@ -382,12 +384,8 @@ export class BlandAudioChannel extends BaseAudioChannel {
       provider_warnings: data.error_message ? [{ message: data.error_message, code: "provider_error" }] : undefined,
       provider_metadata: compactUnknownRecord({
         duration_s: durationS,
-        summary: data.summary,
         answered_by: data.answered_by,
         citations: data.citations ?? (this.realtimeCitations.length > 0 ? this.realtimeCitations : undefined),
-        concatenated_transcript: data.concatenated_transcript,
-        pathway_logs: data.pathway_logs,
-        warm_transfer_call: data.warm_transfer_call,
       }),
       transfers: extractBlandTransfers(data),
     };
@@ -539,6 +537,7 @@ export class BlandAudioChannel extends BaseAudioChannel {
     if (!this.ws) return;
     this.callStartedAt = Date.now();
     this._connectTimestampMs = this.callStartedAt;
+    this._connectMonotonicMs = performance.now();
 
     this.ws.on("message", (data: Buffer | ArrayBuffer | Buffer[]) => {
       let raw: string;
@@ -581,7 +580,7 @@ export class BlandAudioChannel extends BaseAudioChannel {
           }
         }
 
-        this.captureAgentAudio(pcm24k, Date.now() - (this.callStartedAt ?? Date.now()));
+        this.captureAgentAudio(pcm24k, performance.now() - this._connectMonotonicMs);
         this.emit("audio", pcm24k);
 
         // EOT logging: track speech ↔ silence transitions
@@ -970,29 +969,48 @@ export function parseBlandToolCalls(data: BlandCallResponse): ObservedToolCall[]
 
 export function extractBlandTransfers(data: BlandCallResponse): CallTransfer[] | undefined {
   if (data.is_proxy_agent_call) return undefined;
+
+  const transfers: CallTransfer[] = [];
+
+  // Warm transfers
   const warmTransfer = data.warm_transfer_call;
-  if (!warmTransfer) return undefined;
+  if (warmTransfer) {
+    const type = warmTransfer.state
+      ? `warm_transfer_${warmTransfer.state.toLowerCase()}`
+      : "warm_transfer";
+    const status = resolveBlandTransferStatus(warmTransfer.state);
+    const proxyCalls = warmTransfer.proxy_agent_calls ?? [];
 
-  const type = warmTransfer.state
-    ? `warm_transfer_${warmTransfer.state.toLowerCase()}`
-    : "warm_transfer";
-  const status = resolveBlandTransferStatus(warmTransfer.state);
-  const proxyCalls = warmTransfer.proxy_agent_calls ?? [];
-
-  if (proxyCalls.length > 0) {
-    return proxyCalls.map((call) => ({
-      type: call.state ? `warm_transfer_${call.state.toLowerCase()}` : type,
-      destination: call.phone_number,
-      status: resolveBlandTransferStatus(call.state ?? warmTransfer.state),
-      sources: ["platform_metadata"],
-    }));
+    if (proxyCalls.length > 0) {
+      for (const call of proxyCalls) {
+        transfers.push({
+          type: call.state ? `warm_transfer_${call.state.toLowerCase()}` : type,
+          destination: call.phone_number,
+          status: resolveBlandTransferStatus(call.state ?? warmTransfer.state),
+          sources: ["platform_metadata"],
+        });
+      }
+    } else {
+      transfers.push({
+        type,
+        status,
+        sources: ["platform_metadata"],
+      });
+    }
   }
 
-  return [{
-    type,
-    status,
-    sources: ["platform_metadata"],
-  }];
+  // Cold transfers
+  if (data.transferred_to) {
+    transfers.push({
+      type: "cold_transfer",
+      destination: data.transferred_to,
+      status: "completed",
+      timestamp_ms: toRelativeBlandTimestampMs(data.transferred_at, parseBlandTimestampMs(data.started_at)),
+      sources: ["platform_metadata"],
+    });
+  }
+
+  return transfers.length > 0 ? transfers : undefined;
 }
 
 function resolveBlandTransferStatus(state: string | undefined): CallTransfer["status"] {

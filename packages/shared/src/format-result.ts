@@ -22,6 +22,7 @@ import type {
   CallMetadata,
   CallTransfer,
   CostBreakdown,
+  UsageEntry,
   ComponentLatencyMetrics,
   ComponentLatency,
   HarnessOverhead,
@@ -133,6 +134,7 @@ interface FormattedCallMetadata {
   ended_reason?: string;
   cost_usd?: number;
   cost_breakdown?: CostBreakdown;
+  usage?: UsageEntry[];
   recording_url?: string;
   recording_variants?: Record<string, string>;
   provider_debug_urls?: Record<string, string>;
@@ -393,6 +395,7 @@ function formatCallMetadata(meta: CallMetadata | undefined): FormattedCallMetada
     ended_reason: meta.ended_reason,
     cost_usd: meta.cost_usd,
     cost_breakdown: meta.cost_breakdown,
+    usage: meta.usage && meta.usage.length > 0 ? meta.usage : undefined,
     recording_url: meta.recording_url,
     recording_variants: meta.recording_variants,
     provider_debug_urls: meta.provider_debug_urls,

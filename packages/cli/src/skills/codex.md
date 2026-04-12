@@ -8,6 +8,17 @@ Call voice agents from the terminal. Calls run in the cloud (30-120s).
 - After changing audio config: run calls
 - Before marking a task complete that touches agent behavior: run calls
 
+## LiveKit Agent Setup (REQUIRED before running LiveKit tests)
+
+When the user asks to test, configure, or run anything with a LiveKit agent, you MUST install the Vent LiveKit helper in the agent project and add the instrumentation call to the agent entrypoint BEFORE running any Vent calls.
+- Node.js: `npm install @vent-hq/livekit`, then add `instrumentLiveKitAgent({ ctx, session })` to the agent entrypoint.
+- Python: `pip install vent-livekit`, then add `instrument_livekit_agent(ctx=ctx, session=session)` to the agent entrypoint.
+Without this, Vent cannot capture metrics, tool calls, usage, or session reports from the LiveKit agent.
+
+Before running a LiveKit test, verify the agent process is running (`ps aux | grep <agent_process>`). If it's not running, start it before attempting any calls.
+
+LiveKit worker restart caveat: After restarting a LiveKit agent process, wait at least 60 seconds before running a Vent call. If calls were attempted against stale workers (failed with "agent did not speak" or "no speech detected"), kill the agent, wait 60 seconds for ALL stale workers to deregister, then restart. Do not restart the agent multiple times in quick succession — each restart creates another stale worker registration that compounds the problem.
+
 ## Setup (if no Vent access token)
 
 If `~/.vent/credentials` does not exist and `VENT_ACCESS_TOKEN` is not set:
@@ -306,7 +317,8 @@ Transport:
   WebSocket — send JSON text frames with these payloads. WebSocket agents may also emit {"type":"vent:transcript","role":"caller","text":"I need to reschedule","turn_index":0} when they have native transcript text.
   WebRTC/LiveKit — publishData() or sendText() on the matching "vent:*" topic, e.g. topic "vent:call-metadata" with the JSON body above.
 For LiveKit, transcript and timing stay authoritative from native room signals (`lk.transcription`, `lk.agent.state`). Do not emit `vent:transcript` from LiveKit agents.
-For LiveKit Node agents, prefer the first-party helper instead of manual forwarding:
+For LiveKit agents, prefer the first-party helper instead of manual forwarding:
+Node.js — `npm install @vent-hq/livekit`:
 ```ts
 import { instrumentLiveKitAgent } from "@vent-hq/livekit";
 
@@ -315,8 +327,13 @@ const vent = instrumentLiveKitAgent({
   session,
 });
 ```
+Python — `pip install vent-livekit`:
+```python
+from vent_livekit import instrument_livekit_agent
+
+vent = instrument_livekit_agent(ctx=ctx, session=session)
+```
 This helper must run inside the LiveKit agent runtime with the existing Agents SDK `session` and `ctx` objects. It is the Vent integration layer on top of the Agents SDK, not a replacement for it.
-Install it with `npm install @vent-hq/livekit` after the package is published to the `vent-hq` npm org. Until then, use the workspace package from this repo.
 This automatically publishes only the in-agent-only LiveKit signals: `metrics_collected`, `function_tools_executed`, `conversation_item_added`, and a session report on close/shutdown.
 Do not use it to mirror room-visible signals like transcript, agent state timing, or room/session ID — Vent already gets those from LiveKit itself.
 For LiveKit inside-agent forwarding, prefer sending the raw LiveKit event payloads on:

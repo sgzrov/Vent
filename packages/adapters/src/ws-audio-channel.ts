@@ -144,6 +144,7 @@ export class WsAudioChannel extends BaseAudioChannel {
         this.ws = ws;
         this.connectTimestamp = Date.now();
         this._connectTimestampMs = this.connectTimestamp;
+        this._connectMonotonicMs = performance.now();
         this._stats.connectLatencyMs = Date.now() - connectStart;
         this.toolCalls = [];
         this.componentTimings = [];
@@ -161,7 +162,7 @@ export class WsAudioChannel extends BaseAudioChannel {
             const pcm24k = this.targetSampleRate !== INTERNAL_SAMPLE_RATE
               ? resample(chunk, this.targetSampleRate, INTERNAL_SAMPLE_RATE)
               : chunk;
-            this.captureAgentAudio(pcm24k, Date.now() - this.connectTimestamp);
+            this.captureAgentAudio(pcm24k, performance.now() - this._connectMonotonicMs);
             this.emit("audio", pcm24k);
           } else {
             this.handleTextFrame(data.toString());
@@ -206,7 +207,7 @@ export class WsAudioChannel extends BaseAudioChannel {
     if (raw) {
       // Raw path: bypass buffer, send directly (timing matters for interrupts/noise)
       this._stats.bytesSent += pcm.length;
-      this.captureCallerAudio(pcm, Date.now() - this.connectTimestamp);
+      this.captureCallerAudio(pcm, performance.now() - this._connectMonotonicMs);
       const outbound = this.targetSampleRate !== INTERNAL_SAMPLE_RATE
         ? resample(pcm, INTERNAL_SAMPLE_RATE, this.targetSampleRate)
         : pcm;
