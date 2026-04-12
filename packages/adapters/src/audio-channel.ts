@@ -184,6 +184,7 @@ export abstract class BaseAudioChannel extends EventEmitter implements AudioChan
   private _audioDrainNotify: (() => void) | null = null;
   private _audioDrainStopping = false;
   protected _connectTimestampMs = 0;
+  protected _connectMonotonicMs = 0;
 
   /** Input sample rate for all adapters (16-bit mono PCM). */
   static readonly INPUT_SAMPLE_RATE = 24000;
@@ -220,7 +221,7 @@ export abstract class BaseAudioChannel extends EventEmitter implements AudioChan
    */
   sendAudio(pcm: Buffer, opts?: SendAudioOptions): void {
     this._stats.bytesSent += pcm.length;
-    this.captureCallerAudio(pcm, Date.now() - this._connectTimestampMs);
+    this.captureCallerAudio(pcm, performance.now() - this._connectMonotonicMs);
 
     // Resample input → output rate
     const resampled = resample(pcm, BaseAudioChannel.INPUT_SAMPLE_RATE, this.outputSampleRate);
@@ -575,10 +576,17 @@ class RecordingSideWriter {
     startMs: number,
     getTempDir: () => Promise<string>,
   ): Promise<void> {
-    const startSample = Math.max(
+    // Snap to write head if within 60ms — absorbs event-loop jitter
+    // without swallowing real speech pauses (typically 150ms+).
+    const SNAP_THRESHOLD_SAMPLES = Math.ceil(CALL_RECORDING_SAMPLE_RATE * 0.060);
+    let startSample = Math.max(
       0,
       Math.round((startMs / 1000) * CALL_RECORDING_SAMPLE_RATE),
     );
+    if (this.writtenSamples > 0
+        && Math.abs(startSample - this.writtenSamples) <= SNAP_THRESHOLD_SAMPLES) {
+      startSample = this.writtenSamples;
+    }
 
     this.pending = this.pending.then(async () => {
       const dir = await getTempDir();

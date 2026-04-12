@@ -14,7 +14,7 @@
 
 import WebSocket from "ws";
 import { VapiClient, type Vapi } from "@vapi-ai/server-sdk";
-import type { ObservedToolCall, CallMetadata, CallTransfer, ComponentLatency } from "@vent/shared";
+import type { ObservedToolCall, CallMetadata, CallTransfer, ComponentLatency, UsageEntry } from "@vent/shared";
 import { resample } from "@vent/voice";
 import { BaseAudioChannel, type SendAudioOptions } from "./audio-channel.js";
 
@@ -82,6 +82,7 @@ interface VapiCallResponse {
     total?: number;
     llmPromptTokens?: number;
     llmCompletionTokens?: number;
+    llmCachedPromptTokens?: number;
     ttsCharacters?: number;
     analysisCostBreakdown?: Record<string, unknown>;
   };
@@ -106,6 +107,12 @@ interface VapiCallResponse {
     performanceMetrics?: Record<string, unknown>;
     structuredOutputs?: Record<string, unknown>;
     scorecards?: Record<string, unknown>;
+  };
+  assistant?: {
+    model?: {
+      provider?: string;
+      model?: string;
+    };
   };
 }
 
@@ -210,6 +217,7 @@ export class VapiAudioChannel extends BaseAudioChannel {
     const connectStart = Date.now();
     this.connectTimestamp = connectStart;
     this._connectTimestampMs = connectStart;
+    this._connectMonotonicMs = performance.now();
     this.enableRecordingCapture();
     this.turnTimings = [];
     this.currentTurnIndex = -1;
@@ -553,6 +561,7 @@ export class VapiAudioChannel extends BaseAudioChannel {
       const cb = report.costBreakdown as VapiCallResponse["costBreakdown"] | undefined;
       const analysis = report.analysis as VapiCallResponse["analysis"] | undefined;
       const artifact = report.artifact as VapiCallResponse["artifact"] | undefined;
+      const assistant = report.assistant as VapiCallResponse["assistant"] | undefined;
       const metadataTransfers = extractVapiTransfers(report);
       return {
         platform: "vapi",
@@ -560,6 +569,7 @@ export class VapiAudioChannel extends BaseAudioChannel {
         ended_reason: report.endedReason as string | undefined,
         cost_usd: cb?.total,
         cost_breakdown: buildVapiCostBreakdown(cb),
+        usage: buildVapiUsage(cb, assistant),
         recording_url: getPrimaryRecordingUrl(artifact),
         recording_variants: buildVapiRecordingVariants(artifact),
         provider_debug_urls: buildVapiDebugUrls({
@@ -567,12 +577,10 @@ export class VapiAudioChannel extends BaseAudioChannel {
           monitor: report.monitor as VapiCallResponse["monitor"] | undefined,
         }),
         variables: artifact?.variableValues,
-        provider_metadata: {
-          ...buildVapiProviderMetadata({ analysis, artifact, costBreakdown: cb }),
+        provider_metadata: compactUnknownRecord({
           duration_s: report.duration as number | undefined,
-          summary: analysis?.summary,
-          success_evaluation: analysis?.successEvaluation,
-        },
+          performance_metrics: artifact?.performanceMetrics,
+        }),
         transfers: mergeTransfers(this.formatTransfers(), metadataTransfers),
       };
     }
@@ -588,16 +596,15 @@ export class VapiAudioChannel extends BaseAudioChannel {
       ended_reason: data.endedReason,
       cost_usd: cb?.total,
       cost_breakdown: buildVapiCostBreakdown(cb),
+      usage: buildVapiUsage(cb, data.assistant),
       recording_url: getPrimaryRecordingUrl(data.artifact),
       recording_variants: buildVapiRecordingVariants(data.artifact),
       provider_debug_urls: buildVapiDebugUrls(data),
       variables: data.artifact?.variableValues,
-      provider_metadata: {
-        ...buildVapiProviderMetadata(data),
+      provider_metadata: compactUnknownRecord({
         duration_s: data.duration,
-        summary: data.analysis?.summary,
-        success_evaluation: data.analysis?.successEvaluation,
-      },
+        performance_metrics: data.artifact?.performanceMetrics,
+      }),
       transfers: mergeTransfers(this.formatTransfers(), metadataTransfers),
     };
   }
@@ -910,7 +917,7 @@ export class VapiAudioChannel extends BaseAudioChannel {
             const chunk = data instanceof Buffer ? data : Buffer.from(data as ArrayBuffer);
             this._stats.bytesReceived += chunk.length;
             const resampled = resample(chunk, 16000, 24000);
-            this.captureAgentAudio(resampled, Date.now() - this.connectTimestamp);
+            this.captureAgentAudio(resampled, performance.now() - this._connectMonotonicMs);
             this.emit("audio", resampled);
           } else {
             this.handleControlMessage(data.toString());
@@ -1567,6 +1574,26 @@ function getRecordingUrl(recording: unknown): string | undefined {
   return undefined;
 }
 
+function buildVapiUsage(
+  costBreakdown: VapiCallResponse["costBreakdown"] | undefined,
+  assistant: VapiCallResponse["assistant"] | undefined,
+): UsageEntry[] | undefined {
+  if (!costBreakdown) return undefined;
+  const { llmPromptTokens, llmCompletionTokens, llmCachedPromptTokens } = costBreakdown;
+  if (llmPromptTokens == null && llmCompletionTokens == null) return undefined;
+  const entry: UsageEntry = {
+    type: "llm",
+    provider: assistant?.model?.provider ?? "unknown",
+    model: assistant?.model?.model ?? "unknown",
+    input_tokens: llmPromptTokens,
+    output_tokens: llmCompletionTokens,
+  };
+  if (llmCachedPromptTokens != null && llmCachedPromptTokens > 0) {
+    (entry as unknown as Record<string, unknown>).cached_input_tokens = llmCachedPromptTokens;
+  }
+  return [entry];
+}
+
 function buildVapiCostBreakdown(costBreakdown: VapiCallResponse["costBreakdown"] | undefined): CallMetadata["cost_breakdown"] {
   if (!costBreakdown) return undefined;
   return {
@@ -1607,25 +1634,6 @@ function buildVapiDebugUrls(
     control: data.monitor?.controlUrl,
     log: data.artifact?.logUrl,
     pcap: data.artifact?.pcapUrl,
-  });
-}
-
-function buildVapiProviderMetadata(
-  data: Pick<VapiCallResponse, "analysis" | "artifact" | "costBreakdown">,
-): CallMetadata["provider_metadata"] {
-  return compactUnknownRecord({
-    structured_data: data.analysis?.structuredData,
-    structured_data_multi: data.analysis?.structuredDataMulti,
-    messages_openai_formatted: data.artifact?.messagesOpenAIFormatted,
-    nodes: data.artifact?.nodes,
-    performance_metrics: data.artifact?.performanceMetrics,
-    structured_outputs: data.artifact?.structuredOutputs,
-    scorecards: data.artifact?.scorecards,
-    cost_breakdown_extra: data.costBreakdown ? compactUnknownRecord({
-      analysis_cost_breakdown: data.costBreakdown.analysisCostBreakdown,
-      chat_usd: data.costBreakdown.chat,
-      tts_characters: data.costBreakdown.ttsCharacters,
-    }) : undefined,
   });
 }
 

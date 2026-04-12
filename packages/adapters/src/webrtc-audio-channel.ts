@@ -38,7 +38,7 @@ import {
 import { RoomAgentDispatch, RoomConfiguration } from "@livekit/protocol";
 import { AccessToken, RoomServiceClient } from "livekit-server-sdk";
 import { resample } from "@vent/voice";
-import type { ObservedToolCall, CallMetadata, CallTransfer, ComponentLatency, ProviderWarning } from "@vent/shared";
+import type { ObservedToolCall, CallMetadata, CallTransfer, ComponentLatency, ProviderWarning, UsageEntry } from "@vent/shared";
 import { BaseAudioChannel, type SendAudioOptions } from "./audio-channel.js";
 
 interface WsToolCallEvent {
@@ -314,6 +314,7 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
     this.collecting = true;
     this.connectTimestamp = Date.now();
     this._connectTimestampMs = this.connectTimestamp;
+    this._connectMonotonicMs = performance.now();
     this.toolCalls = [];
     this.turnTimings = [];
     this.currentTurnIndex = -1;
@@ -680,7 +681,7 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
       const llm_ms = t.thinkingAt != null && t.firstAgentTextAt != null
         ? t.firstAgentTextAt - t.thinkingAt : undefined;
       const tts_ms = t.firstAgentTextAt != null && t.speakingAt != null
-        ? t.speakingAt - t.firstAgentTextAt : undefined;
+        ? Math.max(0, t.speakingAt - t.firstAgentTextAt) : undefined;
 
       const speech_duration_ms = t.speakingAt != null && t.listeningAt != null
         ? t.listeningAt - t.speakingAt : undefined;
@@ -809,7 +810,7 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
         this.handleConversationItemEvent(event as unknown as LiveKitConversationItemEvent);
         break;
       case LIVEKIT_USER_INPUT_TRANSCRIBED_TOPIC:
-        this.handleUserInputTranscribedEvent(event);
+        // Redundant — transcript comes from lk.transcription room signals
         break;
       case LIVEKIT_SESSION_USAGE_TOPIC:
         this.handleSessionUsageEvent(event);
@@ -895,10 +896,6 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
     }
   }
 
-  private handleUserInputTranscribedEvent(event: Record<string, unknown>): void {
-    this.appendProviderMetadataListItem("livekit_user_input_transcribed_events", event);
-  }
-
   private handleSessionUsageEvent(event: Record<string, unknown>): void {
     const usage = firstRecord(event.usage, event.session_usage, event.data) ?? event;
     this.mergeCallMetadata({
@@ -906,6 +903,27 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
         livekit_session_usage: usage,
       }),
     });
+
+    // Extract LLM usage entries only (token counts that matter for cost)
+    const modelUsage = usage["model_usage"] as Array<Record<string, unknown>> | undefined;
+    if (Array.isArray(modelUsage) && modelUsage.length > 0) {
+      const entries = modelUsage
+        .filter((m) => firstString(m["type"]) === "llm_usage")
+        .map((m) => compactUnknownRecord({
+          type: "llm_usage",
+          provider: firstString(m["provider"]) ?? "",
+          model: firstString(m["model"]) ?? "",
+          input_tokens: firstNumber(m["input_tokens"]),
+          output_tokens: firstNumber(m["output_tokens"]),
+        }))
+        .filter(Boolean) as Array<Record<string, unknown>>;
+
+      if (entries.length > 0) {
+        this.mergeCallMetadata({
+          usage: entries as UsageEntry[],
+        });
+      }
+    }
   }
 
   private handleDebugUrlEvent(event: LiveKitDebugUrlEvent): void {
@@ -1056,7 +1074,7 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
           this._stats.bytesReceived += frameBuffer.length;
           // Resample from LiveKit rate → 24kHz for consumers
           const pcm24k = resample(frameBuffer, this.livekitSampleRate, 24000);
-          this.captureAgentAudio(pcm24k, Date.now() - this.connectTimestamp);
+          this.captureAgentAudio(pcm24k, performance.now() - this._connectMonotonicMs);
           this.emit("audio", pcm24k);
         }
       } catch (err) {
@@ -1198,7 +1216,7 @@ function extractLiveKitMetricTiming(
       ? {
           speechId,
           timing: {
-            tts_ms: ttsMs != null ? Math.round(ttsMs) : undefined,
+            tts_ms: ttsMs != null ? Math.max(0, Math.round(ttsMs)) : undefined,
             speech_duration_ms: speechDurationMs != null ? Math.round(speechDurationMs) : undefined,
           },
         }

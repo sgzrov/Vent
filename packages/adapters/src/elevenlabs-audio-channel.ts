@@ -42,7 +42,7 @@ import {
 } from "@livekit/rtc-node";
 import { Readable } from "node:stream";
 import { ElevenLabsClient } from "@elevenlabs/elevenlabs-js";
-import type { ObservedToolCall, CallMetadata, CallTransfer, ComponentLatency, CostBreakdown, ProviderWarning } from "@vent/shared";
+import type { ObservedToolCall, CallMetadata, CallTransfer, ComponentLatency, CostBreakdown, ProviderWarning, UsageEntry } from "@vent/shared";
 import { resample } from "@vent/voice";
 import { BaseAudioChannel, type CallRecording, type SendAudioOptions } from "./audio-channel.js";
 
@@ -170,6 +170,7 @@ export class ElevenLabsAudioChannel extends BaseAudioChannel {
     this.collecting = true;
     this.connectTimestamp = Date.now();
     this._connectTimestampMs = this.connectTimestamp;
+    this._connectMonotonicMs = performance.now();
     this.agentTextBuffer = "";
     this.realtimeUserTranscripts = [];
     this.realtimeToolCalls = [];
@@ -425,22 +426,16 @@ export class ElevenLabsAudioChannel extends BaseAudioChannel {
       ended_reason: meta?.terminationReason as string | undefined,
       cost_usd: meta?.cost as number | undefined,
       cost_breakdown: costBreakdown,
+      usage: extractElevenLabsUsage(data),
       provider_warnings: providerWarnings,
       provider_metadata: compactUnknownRecord({
         duration_s: meta?.callDurationSecs as number | undefined,
-        summary: analysis?.transcriptSummary as string | undefined,
-        call_successful: callSuccessful === "success" ? true
-          : callSuccessful === "failure" ? false : undefined,
         has_audio: data.hasAudio,
         has_user_audio: data.hasUserAudio,
         has_response_audio: data.hasResponseAudio,
         phone_call: meta?.phoneCall,
         rag_usage: meta?.ragUsage,
-        features_usage: meta?.featuresUsage,
-        evaluation_criteria_results: analysis?.evaluationCriteriaResults,
         data_collection_results: analysis?.dataCollectionResults,
-        call_summary_title: analysis?.callSummaryTitle,
-        ...compactRealtimeProviderMetadata(this.realtimeProviderMetadata),
       }),
       transfers: extractElevenLabsTransfers(data),
     };
@@ -980,7 +975,7 @@ export class ElevenLabsAudioChannel extends BaseAudioChannel {
           this._stats.bytesReceived += frameBuffer.length;
           // Resample from LiveKit 48kHz → 24kHz for consumers
           const pcm24k = resample(frameBuffer, sampleRate, 24000);
-          this.captureAgentAudio(pcm24k, Date.now() - this.connectTimestamp);
+          this.captureAgentAudio(pcm24k, performance.now() - this._connectMonotonicMs);
           this.processAgentAudioSilence(pcm24k);
           this.emit("audio", pcm24k);
         }
@@ -1118,6 +1113,86 @@ function parseJsonRecord(value: string | undefined): Record<string, unknown> | u
 
 function scaleSecondsToMs(value: number | undefined): number | undefined {
   return value != null ? value * 1000 : undefined;
+}
+
+/**
+ * Extract LLM token usage from ElevenLabs conversation data.
+ *
+ * Sources (checked in order of preference):
+ *   1. metadata.charging.llm_usage.irreversible_generation.model_usage.<model>
+ *   2. Per-turn transcript[].llm_usage.model_usage.<model>
+ *
+ * Both shapes expose { input: { tokens }, output_total: { tokens } } per model.
+ */
+function extractElevenLabsUsage(data: Record<string, unknown>): UsageEntry[] | undefined {
+  const entries: UsageEntry[] = [];
+
+  // ── Source 1: aggregated charging data ────────────────────────
+  const meta = data.metadata as Record<string, unknown> | undefined;
+  const charging = meta?.charging as Record<string, unknown> | undefined;
+  const llmUsage = charging?.llm_usage as Record<string, unknown> | undefined;
+  const irrevGen = (llmUsage?.irreversible_generation ?? llmUsage) as Record<string, unknown> | undefined;
+  const aggregatedModelUsage = irrevGen?.model_usage as Record<string, unknown> | undefined;
+
+  if (aggregatedModelUsage) {
+    for (const [model, usage] of Object.entries(aggregatedModelUsage)) {
+      const u = usage as Record<string, unknown> | undefined;
+      if (!u) continue;
+      const inputTokens = (u.input as Record<string, unknown> | undefined)?.tokens as number | undefined;
+      const outputTokens = (u.output_total as Record<string, unknown> | undefined)?.tokens as number | undefined;
+      if (inputTokens != null || outputTokens != null) {
+        entries.push({
+          type: "llm_usage",
+          provider: "elevenlabs",
+          model,
+          input_tokens: inputTokens ?? undefined,
+          output_tokens: outputTokens ?? undefined,
+        });
+      }
+    }
+  }
+
+  // If we got aggregated data, prefer that over per-turn sums.
+  if (entries.length > 0) return entries;
+
+  // ── Source 2: per-turn transcript entries ─────────────────────
+  const transcript = data.transcript as Array<Record<string, unknown>> | undefined;
+  if (!transcript) return undefined;
+
+  // Accumulate across turns keyed by model name.
+  const acc = new Map<string, { input: number; output: number }>();
+
+  for (const turn of transcript) {
+    const turnLlm = turn.llm_usage as Record<string, unknown> | undefined;
+    const turnModelUsage = turnLlm?.model_usage as Record<string, unknown> | undefined;
+    if (!turnModelUsage) continue;
+
+    for (const [model, usage] of Object.entries(turnModelUsage)) {
+      const u = usage as Record<string, unknown> | undefined;
+      if (!u) continue;
+      const inputTokens = (u.input as Record<string, unknown> | undefined)?.tokens as number | undefined;
+      const outputTokens = (u.output_total as Record<string, unknown> | undefined)?.tokens as number | undefined;
+      if (inputTokens == null && outputTokens == null) continue;
+
+      const prev = acc.get(model) ?? { input: 0, output: 0 };
+      acc.set(model, {
+        input: prev.input + (inputTokens ?? 0),
+        output: prev.output + (outputTokens ?? 0),
+      });
+    }
+  }
+
+  for (const [model, totals] of acc) {
+    entries.push({
+      type: "llm_usage",
+      provider: "elevenlabs",
+      model,
+      input_tokens: totals.input || undefined,
+      output_tokens: totals.output || undefined,
+    });
+  }
+
+  return entries.length > 0 ? entries : undefined;
 }
 
 function extractElevenLabsProviderWarnings(

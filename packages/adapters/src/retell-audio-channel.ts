@@ -34,7 +34,7 @@ import {
   type RemoteParticipant,
 } from "@livekit/rtc-node";
 import { resample } from "@vent/voice";
-import type { ObservedToolCall, CallMetadata, CallTransfer, ComponentLatency, CostBreakdown } from "@vent/shared";
+import type { ObservedToolCall, CallMetadata, CallTransfer, ComponentLatency, CostBreakdown, UsageEntry } from "@vent/shared";
 import { BaseAudioChannel, type SendAudioOptions } from "./audio-channel.js";
 
 const RAW_INTERRUPT_TRAILING_SILENCE_MS = 160;
@@ -140,6 +140,7 @@ export class RetellAudioChannel extends BaseAudioChannel {
     this.collecting = true;
     this.connectTimestamp = Date.now();
     this._connectTimestampMs = this.connectTimestamp;
+    this._connectMonotonicMs = performance.now();
     this.agentTextBuffer = "";
     this.lastAgentContent = "";
     this.realtimeUserTranscripts = [];
@@ -355,17 +356,12 @@ export class RetellAudioChannel extends BaseAudioChannel {
         public_log: data.public_log_url ?? undefined,
         knowledge_base: data.knowledge_base_retrieved_contents_url ?? undefined,
       }),
+      usage: buildRetellUsage(data),
+      variables: data.collected_dynamic_variables ?? undefined,
       provider_metadata: compactUnknownRecord({
         duration_s: data.duration_ms != null ? data.duration_ms / 1000 : undefined,
-        summary: data.call_analysis?.call_summary,
-        user_sentiment: data.call_analysis?.user_sentiment,
-        call_successful: data.call_analysis?.call_successful,
-        custom_analysis_data: data.call_analysis?.custom_analysis_data,
         in_voicemail: data.call_analysis?.in_voicemail,
-        llm_token_usage: data.llm_token_usage,
         telephony_identifier: telephony,
-        metadata: data.metadata,
-        scrubbed_transcript_with_tool_calls: data.scrubbed_transcript_with_tool_calls,
         e2e_latency: extractRetellE2eLatency(data),
       }),
       transfers: extractRetellTransfers(data),
@@ -517,7 +513,7 @@ export class RetellAudioChannel extends BaseAudioChannel {
           this._stats.bytesReceived += frameBuffer.length;
           // Resample from LiveKit 48kHz → 24kHz for consumers
           const pcm24k = resample(frameBuffer, sampleRate, 24000);
-          this.captureAgentAudio(pcm24k, Date.now() - this.connectTimestamp);
+          this.captureAgentAudio(pcm24k, performance.now() - this._connectMonotonicMs);
           this.emit("audio", pcm24k);
         }
       } catch (err) {
@@ -705,6 +701,26 @@ export function buildRetellCostBreakdown(products: Array<{ product: string; cost
   }
   breakdown.total_usd = total;
   return breakdown;
+}
+
+function buildRetellUsage(data: CallResponse): UsageEntry[] | undefined {
+  const tokenUsage = data.llm_token_usage as { prompt_tokens?: number; completion_tokens?: number } | undefined;
+  if (!tokenUsage) return undefined;
+  if (!tokenUsage.prompt_tokens && !tokenUsage.completion_tokens) return undefined;
+
+  // Try to get model name from the call config
+  const dataRecord = data as unknown as Record<string, unknown>;
+  const llmId = (dataRecord["llm_id"] as string | undefined)
+    ?? (dataRecord["agent_id"] as string | undefined)
+    ?? "";
+
+  return [{
+    type: "llm_usage",
+    provider: "retell",
+    model: llmId,
+    input_tokens: tokenUsage.prompt_tokens,
+    output_tokens: tokenUsage.completion_tokens,
+  }];
 }
 
 function compactStringRecord(record: Record<string, string | undefined>): Record<string, string> | undefined {
