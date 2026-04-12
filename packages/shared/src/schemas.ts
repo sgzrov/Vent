@@ -348,6 +348,14 @@ export const ComponentLatencyMetricsSchema = z.object({
   bottleneck: z.enum(["stt", "llm", "tts"]).optional(),
 });
 
+export const UsageEntrySchema = z.object({
+  type: z.string(),
+  provider: z.string(),
+  model: z.string(),
+  input_tokens: z.number().int().optional(),
+  output_tokens: z.number().int().optional(),
+});
+
 export const CostBreakdownSchema = z.object({
   stt_usd: z.number().optional(),
   llm_usd: z.number().optional(),
@@ -384,6 +392,7 @@ export const CallMetadataSchema = z.object({
   recording_variants: z.record(z.string()).optional(),
   provider_debug_urls: z.record(z.string()).optional(),
   variables: z.record(z.unknown()).optional(),
+  usage: z.array(UsageEntrySchema).optional(),
   provider_warnings: z.array(ProviderWarningSchema).optional(),
   provider_metadata: z.record(z.unknown()).optional(),
   transfers: z.array(CallTransferSchema).optional(),
