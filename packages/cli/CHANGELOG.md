@@ -1,32 +1,38 @@
 # vent-hq
 
+All notable changes to `vent-hq` are documented in this file.
+
+For the repo-wide summary, see [CHANGELOG.md](../../CHANGELOG.md).
+
+## 0.9.14
+
+### Notes
+
+- Current published version.
+- Detailed notes for releases between `0.8.29` and `0.9.14` were not backfilled.
+
 ## 0.8.29
 
-### Patch Changes
+### Changed
 
-- Update the CLI package version.
+- Version-only CLI release.
 
 ## 0.8.0
 
-### Minor Changes
+### Added
 
-- 5a2d26e: Inline full config schema into SKILL.md files, fix "undefined" stdout for coding agents
+- Inlined the full config schema into the Claude Code, Cursor, and Codex skill files so agents no longer need `npx vent-hq docs`.
+- Auto-assigned free ports for local agents started with `start_command` to avoid collisions in parallel runs.
+- Added formatted test results to SSE events, including `passed_tests` and `failed_tests`.
 
-  - Inline full config schema (with XML tags) into all three skill files (claude-code, cursor, codex) so agents no longer need to run `npx vent-hq docs`
-  - Remove `docs` command — schema is now embedded in skill files
-  - Auto-assign free ports for local agents (`start_command`) so parallel test runs don't collide
-  - Fix "undefined" output: write every SSE event as JSON line to stdout in non-TTY mode (coding agents never see empty stdout)
-  - Remove file logging (`.vent/last-run.log`) — no longer needed now that stdout always has output
-  - Remove `; cat .vent/last-run.log` workaround from all skill files
-  - Debug logs (`[vent ...]`) now write to stderr only, keeping stdout clean for structured output
-  - Include formatted test result in SSE events for rich CLI output (intent scores, latency)
-  - Add `passed_tests`/`failed_tests` to `run_complete` event metadata
-  - Validate `run_id` exists after submit
+### Changed
 
-### Patch Changes
+- Removed the `docs` command now that the schema ships with the skill files.
+- Routed debug logs to stderr so stdout stays clean for structured output.
 
-- 3b8f6fc: Suppress stderr noise for coding agents
+### Fixed
 
-  - Gate `printInfo`, `printSuccess`, `printWarn`, and per-test progress (`✔`/`✘`) behind `isTTY || --verbose`
-  - Coding agents (Claude Code, Cursor) merge stdout+stderr — stderr progress lines were polluting agent context windows
-  - In non-TTY mode without `--verbose`, the only output is the final pretty-printed JSON summary
+- Emitted SSE events as JSON lines in non-TTY mode so coding agents no longer see empty or `undefined` output.
+- Suppressed info and progress stderr output in non-TTY mode unless `--verbose` is set, keeping the final JSON summary clean for coding agents.
+- Removed `.vent/last-run.log` and its shell workaround now that stdout is reliable.
+- Added validation to ensure `run_id` exists after submit.
