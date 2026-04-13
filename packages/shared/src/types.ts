@@ -125,6 +125,8 @@ export interface BlandPlatformConfig extends BasePlatformConfig {
   bland_api_key?: string;
   /** Bland pathway ID (falls back to BLAND_PATHWAY_ID env) */
   bland_pathway_id?: string;
+  /** Bland persona ID — reusable agent preset (falls back to BLAND_PERSONA_ID env) */
+  persona_id?: string;
   /** Task prompt — used instead of pathway_id for simple agents */
   task?: string;
   /** Tool definitions (inline objects) or tool IDs (TL-xxx strings) */
@@ -179,7 +181,7 @@ export interface VapiPlatformConfig extends BasePlatformConfig {
   provider: "vapi";
   /** Vapi API key (falls back to VAPI_API_KEY env) */
   vapi_api_key?: string;
-  /** Vapi assistant ID (falls back to VAPI_ASSISTANT_ID env) */
+  /** Vapi assistant ID (falls back to VAPI_ASSISTANT_ID or VAPI_AGENT_ID env) */
   vapi_assistant_id?: string;
 }
 

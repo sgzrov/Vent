@@ -116,8 +116,7 @@ def instrument_livekit_agent(
     the Vent LiveKit adapter already understands.
 
     Args:
-        ctx: LiveKit ``JobContext``. Used for room, shutdown callback, and
-            session report generation.
+        ctx: LiveKit ``JobContext``. Used for room and shutdown callback.
         session: LiveKit ``AgentSession``. Event source for metrics, tool
             calls, conversation items, transcription, and usage.
         room: LiveKit ``Room`` (alternative to ``ctx``).

@@ -17,7 +17,6 @@ pip install vent-livekit
 - `vent:conversation-item`
 - `vent:user-input-transcribed`
 - `vent:session-usage`
-- `vent:session-report`
 
 It subscribes to:
 
@@ -27,8 +26,6 @@ It subscribes to:
 - `user_input_transcribed`
 - `session_usage_updated`
 - `close`
-
-And, when `ctx.add_shutdown_callback()` / `ctx.make_session_report()` are available, it flushes a session report on shutdown.
 
 ## Example
 

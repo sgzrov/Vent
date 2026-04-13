@@ -61,36 +61,10 @@ function slugifyRecordingLabel(label: string): string {
   return slug || "call";
 }
 
-function usesVentOwnedRecording(adapter: AudioChannelConfig["adapter"]): boolean {
-  return adapter === "livekit" || adapter === "websocket";
+function usesVentOwnedRecording(_adapter: AudioChannelConfig["adapter"]): boolean {
+  return true;
 }
 
-async function reuploadPlatformRecording(
-  platformUrl: string,
-  result: ConversationCallResult,
-  runId: string,
-): Promise<void> {
-  const storage = getStorageClient();
-  if (!storage) return;
-
-  const res = await fetch(platformUrl);
-  if (!res.ok || !res.body) return;
-
-  const contentType = res.headers.get("content-type") ?? "audio/wav";
-  const ext = contentType.includes("mp3") ? "mp3" : contentType.includes("ogg") ? "ogg" : "wav";
-  const baseName = slugifyRecordingLabel(result.name ?? result.caller_prompt.slice(0, 48));
-  const key = `recordings/${runId}/${baseName}-${randomUUID()}.${ext}`;
-
-  const buf = Buffer.from(await res.arrayBuffer());
-  await storage.upload(key, buf, contentType);
-
-  const recordingUrl = await buildRecordingUrl(key, storage);
-  result.call_metadata = {
-    platform: result.call_metadata!.platform,
-    ...result.call_metadata,
-    recording_url: recordingUrl,
-  };
-}
 
 async function attachRecordingUrl(
   result: ConversationCallResult,
@@ -99,18 +73,8 @@ async function attachRecordingUrl(
   activeUpload: ActiveRecordingUpload | null,
   runId?: string,
 ): Promise<void> {
-  if (result.call_metadata?.recording_url) {
-    await activeUpload?.abort().catch(() => {});
-    await channel.discardCallRecording?.().catch(() => {});
-    if (runId) {
-      try {
-        await reuploadPlatformRecording(result.call_metadata.recording_url, result, runId);
-      } catch (err) {
-        console.warn(`reuploadPlatformRecording failed: ${(err as Error).message}`);
-      }
-    }
-    return;
-  }
+  // Always use Vent-captured recording — platform URLs may be unavailable or require auth.
+  // Platform recording_url stays in call_metadata as reference but Vent's own URL is used.
   if (!runId) {
     await activeUpload?.abort().catch(() => {});
     await channel.discardCallRecording?.().catch(() => {});
@@ -154,9 +118,12 @@ async function attachRecordingUrl(
     return;
   }
 
+  console.log(`[recording] activeUpload=${!!activeUpload} runId=${runId} adapter=${channelConfig.adapter}`);
+
   if (activeUpload) {
     try {
       const recordingUrl = await activeUpload.finalize();
+      console.log(`[recording] live finalize result: ${recordingUrl ? "got URL" : "null"}`);
       if (recordingUrl) {
         result.call_metadata = {
           platform: result.call_metadata?.platform ?? channelConfig.adapter,
@@ -176,17 +143,26 @@ async function attachRecordingUrl(
     | undefined;
   try {
     recording = await channel.getCallRecording?.();
+    console.log(`[recording] post-call getCallRecording: ${recording ? "got recording" : "null"}`);
     if (!recording) return;
 
     const storage = getStorageClient();
-    if (!storage) return;
+    if (!storage) { console.warn(`[recording] no storage client`); return; }
 
     const baseName = slugifyRecordingLabel(result.name ?? result.caller_prompt.slice(0, 48));
     const key = `recordings/${runId}/${baseName}-${randomUUID()}.${recording.extension}`;
 
-    await storage.upload(key, recording.body, recording.contentType);
+    console.log(`[recording] buffering recording stream...`);
+    const chunks: Buffer[] = [];
+    for await (const chunk of recording.body) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+    const buf = Buffer.concat(chunks);
+    console.log(`[recording] uploading ${buf.length} bytes to ${key}`);
+    await storage.upload(key, buf, recording.contentType);
 
     const recordingUrl = await buildRecordingUrl(key, storage);
+    console.log(`[recording] uploaded, url=${recordingUrl}`);
 
     result.call_metadata = {
       platform: result.call_metadata?.platform ?? channelConfig.adapter,
@@ -194,7 +170,7 @@ async function attachRecordingUrl(
       recording_url: recordingUrl,
     };
   } catch (err) {
-    console.warn(`attachRecordingUrl failed: ${(err as Error).message}`);
+    console.warn(`[recording] attachRecordingUrl failed: ${(err as Error).message}`);
   } finally {
     await recording?.cleanup?.().catch(() => {});
     await channel.discardCallRecording?.().catch(() => {});
@@ -219,13 +195,14 @@ async function startRecordingUpload(
   callerPrompt: string,
   runId?: string,
 ): Promise<ActiveRecordingUpload | null> {
-  if (!runId) return null;
+  if (!runId) { console.log(`[recording] startRecordingUpload: no runId`); return null; }
 
   const liveRecording = channel.getLiveCallRecording?.();
-  if (!liveRecording) return null;
+  if (!liveRecording) { console.log(`[recording] startRecordingUpload: no liveRecording`); return null; }
 
   const storage = getStorageClient();
   if (!storage) {
+    console.log(`[recording] startRecordingUpload: no storage client`);
     await liveRecording.abort().catch(() => {});
     return null;
   }

@@ -18,7 +18,6 @@
     "@vent/voice": "workspace:*",
     "livekit-server-sdk": "^2.0.0",
     "retell-sdk": "^5.9.0",
-    "twilio": "^5.12.2",
     "ws": "catalog:"
   },
   "devDependencies": {

@@ -2,22 +2,17 @@
  * AudioChannel — low-level bidirectional audio pipe.
  *
  * Adapters implement this interface to provide raw PCM send/receive
- * over a specific transport (WebSocket, WebRTC, SIP). No TTS, STT,
+ * over a specific transport (WebSocket, WebRTC). No TTS, STT,
  * or silence detection — that lives in the call executors.
  *
  * All audio is 16-bit signed PCM, 24kHz, mono unless otherwise noted
  * in the adapter (transport-specific resampling happens internally).
  */
 
-import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { open, mkdtemp, rm } from "node:fs/promises";
-import type { FileHandle } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { Readable } from "node:stream";
 import type { ObservedToolCall, ChannelStats, CallMetadata, ComponentLatency } from "@vent/shared";
-import { concatPcm, resample } from "@vent/voice";
+import { resample } from "@vent/voice";
 
 export interface AudioChannelEvents {
   audio: (chunk: Buffer) => void;
@@ -209,7 +204,7 @@ export abstract class BaseAudioChannel extends EventEmitter implements AudioChan
 
   /**
    * Write a single fixed-size audio frame to the transport.
-   * Subclasses implement this for their specific transport (WebRTC, WebSocket, SIP).
+   * Subclasses implement this for their specific transport (WebRTC, WebSocket).
    * The frame is already resampled to outputSampleRate and sized to frameDurationMs.
    */
   protected abstract writeAudioFrame(samples: Int16Array, sampleRate: number): Promise<void>;
@@ -301,7 +296,7 @@ export abstract class BaseAudioChannel extends EventEmitter implements AudioChan
     this.clearTransportQueue();
   }
 
-  /** Clear the transport's internal queue (e.g. LiveKit AudioSource, Twilio buffer).
+  /** Clear the transport's internal queue (e.g. LiveKit AudioSource).
    *  Override in subclass. Base implementation is a no-op. */
   protected clearTransportQueue(): void {}
 
@@ -354,12 +349,12 @@ export abstract class BaseAudioChannel extends EventEmitter implements AudioChan
     }
   }
 
-  protected captureCallerAudio(pcm: Buffer, startMs: number): void {
-    this._recordingCapture?.addSegment("caller", pcm, startMs);
+  protected captureCallerAudio(pcm: Buffer, _startMs: number): void {
+    this._recordingCapture?.append("caller", pcm);
   }
 
-  protected captureAgentAudio(pcm: Buffer, startMs: number): void {
-    this._recordingCapture?.addSegment("agent", pcm, startMs);
+  protected captureAgentAudio(pcm: Buffer, _startMs: number): void {
+    this._recordingCapture?.append("agent", pcm);
   }
 
   async getCallRecording(): Promise<CallRecording | null> {
@@ -377,58 +372,59 @@ export abstract class BaseAudioChannel extends EventEmitter implements AudioChan
 
 type CallSide = "caller" | "agent";
 const CALL_RECORDING_SAMPLE_RATE = 24000;
-const CALL_RECORDING_MIX_CHUNK_BYTES = 64 * 1024;
-const CALL_RECORDING_FLUSH_LAG_MS = 2_000;
-const CALL_RECORDING_FLUSH_LAG_BYTES =
-  Math.floor((CALL_RECORDING_SAMPLE_RATE * 2 * CALL_RECORDING_FLUSH_LAG_MS) / 1000);
+const SILENCE_AMPLITUDE_THRESHOLD = 200;
 
+/**
+ * Pipecat-style call recording: two in-memory byte buffers kept in sync
+ * via "pad-before-append". No timestamps, no temp files, no clock drift.
+ */
 class CallRecordingCapture {
-  private caller = new RecordingSideWriter("caller");
-  private agent = new RecordingSideWriter("agent");
-  private tempDir: string | null = null;
-  private tempDirPromise: Promise<string> | null = null;
-  private liveMode = false;
-  private liveQueue = new AsyncBufferQueue();
-  private liveReadable: Readable | null = null;
-  private flushedBytes = 0;
-  private maxObservedBytes = 0;
-  private flushPromise = Promise.resolve();
-  private finalizePromise: Promise<void> | null = null;
+  private callerChunks: Buffer[] = [];
+  private agentChunks: Buffer[] = [];
+  private callerBytes = 0;
+  private agentBytes = 0;
+  private callerSpeaking = false;
+  private agentSpeaking = false;
 
-  addSegment(role: CallSide, pcm: Buffer, startMs: number): void {
-    const aligned = concatPcm([pcm]);
-    if (aligned.length === 0) return;
+  append(role: CallSide, pcm: Buffer): void {
+    if (pcm.length === 0) return;
+    const isSpeech = hasSpeech(pcm);
 
-    const startByte = Math.max(
-      0,
-      Math.round((startMs / 1000) * CALL_RECORDING_SAMPLE_RATE) * 2,
-    );
-    this.maxObservedBytes = Math.max(this.maxObservedBytes, startByte + aligned.length);
-
-    void this.getWriter(role)
-      .appendSegment(aligned, startMs, () => this.ensureTempDir())
-      .then(() => this.flushEligible())
-      .catch((err: unknown) => {
-        this.liveQueue.fail(err instanceof Error ? err : new Error(String(err)));
-      });
+    if (role === "caller") {
+      // Pad agent buffer to match caller position (only if agent is silent)
+      if (!this.agentSpeaking && this.callerBytes > this.agentBytes) {
+        const pad = Buffer.alloc(this.callerBytes - this.agentBytes);
+        this.agentChunks.push(pad);
+        this.agentBytes += pad.length;
+      }
+      this.callerChunks.push(pcm);
+      this.callerBytes += pcm.length;
+      this.callerSpeaking = isSpeech;
+    } else {
+      // Pad caller buffer to match agent position (only if caller is silent)
+      if (!this.callerSpeaking && this.agentBytes > this.callerBytes) {
+        const pad = Buffer.alloc(this.agentBytes - this.callerBytes);
+        this.callerChunks.push(pad);
+        this.callerBytes += pad.length;
+      }
+      this.agentChunks.push(pcm);
+      this.agentBytes += pcm.length;
+      this.agentSpeaking = isSpeech;
+    }
   }
 
   async render(): Promise<CallRecording | null> {
-    await this.finalizeLive();
-    const [{ filePath: callerPath, totalBytes: callerBytes }, { filePath: agentPath, totalBytes: agentBytes }] =
-      await Promise.all([this.caller.finish(), this.agent.finish()]);
+    const callerBuf = Buffer.concat(this.callerChunks);
+    const agentBuf = Buffer.concat(this.agentChunks);
+    const maxLen = Math.max(callerBuf.length, agentBuf.length);
+    if (maxLen === 0) return null;
 
-    const totalBytes = Math.max(callerBytes, agentBytes);
-    if (totalBytes === 0) {
-      await this.cleanupTempDir();
-      return null;
-    }
-
-    const header = createWavHeader(totalBytes, CALL_RECORDING_SAMPLE_RATE);
-    const body = Readable.from(this.mixToWavStream(header, callerPath, agentPath, totalBytes));
+    const mixed = mixPcm16(callerBuf, agentBuf, maxLen);
+    const header = createWavHeader(mixed.length, CALL_RECORDING_SAMPLE_RATE);
+    const wav = Buffer.concat([header, mixed]);
 
     return {
-      body,
+      body: Readable.from([wav]),
       contentType: "audio/wav",
       extension: "wav",
       cleanup: async () => this.discard(),
@@ -436,226 +432,34 @@ class CallRecordingCapture {
   }
 
   async discard(): Promise<void> {
-    this.liveQueue.close();
-    await Promise.allSettled([this.caller.discard(), this.agent.discard()]);
-    await this.cleanupTempDir();
+    this.callerChunks = [];
+    this.agentChunks = [];
+    this.callerBytes = 0;
+    this.agentBytes = 0;
   }
 
-  getLiveRecording(): LiveCallRecording {
-    this.liveMode = true;
-    if (!this.liveReadable) {
-      this.liveReadable = Readable.from(this.liveQueue);
-    }
-
-    return {
-      pcm: this.liveReadable,
-      finalize: async () => this.finalizeLive(),
-      abort: async () => this.discard(),
-      cleanup: async () => this.discard(),
-    };
-  }
-
-  private getWriter(role: CallSide): RecordingSideWriter {
-    return role === "caller" ? this.caller : this.agent;
-  }
-
-  private async ensureTempDir(): Promise<string> {
-    if (this.tempDir) return this.tempDir;
-    if (!this.tempDirPromise) {
-      this.tempDirPromise = mkdtemp(join(tmpdir(), "vent-recording-")).then((dir) => {
-        this.tempDir = dir;
-        return dir;
-      });
-    }
-    return this.tempDirPromise;
-  }
-
-  private async cleanupTempDir(): Promise<void> {
-    const tempDir = this.tempDir ?? (this.tempDirPromise ? await this.tempDirPromise : null);
-    if (!tempDir) return;
-    this.tempDir = null;
-    this.tempDirPromise = null;
-    await rm(tempDir, { recursive: true, force: true });
-  }
-
-  private async *mixToWavStream(
-    header: Buffer,
-    callerPath: string | null,
-    agentPath: string | null,
-    totalBytes: number,
-  ): AsyncGenerator<Buffer> {
-    yield header;
-
-    let callerHandle: FileHandle | null = null;
-    let agentHandle: FileHandle | null = null;
-
-    try {
-      callerHandle = callerPath ? await open(callerPath, "r") : null;
-      agentHandle = agentPath ? await open(agentPath, "r") : null;
-
-      for (let offset = 0; offset < totalBytes; offset += CALL_RECORDING_MIX_CHUNK_BYTES) {
-        const bytesToRead = Math.min(CALL_RECORDING_MIX_CHUNK_BYTES, totalBytes - offset);
-        const chunkSize = bytesToRead % 2 === 0 ? bytesToRead : bytesToRead - 1;
-        if (chunkSize <= 0) continue;
-
-        const callerChunk = await readChunk(callerHandle, offset, chunkSize);
-        const agentChunk = await readChunk(agentHandle, offset, chunkSize);
-        yield mixPcmChunks(callerChunk, agentChunk);
-      }
-    } finally {
-      await Promise.allSettled([callerHandle?.close(), agentHandle?.close()]);
-    }
-  }
-
-  private async finalizeLive(): Promise<void> {
-    if (!this.liveMode) return;
-    if (!this.finalizePromise) {
-      this.finalizePromise = (async () => {
-        const [{ totalBytes: callerBytes }, { totalBytes: agentBytes }] = await Promise.all([
-          this.caller.finish(),
-          this.agent.finish(),
-        ]);
-        await this.flushTo(Math.max(callerBytes, agentBytes));
-        this.liveQueue.close();
-      })();
-    }
-    await this.finalizePromise;
-  }
-
-  private async flushEligible(): Promise<void> {
-    if (!this.liveMode) return;
-    const targetBytes = Math.max(0, this.maxObservedBytes - CALL_RECORDING_FLUSH_LAG_BYTES);
-    await this.flushTo(targetBytes);
-  }
-
-  private async flushTo(targetBytes: number): Promise<void> {
-    if (!this.liveMode) return;
-    this.flushPromise = this.flushPromise.then(async () => {
-      const alignedTarget = targetBytes - (targetBytes % 2);
-      if (alignedTarget <= this.flushedBytes) return;
-
-      const [{ filePath: callerPath }, { filePath: agentPath }] = await Promise.all([
-        this.caller.snapshot(),
-        this.agent.snapshot(),
-      ]);
-
-      let callerHandle: FileHandle | null = null;
-      let agentHandle: FileHandle | null = null;
-      try {
-        callerHandle = callerPath ? await open(callerPath, "r") : null;
-        agentHandle = agentPath ? await open(agentPath, "r") : null;
-
-        for (let offset = this.flushedBytes; offset < alignedTarget; offset += CALL_RECORDING_MIX_CHUNK_BYTES) {
-          const bytesToRead = Math.min(CALL_RECORDING_MIX_CHUNK_BYTES, alignedTarget - offset);
-          if (bytesToRead <= 0) continue;
-          const callerChunk = await readChunk(callerHandle, offset, bytesToRead);
-          const agentChunk = await readChunk(agentHandle, offset, bytesToRead);
-          this.liveQueue.push(mixPcmChunks(callerChunk, agentChunk));
-          this.flushedBytes = offset + bytesToRead;
-        }
-      } finally {
-        await Promise.allSettled([callerHandle?.close(), agentHandle?.close()]);
-      }
-    });
-
-    await this.flushPromise;
+  getLiveRecording(): null {
+    // Live streaming not supported in simplified recording — use post-call render()
+    return null;
   }
 }
 
-class RecordingSideWriter {
-  private static readonly ZERO_CHUNK = Buffer.alloc(64 * 1024);
-  private filePath: string | null = null;
-  private fileHandle: FileHandle | null = null;
-  private pending = Promise.resolve();
-  private writtenSamples = 0;
-
-  constructor(private readonly role: CallSide) {}
-
-  appendSegment(
-    pcm: Buffer,
-    startMs: number,
-    getTempDir: () => Promise<string>,
-  ): Promise<void> {
-    // Snap to write head if within 60ms — absorbs event-loop jitter
-    // without swallowing real speech pauses (typically 150ms+).
-    const SNAP_THRESHOLD_SAMPLES = Math.ceil(CALL_RECORDING_SAMPLE_RATE * 0.060);
-    let startSample = Math.max(
-      0,
-      Math.round((startMs / 1000) * CALL_RECORDING_SAMPLE_RATE),
-    );
-    if (this.writtenSamples > 0
-        && Math.abs(startSample - this.writtenSamples) <= SNAP_THRESHOLD_SAMPLES) {
-      startSample = this.writtenSamples;
-    }
-
-    this.pending = this.pending.then(async () => {
-      const dir = await getTempDir();
-      const fileHandle = await this.ensureFileHandle(dir);
-
-      let chunk = pcm;
-      if (startSample < this.writtenSamples) {
-        const overlapBytes = Math.min(chunk.length, (this.writtenSamples - startSample) * 2);
-        chunk = chunk.subarray(overlapBytes);
-      } else if (startSample > this.writtenSamples) {
-        await this.writeZeros(fileHandle, (startSample - this.writtenSamples) * 2);
-        this.writtenSamples = startSample;
-      }
-
-      if (chunk.length === 0) return;
-
-      await writeAll(fileHandle, chunk);
-      this.writtenSamples += chunk.length / 2;
-    });
-
-    return this.pending;
+function hasSpeech(pcm: Buffer): boolean {
+  const int16 = new Int16Array(pcm.buffer, pcm.byteOffset, pcm.length / 2);
+  for (let i = 0; i < int16.length; i++) {
+    if (Math.abs(int16[i]!) > SILENCE_AMPLITUDE_THRESHOLD) return true;
   }
+  return false;
+}
 
-  async finish(): Promise<{ filePath: string | null; totalBytes: number }> {
-    await this.pending;
-    await this.closeHandle();
-    return {
-      filePath: this.filePath,
-      totalBytes: this.writtenSamples * 2,
-    };
+function mixPcm16(a: Buffer, b: Buffer, length: number): Buffer {
+  const out = Buffer.alloc(length);
+  for (let i = 0; i < length; i += 2) {
+    const sa = i < a.length ? a.readInt16LE(i) : 0;
+    const sb = i < b.length ? b.readInt16LE(i) : 0;
+    out.writeInt16LE(Math.max(-32768, Math.min(32767, sa + sb)), i);
   }
-
-  async snapshot(): Promise<{ filePath: string | null; totalBytes: number }> {
-    await this.pending;
-    return {
-      filePath: this.filePath,
-      totalBytes: this.writtenSamples * 2,
-    };
-  }
-
-  async discard(): Promise<void> {
-    await Promise.allSettled([this.pending]);
-    await this.closeHandle();
-  }
-
-  private async ensureFileHandle(dir: string): Promise<FileHandle> {
-    if (this.fileHandle) return this.fileHandle;
-    if (!this.filePath) {
-      this.filePath = join(dir, `${this.role}-${randomUUID()}.pcm`);
-    }
-    this.fileHandle = await open(this.filePath, "w");
-    return this.fileHandle;
-  }
-
-  private async closeHandle(): Promise<void> {
-    if (!this.fileHandle) return;
-    const handle = this.fileHandle;
-    this.fileHandle = null;
-    await handle.close();
-  }
-
-  private async writeZeros(fileHandle: FileHandle, totalBytes: number): Promise<void> {
-    let remaining = totalBytes;
-    while (remaining > 0) {
-      const chunkSize = Math.min(remaining, RecordingSideWriter.ZERO_CHUNK.length);
-      await writeAll(fileHandle, RecordingSideWriter.ZERO_CHUNK.subarray(0, chunkSize));
-      remaining -= chunkSize;
-    }
-  }
+  return out;
 }
 
 function createWavHeader(dataSize: number, sampleRate: number): Buffer {
@@ -679,102 +483,4 @@ function createWavHeader(dataSize: number, sampleRate: number): Buffer {
   header.write("data", 36);
   header.writeUInt32LE(dataSize, 40);
   return header;
-}
-
-async function writeAll(fileHandle: FileHandle, buffer: Buffer): Promise<void> {
-  let offset = 0;
-  while (offset < buffer.length) {
-    const { bytesWritten } = await fileHandle.write(buffer, offset, buffer.length - offset);
-    offset += bytesWritten;
-  }
-}
-
-async function readChunk(
-  fileHandle: FileHandle | null,
-  position: number,
-  byteLength: number,
-): Promise<Buffer> {
-  const chunk = Buffer.alloc(byteLength);
-  if (!fileHandle) return chunk;
-
-  let offset = 0;
-  while (offset < byteLength) {
-    const { bytesRead } = await fileHandle.read(chunk, offset, byteLength - offset, position + offset);
-    if (bytesRead === 0) break;
-    offset += bytesRead;
-  }
-  return chunk;
-}
-
-function mixPcmChunks(callerChunk: Buffer, agentChunk: Buffer): Buffer {
-  const mixed = Buffer.alloc(callerChunk.length);
-  for (let i = 0; i < callerChunk.length; i += 2) {
-    const callerSample = callerChunk.readInt16LE(i);
-    const agentSample = agentChunk.readInt16LE(i);
-    const sum = callerSample + agentSample;
-    mixed.writeInt16LE(Math.max(-32768, Math.min(32767, sum)), i);
-  }
-  return mixed;
-}
-
-class AsyncBufferQueue implements AsyncIterable<Buffer> {
-  private chunks: Buffer[] = [];
-  private waiters: Array<{
-    resolve: (result: IteratorResult<Buffer>) => void;
-    reject: (reason?: unknown) => void;
-  }> = [];
-  private error: Error | null = null;
-  private closed = false;
-
-  push(chunk: Buffer): void {
-    if (this.closed || chunk.length === 0) return;
-    const waiter = this.waiters.shift();
-    if (waiter) {
-      waiter.resolve({ value: chunk, done: false });
-      return;
-    }
-    this.chunks.push(chunk);
-  }
-
-  fail(err: Error): void {
-    if (this.closed) return;
-    this.error = err;
-    this.closed = true;
-    while (this.waiters.length > 0) {
-      this.waiters.shift()!.reject(err);
-    }
-  }
-
-  close(): void {
-    if (this.closed) return;
-    this.closed = true;
-    while (this.waiters.length > 0) {
-      this.waiters.shift()!.resolve({ value: undefined, done: true });
-    }
-  }
-
-  async next(): Promise<IteratorResult<Buffer>> {
-    if (this.error) {
-      const err = this.error;
-      this.error = null;
-      throw err;
-    }
-
-    const chunk = this.chunks.shift();
-    if (chunk) {
-      return { value: chunk, done: false };
-    }
-    if (this.closed) {
-      return { value: undefined, done: true };
-    }
-    return new Promise<IteratorResult<Buffer>>((resolve, reject) => {
-      this.waiters.push({ resolve, reject });
-    });
-  }
-
-  [Symbol.asyncIterator](): AsyncIterator<Buffer> {
-    return {
-      next: () => this.next(),
-    };
-  }
 }
