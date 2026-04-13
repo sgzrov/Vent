@@ -31,14 +31,12 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build CLI
-        run: pnpm --filter @vent-hq/cli build
-
       - name: Create Release PR or Publish
+        id: changesets
         uses: changesets/action@v1
         with:
-          version: pnpm changeset version
-          publish: pnpm --filter @vent-hq/cli publish
+          version: pnpm version-packages
+          publish: pnpm release:publish
           title: "chore: version packages"
           commit: "chore: version packages"
         env:

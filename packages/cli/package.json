@@ -11,7 +11,8 @@
   ],
   "scripts": {
     "build": "node scripts/bundle.mjs",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "prepack": "pnpm clean && pnpm build"
   },
   "keywords": [
     "vent",
