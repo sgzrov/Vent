@@ -1,7 +1,7 @@
 import { Worker } from "bullmq";
 import IORedis from "ioredis";
 import { writeFileSync, mkdirSync } from "node:fs";
-import { SharedSipServer } from "@vent/adapters";
+import { WebhookServer } from "@vent/adapters";
 import { executeRun } from "./jobs/run-executor.js";
 
 const LOG_DIR = "/tmp/vent-run-logs";
@@ -101,17 +101,14 @@ function createWorkerForQueue(queueName: string) {
 }
 
 async function start() {
-  // Start persistent HTTP server for Bland SIP callbacks.
+  // Start persistent HTTP server for Bland webhook callbacks.
   // Must listen at boot so Fly.io's proxy routes traffic to this machine.
-  const sipPort = parseInt(process.env["RUNNER_LISTEN_PORT"] ?? "0", 10);
-  const sipHost = process.env["RUNNER_PUBLIC_HOST"] ?? "";
-  if (sipPort && sipHost) {
-    await SharedSipServer.startPersistentServer({
-      accountSid: process.env["TWILIO_ACCOUNT_SID"] ?? "",
-      authToken: process.env["TWILIO_AUTH_TOKEN"] ?? "",
-      fromNumber: process.env["TWILIO_FROM_NUMBER"] ?? "",
-      publicHost: sipHost,
-      port: sipPort,
+  const webhookPort = parseInt(process.env["RUNNER_LISTEN_PORT"] ?? "0", 10);
+  const webhookHost = process.env["RUNNER_PUBLIC_HOST"] ?? "";
+  if (webhookPort && webhookHost) {
+    await WebhookServer.startPersistentServer({
+      publicHost: webhookHost,
+      port: webhookPort,
       publicPort: null, // Behind Fly reverse proxy (443 → 8443)
     });
   }

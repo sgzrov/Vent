@@ -9,7 +9,7 @@ primary_region = "iad"
   RUNNER_LISTEN_PORT = "8443"
   RUNNER_PUBLIC_HOST = "vent-worker.fly.dev"
 
-# Expose HTTP port for inbound SIP callbacks (Twilio/Bland webhooks)
+# Expose HTTP port for inbound Bland webhook callbacks
 [http_service]
   internal_port = 8443
   force_https = true
