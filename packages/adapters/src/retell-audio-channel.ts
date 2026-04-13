@@ -3,7 +3,7 @@
  *
  * Connects directly to Retell's LiveKit Cloud via @livekit/rtc-node for
  * bidirectional audio. Uses Retell SDK for call creation and post-call data.
- * No Twilio or SIP dependency — pure WebRTC.
+ * Pure WebRTC — no telephony dependency.
  *
  * Flow:
  *   1. connect()  — createWebCall → LiveKit room.connect with access_token
