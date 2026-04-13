@@ -14,7 +14,7 @@ import { WebRtcAudioChannel } from "./webrtc-audio-channel.js";
 import { VapiAudioChannel } from "./vapi-audio-channel.js";
 import { ElevenLabsAudioChannel } from "./elevenlabs-audio-channel.js";
 import { RetellAudioChannel } from "./retell-audio-channel.js";
-import { BlandAudioChannel } from "./bland-audio-channel.js";
+import { BlandWsAudioChannel } from "./bland-ws-audio-channel.js";
 
 export type { AudioChannel, AudioChannelEvents, CallRecording, LiveCallRecording } from "./audio-channel.js";
 export { BaseAudioChannel } from "./audio-channel.js";
@@ -23,8 +23,8 @@ export { WebRtcAudioChannel } from "./webrtc-audio-channel.js";
 export { VapiAudioChannel } from "./vapi-audio-channel.js";
 export { RetellAudioChannel } from "./retell-audio-channel.js";
 export { ElevenLabsAudioChannel } from "./elevenlabs-audio-channel.js";
-export { BlandAudioChannel } from "./bland-audio-channel.js";
-export { SharedSipServer } from "./shared-sip-server.js";
+export { BlandWsAudioChannel } from "./bland-ws-audio-channel.js";
+export { WebhookServer } from "./webhook-server.js";
 
 export interface AudioChannelConfig {
   adapter: AdapterType;
@@ -37,12 +37,6 @@ export interface AudioChannelConfig {
   wsSampleRate?: number;
   /** Enable caller audio normalization for WebSocket adapter. Default: false. */
   wsNormalizeAudio?: boolean;
-}
-
-/** Shared Twilio server port config for phone-based adapters like Bland. */
-function sipPortConfig(): { port?: number; publicPort?: number | null } {
-  const listenPort = parseInt(process.env["RUNNER_LISTEN_PORT"] ?? "0", 10) || undefined;
-  return listenPort ? { port: listenPort, publicPort: null } : {};
 }
 
 export function createAudioChannel(config: AudioChannelConfig): AudioChannel {
@@ -95,9 +89,9 @@ export function createAudioChannel(config: AudioChannelConfig): AudioChannel {
     case "vapi": {
       const p = config.platform as VapiPlatformConfig | undefined;
       const apiKey = p?.vapi_api_key || process.env["VAPI_API_KEY"] || "";
-      const assistantId = p?.vapi_assistant_id || process.env["VAPI_ASSISTANT_ID"] || "";
+      const assistantId = p?.vapi_assistant_id || process.env["VAPI_ASSISTANT_ID"] || process.env["VAPI_AGENT_ID"] || "";
       if (!apiKey) throw new Error("Vapi adapter requires vapi_api_key or VAPI_API_KEY env");
-      if (!assistantId) throw new Error("Vapi adapter requires vapi_assistant_id or VAPI_ASSISTANT_ID env");
+      if (!assistantId) throw new Error("Vapi adapter requires VAPI_ASSISTANT_ID or VAPI_AGENT_ID in .env");
       return new VapiAudioChannel({ apiKey, assistantId });
     }
 
@@ -124,28 +118,19 @@ export function createAudioChannel(config: AudioChannelConfig): AudioChannel {
       const apiKey = p?.bland_api_key || process.env["BLAND_API_KEY"] || "";
       const pathwayId = p?.bland_pathway_id || process.env["BLAND_PATHWAY_ID"] || "";
       if (!apiKey) throw new Error("Bland adapter requires bland_api_key or BLAND_API_KEY env");
-      if (!pathwayId && !p?.task) {
-        throw new Error("Bland adapter requires bland_pathway_id or BLAND_PATHWAY_ID env, or platform.task");
+      if (!pathwayId && !p?.task && !p?.persona_id) {
+        throw new Error("Bland adapter requires bland_pathway_id, persona_id, or platform.task");
       }
 
-      const blandFromNumber = process.env["TWILIO_FROM_NUMBER"] ?? "";
-      const blandAccountSid = process.env["TWILIO_ACCOUNT_SID"] ?? "";
-      const blandAuthToken = process.env["TWILIO_AUTH_TOKEN"] ?? "";
       const blandPublicHost = process.env["RUNNER_PUBLIC_HOST"] ?? "";
-      if (!blandFromNumber || !blandAccountSid || !blandAuthToken || !blandPublicHost) {
-        throw new Error("Bland adapter requires Twilio credentials (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER) and RUNNER_PUBLIC_HOST");
+      if (!blandPublicHost) {
+        throw new Error("Bland adapter requires RUNNER_PUBLIC_HOST env var");
       }
 
-      return new BlandAudioChannel({
+      return new BlandWsAudioChannel({
         apiKey,
         agentId: pathwayId || undefined,
-        server: {
-          accountSid: blandAccountSid,
-          authToken: blandAuthToken,
-          fromNumber: blandFromNumber,
-          publicHost: blandPublicHost,
-          ...sipPortConfig(),
-        },
+        publicBaseUrl: `https://${blandPublicHost}`,
         callOptions: {
           task: p?.task,
           tools: p?.tools,
@@ -165,6 +150,7 @@ export function createAudioChannel(config: AudioChannelConfig): AudioChannel {
           pronunciation_guide: p?.pronunciation_guide,
           start_node_id: p?.start_node_id,
           pathway_version: p?.pathway_version,
+          persona_id: p?.persona_id,
         },
       });
     }

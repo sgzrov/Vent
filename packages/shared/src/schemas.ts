@@ -104,6 +104,7 @@ const BlandPlatformSchema = BasePlatformSchema.extend({
   provider: z.literal("bland"),
   bland_api_key: z.string().optional(),
   bland_pathway_id: z.string().optional(),
+  persona_id: z.string().optional(),
   task: z.string().optional(),
   tools: z.array(z.unknown()).optional(),
   voice: z.string().optional(),

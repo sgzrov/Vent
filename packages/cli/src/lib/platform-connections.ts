@@ -2,7 +2,7 @@ import { PlatformConfigSchema, type PlatformConfig } from "@vent/shared";
 
 const PLATFORM_ENV_MAP = {
   vapi: { vapi_api_key: "VAPI_API_KEY", vapi_assistant_id: "VAPI_ASSISTANT_ID" },
-  bland: { bland_api_key: "BLAND_API_KEY", bland_pathway_id: "BLAND_PATHWAY_ID" },
+  bland: { bland_api_key: "BLAND_API_KEY", bland_pathway_id: "BLAND_PATHWAY_ID", persona_id: "BLAND_PERSONA_ID" },
   livekit: { livekit_api_key: "LIVEKIT_API_KEY", livekit_api_secret: "LIVEKIT_API_SECRET", livekit_url: "LIVEKIT_URL" },
   retell: { retell_api_key: "RETELL_API_KEY", retell_agent_id: "RETELL_AGENT_ID" },
   elevenlabs: { elevenlabs_api_key: "ELEVENLABS_API_KEY", elevenlabs_agent_id: "ELEVENLABS_AGENT_ID" },
@@ -26,45 +26,45 @@ function requireField(platform: PlatformConfig): void {
   switch (platform.provider) {
     case "vapi":
       if (isMissingResolvedValue(platform.vapi_api_key)) {
-        throw new Error("Missing VAPI_API_KEY or connection.platform.vapi_api_key");
+        throw new Error("Missing VAPI_API_KEY in .env");
       }
       if (isMissingResolvedValue(platform.vapi_assistant_id)) {
-        throw new Error("Missing VAPI_ASSISTANT_ID or connection.platform.vapi_assistant_id");
+        throw new Error("Missing VAPI_ASSISTANT_ID or VAPI_AGENT_ID in .env");
       }
       return;
     case "retell":
       if (isMissingResolvedValue(platform.retell_api_key)) {
-        throw new Error("Missing RETELL_API_KEY or connection.platform.retell_api_key");
+        throw new Error("Missing RETELL_API_KEY in .env");
       }
       if (isMissingResolvedValue(platform.retell_agent_id)) {
-        throw new Error("Missing RETELL_AGENT_ID or connection.platform.retell_agent_id");
+        throw new Error("Missing RETELL_AGENT_ID in .env");
       }
       return;
     case "elevenlabs":
       if (isMissingResolvedValue(platform.elevenlabs_api_key)) {
-        throw new Error("Missing ELEVENLABS_API_KEY or connection.platform.elevenlabs_api_key");
+        throw new Error("Missing ELEVENLABS_API_KEY in .env");
       }
       if (isMissingResolvedValue(platform.elevenlabs_agent_id)) {
-        throw new Error("Missing ELEVENLABS_AGENT_ID or connection.platform.elevenlabs_agent_id");
+        throw new Error("Missing ELEVENLABS_AGENT_ID in .env");
       }
       return;
     case "livekit":
       if (isMissingResolvedValue(platform.livekit_api_key)) {
-        throw new Error("Missing LIVEKIT_API_KEY or connection.platform.livekit_api_key");
+        throw new Error("Missing LIVEKIT_API_KEY in .env");
       }
       if (isMissingResolvedValue(platform.livekit_api_secret)) {
-        throw new Error("Missing LIVEKIT_API_SECRET or connection.platform.livekit_api_secret");
+        throw new Error("Missing LIVEKIT_API_SECRET in .env");
       }
       if (isMissingResolvedValue(platform.livekit_url)) {
-        throw new Error("Missing LIVEKIT_URL or connection.platform.livekit_url");
+        throw new Error("Missing LIVEKIT_URL in .env");
       }
       return;
     case "bland":
       if (isMissingResolvedValue(platform.bland_api_key)) {
-        throw new Error("Missing BLAND_API_KEY or connection.platform.bland_api_key");
+        throw new Error("Missing BLAND_API_KEY in .env");
       }
-      if (isMissingResolvedValue(platform.bland_pathway_id) && isMissingResolvedValue(platform.task)) {
-        throw new Error("Missing BLAND_PATHWAY_ID or connection.platform.task/platform.bland_pathway_id");
+      if (isMissingResolvedValue(platform.bland_pathway_id) && isMissingResolvedValue(platform.task) && isMissingResolvedValue(platform.persona_id)) {
+        throw new Error("Missing BLAND_PATHWAY_ID, BLAND_PERSONA_ID, or platform.task in .env");
       }
       return;
   }
@@ -103,6 +103,12 @@ export function resolveRemotePlatformConfig(config: unknown): PlatformConfig | n
         resolved[field] = envValue;
       }
     }
+  }
+
+  // Accept VAPI_AGENT_ID as alias for VAPI_ASSISTANT_ID
+  if (adapter === "vapi" && !resolved.vapi_assistant_id) {
+    const alt = process.env["VAPI_AGENT_ID"];
+    if (alt) resolved.vapi_assistant_id = alt;
   }
 
   const platform = PlatformConfigSchema.parse(resolved);

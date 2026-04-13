@@ -126,8 +126,8 @@ export function validateResolvedPlatformConfig(platform: PlatformConfig): void {
       return;
     case "bland":
       if (!platform.bland_api_key) throw requiredFieldError("bland_api_key", platform.provider);
-      if (!platform.bland_pathway_id && !platform.task) {
-        throw new Error("Saved bland connections require bland_pathway_id or task");
+      if (!platform.bland_pathway_id && !platform.task && !platform.persona_id) {
+        throw new Error("Saved bland connections require bland_pathway_id, persona_id, or task");
       }
       return;
   }
@@ -149,8 +149,9 @@ export function buildIdentityKey(platform: PlatformConfig): string {
       return `livekit:${platform.livekit_url}:${platform.livekit_agent_name ?? "auto"}`;
     case "bland":
       if (platform.bland_pathway_id) return `bland:pathway:${platform.bland_pathway_id}`;
+      if (platform.persona_id) return `bland:persona:${platform.persona_id}`;
       if (platform.task) return `bland:task:${sha256(platform.task.trim())}`;
-      throw new Error("Saved bland connections require bland_pathway_id or task");
+      throw new Error("Saved bland connections require bland_pathway_id, persona_id, or task");
   }
 }
 
@@ -170,8 +171,9 @@ export function buildResourceLabel(platform: PlatformConfig): string {
       return `livekit/${platform.livekit_url}#${platform.livekit_agent_name ?? "auto"}`;
     case "bland":
       if (platform.bland_pathway_id) return `bland/${platform.bland_pathway_id}`;
+      if (platform.persona_id) return `bland/persona:${platform.persona_id}`;
       if (platform.task) return `bland/task:${sha256(platform.task.trim()).slice(0, 12)}`;
-      throw new Error("Saved bland connections require bland_pathway_id or task");
+      throw new Error("Saved bland connections require bland_pathway_id, persona_id, or task");
   }
 }
 

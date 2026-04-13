@@ -191,14 +191,16 @@ There are two product modes:
 3. If you include credential fields in the config, put the ACTUAL VALUE, NOT the env var name. WRONG: `"vapi_api_key": "VAPI_API_KEY"`. RIGHT: `"vapi_api_key": "sk-abc123..."` or omit the field.
 4. The CLI uses the resolved provider config to create or update a saved platform connection server-side, then submits only `platform_connection_id`. Users should not manually author `platform_connection_id`.
 5. To check whether credentials are already available, inspect `.env.local`, `.env`, and any relevant shell env visible to the CLI process.
+6. **IMPORTANT: `npx vent-hq` commands auto-load `.env` files — never use `source .env && export` before running them.** Only your own custom scripts (e.g. `npx tsx my-script.ts`) need manual env loading. To add a new credential, just append it to `.env` and the CLI picks it up automatically on the next run.
 
 Auto-resolved env vars per platform:
 | Platform | Config field | Env var (auto-resolved from `.env.local`, `.env`, or shell env) |
 |----------|-------------|-----------------------------------|
 | Vapi | vapi_api_key | VAPI_API_KEY |
-| Vapi | vapi_assistant_id | VAPI_ASSISTANT_ID |
+| Vapi | vapi_assistant_id | VAPI_ASSISTANT_ID or VAPI_AGENT_ID |
 | Bland | bland_api_key | BLAND_API_KEY |
 | Bland | bland_pathway_id | BLAND_PATHWAY_ID |
+| Bland | persona_id | BLAND_PERSONA_ID |
 | LiveKit | livekit_api_key | LIVEKIT_API_KEY |
 | LiveKit | livekit_api_secret | LIVEKIT_API_SECRET |
 | LiveKit | livekit_url | LIVEKIT_URL |
@@ -245,7 +247,7 @@ Bland:
     "platform": { "provider": "bland" }
   }
 }
-Credentials auto-resolve from `.env.local`, `.env`, or shell env: BLAND_API_KEY, BLAND_PATHWAY_ID. Only add bland_api_key/bland_pathway_id to the JSON if those env vars are not already available.
+Credentials auto-resolve from `.env.local`, `.env`, or shell env: BLAND_API_KEY, BLAND_PATHWAY_ID, BLAND_PERSONA_ID. Only add bland_api_key/bland_pathway_id/persona_id to the JSON if those env vars are not already available.
 Note: All agent config (voice, model, tools, etc.) is set on the pathway itself, not in Vent config.
 
 Vapi:
@@ -255,7 +257,7 @@ Vapi:
     "platform": { "provider": "vapi" }
   }
 }
-Credentials auto-resolve from `.env.local`, `.env`, or shell env: VAPI_API_KEY, VAPI_ASSISTANT_ID. Only add vapi_api_key/vapi_assistant_id to the JSON if those env vars are not already available.
+Credentials auto-resolve from `.env.local`, `.env`, or shell env: VAPI_API_KEY, VAPI_ASSISTANT_ID (or VAPI_AGENT_ID). Only add vapi_api_key/vapi_assistant_id to the JSON if those env vars are not already available.
 max_concurrency for Vapi: Starter=10, Growth=50, Enterprise=100+. Ask the user which tier they're on. If unknown, default to 10.
 All assistant config (voice, model, transcriber, interruption settings, etc.) is set on the Vapi assistant itself, not in Vent config.
 
