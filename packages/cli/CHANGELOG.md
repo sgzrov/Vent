@@ -4,6 +4,16 @@ All notable changes to `vent-hq` are documented in this file.
 
 For the repo-wide summary, see [CHANGELOG.md](../../CHANGELOG.md).
 
+## 0.9.15
+
+### Fixed
+
+- Ensured npm publishes a freshly built CLI bundle by running `clean` and `build` during `prepack`.
+
+### Changed
+
+- Added canonical changelog metadata for the published `vent-hq` package.
+
 ## 0.9.14
 
 ### Notes
