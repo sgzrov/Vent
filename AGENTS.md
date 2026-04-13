@@ -31,6 +31,14 @@ pnpm deploy:dashboard           # Deploy dashboard to Fly.io
 pnpm deploy:all                 # Deploy API first, then worker + dashboard in parallel
 ```
 
+### Releases
+```bash
+pnpm changeset add                       # Create a changeset for npm package releases
+pnpm version-packages                    # Apply pending changesets and update changelogs
+pnpm release:publish                     # Publish all npm packages managed by Changesets
+python -m build packages/livekit-python  # Build the Python package locally
+```
+
 ### CLI (published as `vent-hq`)
 ```bash
 pnpm --filter vent-hq build     # Bundle CLI to dist/index.mjs
@@ -59,6 +67,8 @@ packages/
 ├── artifacts/              # S3/R2 artifact storage (recordings, audio)
 ├── cli/                    # Published CLI (vent-hq on npm)
 ├── db/                     # Drizzle ORM schema + PostgreSQL migrations
+├── livekit/                # Published Node helper (@vent-hq/livekit on npm)
+├── livekit-python/         # Published Python helper (vent-livekit on PyPI)
 ├── platform-connections/   # Platform credential encryption (AES-256-GCM)
 ├── relay-client/           # WebSocket relay for local agent tunneling
 ├── runner/                 # Call execution engine (orchestration, audio analysis)
@@ -75,6 +85,19 @@ Each `vent run` executes a single call. Run N calls in parallel via separate she
 4. Call executes with conversation turns, progress streams via HTTP callbacks to API
 5. API broadcasts events via Redis pub/sub → SSE to CLI
 6. Results stored and returned to the coding agent
+
+## Published Packages
+
+- Only three packages publish to npm/PyPI; everything else in `apps/*` and `packages/*` is internal/private.
+- `packages/cli` -> `vent-hq` (npm, Changesets)
+- `packages/livekit` -> `@vent-hq/livekit` (npm, Changesets)
+- `packages/livekit-python` -> `vent-livekit` (PyPI, independent versioning)
+- `packages/cli` and `packages/livekit` rebuild ignored `dist/` in `prepack` before npm publish.
+
+## Release Triggers
+
+- npm: add a `.changeset`, merge to `main`, then merge the auto-generated `chore: version packages` PR from `.github/workflows/release.yml`.
+- Python: bump `packages/livekit-python/pyproject.toml` and `packages/livekit-python/CHANGELOG.md`, then merge to `main`; `.github/workflows/release-python.yml` publishes if `PYPI_API_TOKEN` is set.
 
 ## Environment Variables
 - `DATABASE_URL` — PostgreSQL connection string
@@ -93,6 +116,7 @@ Each `vent run` executes a single call. Run N calls in parallel via separate she
 - TypeScript strict mode, ES2022 target, Node.js >= 20
 - Zod schemas for all API boundaries (`packages/shared/src/schemas.ts`)
 - Types centralized in `packages/shared/src/types.ts`
+
 ## Commit Style
 `type: description` — 8 words or fewer (excluding type prefix). Bisect commits: every commit is a single logical change. Split rename/refactor/feature/test into separate commits.
 

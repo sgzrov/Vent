@@ -1,0 +1,86 @@
+name: Release Python
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packages/livekit-python/**"
+      - ".github/workflows/release-python.yml"
+
+concurrency: ${{ github.workflow }}-${{ github.ref }}
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Detect version change
+        id: version
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+
+          pyproject_path = Path("packages/livekit-python/pyproject.toml")
+          current_text = pyproject_path.read_text(encoding="utf8")
+          current_match = re.search(r'^version = "([^"]+)"$', current_text, re.MULTILINE)
+          if not current_match:
+            raise SystemExit("Could not parse current version from packages/livekit-python/pyproject.toml")
+
+          previous_text = ""
+          try:
+            previous_text = subprocess.check_output(
+              ["git", "show", "HEAD^:packages/livekit-python/pyproject.toml"],
+              text=True,
+              stderr=subprocess.DEVNULL,
+            )
+          except subprocess.CalledProcessError:
+            previous_text = ""
+
+          previous_match = re.search(r'^version = "([^"]+)"$', previous_text, re.MULTILINE)
+          previous_version = previous_match.group(1) if previous_match else ""
+          current_version = current_match.group(1)
+          changed = current_version != previous_version
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf8") as output:
+            output.write(f"changed={'true' if changed else 'false'}\n")
+            output.write(f"current={current_version}\n")
+            output.write(f"previous={previous_version}\n")
+
+          print(f"Previous version: {previous_version or '(none)'}")
+          print(f"Current version: {current_version}")
+          print(f"Version changed: {changed}")
+          PY
+
+      - name: Ensure Python changelog was updated
+        if: steps.version.outputs.changed == 'true'
+        run: |
+          if git rev-parse --verify HEAD^ >/dev/null 2>&1 && git diff --quiet HEAD^ HEAD -- packages/livekit-python/CHANGELOG.md; then
+            echo "packages/livekit-python/CHANGELOG.md must be updated when packages/livekit-python/pyproject.toml changes." >&2
+            exit 1
+          fi
+
+      - name: Build Python package
+        if: steps.version.outputs.changed == 'true'
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build packages/livekit-python
+
+      - name: Publish Python package
+        if: steps.version.outputs.changed == 'true' && secrets.PYPI_API_TOKEN != ''
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
+          packages-dir: packages/livekit-python/dist/
+          skip-existing: true
