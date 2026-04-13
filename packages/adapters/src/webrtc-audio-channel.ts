@@ -907,20 +907,19 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
     // Extract LLM usage entries only (token counts that matter for cost)
     const modelUsage = usage["model_usage"] as Array<Record<string, unknown>> | undefined;
     if (Array.isArray(modelUsage) && modelUsage.length > 0) {
-      const entries = modelUsage
+      const entries: UsageEntry[] = modelUsage
         .filter((m) => firstString(m["type"]) === "llm_usage")
-        .map((m) => compactUnknownRecord({
+        .map((m) => ({
           type: "llm_usage",
           provider: firstString(m["provider"]) ?? "",
           model: firstString(m["model"]) ?? "",
           input_tokens: firstNumber(m["input_tokens"]),
           output_tokens: firstNumber(m["output_tokens"]),
-        }))
-        .filter(Boolean) as Array<Record<string, unknown>>;
+        }));
 
       if (entries.length > 0) {
         this.mergeCallMetadata({
-          usage: entries as UsageEntry[],
+          usage: entries,
         });
       }
     }
