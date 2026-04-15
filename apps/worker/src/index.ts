@@ -1,104 +1,115 @@
-import { Worker } from "bullmq";
 import IORedis from "ioredis";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { writeFileSync, mkdirSync } from "node:fs";
+import { hostname } from "node:os";
 import { WebhookServer } from "@vent/adapters";
 import { executeRun } from "./jobs/run-executor.js";
+import { createWorkerMetrics } from "./metrics.js";
+import { PerUserQueueRuntime, type RunJobData } from "./queue-runtime.js";
 
 const LOG_DIR = "/tmp/vent-run-logs";
 try { mkdirSync(LOG_DIR, { recursive: true }); } catch {}
 
+function parseRequiredPositiveIntEnv(name: string): number {
+  const raw = process.env[name];
+  if (!raw) {
+    throw new Error(`${name} must be set`);
+  }
+
+  const value = Number.parseInt(raw, 10);
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(`${name} must be a positive integer`);
+  }
+
+  return value;
+}
+
+function parsePositiveIntEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+
+  const value = Number.parseInt(raw, 10);
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(`${name} must be a positive integer`);
+  }
+
+  return value;
+}
+
 const redisUrl = process.env["REDIS_URL"] ?? "redis://localhost:6379";
 const connection = new IORedis(redisUrl, { maxRetriesPerRequest: null });
-const perUserConcurrency = parseInt(process.env["PER_USER_CONCURRENCY"] ?? "5", 10);
+const totalConcurrency = parseRequiredPositiveIntEnv("WORKER_TOTAL_CONCURRENCY");
+const workerMetricsPort = parsePositiveIntEnv("WORKER_METRICS_PORT", 9091);
+const runLogStore = new AsyncLocalStorage<string[]>();
+const originalConsoleLog = console.log.bind(console);
+const originalConsoleError = console.error.bind(console);
+const workerMetrics = createWorkerMetrics({
+  connection,
+  metricsPort: workerMetricsPort,
+  totalConcurrency,
+});
 
-// Per-user workers: each API key gets its own queue with independent concurrency
-const workers = new Map<string, Worker>();
+function appendRunLog(line: string): void {
+  runLogStore.getStore()?.push(line);
+}
 
-function createWorkerForQueue(queueName: string) {
-  if (workers.has(queueName)) return;
+console.log = (...args: unknown[]) => {
+  const line = args.map((a) => typeof a === "string" ? a : JSON.stringify(a)).join(" ");
+  appendRunLog(line);
+  originalConsoleLog(...args);
+};
 
-  const worker = new Worker(
-    queueName,
-    async (job) => {
-      const data = job.data as {
-        run_id: string;
-        adapter?: string;
-        call_spec?: Record<string, unknown>;
-        voice_config?: Record<string, unknown>;
-        start_command?: string;
-        health_endpoint?: string;
-        agent_url?: string;
-        platform_connection_id?: string | null;
-        agent_session_id?: string;
-      };
+console.error = (...args: unknown[]) => {
+  const line = args.map((a) => typeof a === "string" ? a : JSON.stringify(a)).join(" ");
+  appendRunLog(`[ERROR] ${line}`);
+  originalConsoleError(...args);
+};
 
-      console.log(`[${queueName}] Processing run ${data.run_id} (adapter: ${data.adapter ?? "unknown"}${data.agent_session_id ? ", session" : ""})`);
+const machineId = process.env["FLY_MACHINE_ID"] ?? `${hostname()}-${process.pid}`;
 
-      // Capture all console output for the run so we can dump it at the end.
-      // Fly only keeps the last 100 log lines — this ensures we can see the full run.
-      const logLines: string[] = [];
-      const origLog = console.log;
-      const origErr = console.error;
-      console.log = (...args: unknown[]) => {
-        const line = args.map(a => typeof a === "string" ? a : JSON.stringify(a)).join(" ");
-        logLines.push(line);
-        origLog.apply(console, args);
-      };
-      console.error = (...args: unknown[]) => {
-        const line = args.map(a => typeof a === "string" ? a : JSON.stringify(a)).join(" ");
-        logLines.push(`[ERROR] ${line}`);
-        origErr.apply(console, args);
-      };
-
-      try {
-        await executeRun({
-          run_id: data.run_id,
-          adapter: data.adapter,
-          call_spec: data.call_spec,
-          voice_config: data.voice_config,
-          start_command: data.start_command,
-          health_endpoint: data.health_endpoint,
-          agent_url: data.agent_url,
-          platform_connection_id: data.platform_connection_id ?? null,
-          agent_session_id: data.agent_session_id,
-        });
-      } finally {
-        console.log = origLog;
-        console.error = origErr;
-        const logPath = `${LOG_DIR}/${data.run_id}.log`;
-        try {
-          writeFileSync(logPath, logLines.join("\n") + "\n");
-          origLog(`[run-log] Full log written to ${logPath} (${logLines.length} lines)`);
-        } catch (e) {
-          origErr(`[run-log] Failed to write log: ${e}`);
-        }
-      }
-    },
-    {
-      connection,
-      concurrency: perUserConcurrency,
-      // Bland runs: 6 calls × 10s gap = 60s initiation + ~120s audio = ~180s minimum.
-      // Lock must exceed the longest possible run to prevent false stall detection.
-      lockDuration: 600_000,       // 10 min — covers worst-case Bland runs
-      stalledInterval: 30_000,     // check every 30s (default, explicit for clarity)
-      // lockRenewTime auto-set to lockDuration/2 = 300s — do not override
-      maxStalledCount: 1,          // 1 retry on stall, then fail
-      removeOnComplete: { age: 3600, count: 1000 },
-      removeOnFail: { age: 86_400, count: 5000 },
-    }
+async function processRun(queueName: string, data: RunJobData): Promise<void> {
+  console.log(
+    `[${queueName}] Processing run ${data.run_id} (adapter: ${data.adapter ?? "unknown"}${data.agent_session_id ? ", session" : ""})`,
   );
 
-  worker.on("completed", (job) => {
-    console.log(`[${queueName}] Run ${job.id} completed`);
-  });
+  // Capture all console output for the run so we can dump it at the end.
+  // Fly only keeps the last 100 log lines — this ensures we can see the full run.
+  const logLines: string[] = [];
 
-  worker.on("failed", (job, err) => {
-    console.error(`[${queueName}] Run ${job?.id} failed:`, err.message);
-  });
-
-  workers.set(queueName, worker);
-  console.log(`Worker listening on queue: ${queueName} (concurrency: ${perUserConcurrency})`);
+  workerMetrics.onJobStart();
+  try {
+    await runLogStore.run(logLines, async () => {
+      await executeRun({
+        run_id: data.run_id,
+        adapter: data.adapter,
+        call_spec: data.call_spec,
+        voice_config: data.voice_config,
+        start_command: data.start_command,
+        health_endpoint: data.health_endpoint,
+        agent_url: data.agent_url,
+        platform_connection_id: data.platform_connection_id ?? null,
+        agent_session_id: data.agent_session_id,
+      });
+    });
+  } finally {
+    workerMetrics.onJobFinish();
+    const logPath = `${LOG_DIR}/${data.run_id}.log`;
+    try {
+      writeFileSync(logPath, logLines.join("\n") + "\n");
+      originalConsoleLog(`[run-log] Full log written to ${logPath} (${logLines.length} lines)`);
+    } catch (e) {
+      originalConsoleError(`[run-log] Failed to write log: ${e}`);
+    }
+  }
 }
+
+const queueRuntime = new PerUserQueueRuntime({
+  connection,
+  machineId,
+  totalConcurrency,
+  workerMetrics,
+  processRun,
+});
 
 async function start() {
   // Start persistent HTTP server for Bland webhook callbacks.
@@ -113,21 +124,10 @@ async function start() {
     });
   }
 
-  // Discover existing per-user queues from Redis Set
-  const existingQueues = await connection.smembers("vent:active-queues");
-  for (const queueName of existingQueues) {
-    createWorkerForQueue(queueName);
-  }
-  console.log(`Discovered ${existingQueues.length} existing queue(s)`);
-
-  // Subscribe to pub/sub for new queues created at runtime
-  const sub = connection.duplicate();
-  await sub.subscribe("vent:new-queue");
-  sub.on("message", (_channel, queueName) => {
-    createWorkerForQueue(queueName);
-  });
-
-  console.log(`Vent Worker started (per-user concurrency: ${perUserConcurrency}), listening for queues...`);
+  await queueRuntime.start();
+  console.log(
+    `Vent Worker started (machine: ${machineId}, total concurrency: ${totalConcurrency})`,
+  );
 }
 
 start().catch((err) => {
@@ -137,9 +137,10 @@ start().catch((err) => {
 
 process.on("SIGTERM", async () => {
   console.log("Shutting down worker...");
-  for (const worker of workers.values()) {
-    await worker.close();
-  }
+  await queueRuntime.close();
+  await workerMetrics.close().catch((err) => {
+    console.error("Failed to close worker metrics:", err);
+  });
   connection.disconnect();
   process.exit(0);
 });
