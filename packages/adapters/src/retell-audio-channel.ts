@@ -36,6 +36,7 @@ import {
 import { resample } from "@vent/voice";
 import type { ObservedToolCall, CallMetadata, CallTransfer, ComponentLatency, CostBreakdown, UsageEntry } from "@vent/shared";
 import { BaseAudioChannel, type SendAudioOptions } from "./audio-channel.js";
+import { withLivekitConnectLock } from "./livekit-connect-lock.js";
 
 const RAW_INTERRUPT_TRAILING_SILENCE_MS = 160;
 
@@ -109,6 +110,10 @@ export class RetellAudioChannel extends BaseAudioChannel {
   }
 
   async connect(): Promise<void> {
+    return withLivekitConnectLock(() => this._connect());
+  }
+
+  private async _connect(): Promise<void> {
     const connectStart = Date.now();
     this.enableRecordingCapture();
 

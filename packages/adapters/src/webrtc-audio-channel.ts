@@ -40,6 +40,7 @@ import { AccessToken, RoomServiceClient } from "livekit-server-sdk";
 import { resample } from "@vent/voice";
 import type { ObservedToolCall, CallMetadata, CallTransfer, ComponentLatency, ProviderWarning, UsageEntry } from "@vent/shared";
 import { BaseAudioChannel, type SendAudioOptions } from "./audio-channel.js";
+import { withLivekitConnectLock } from "./livekit-connect-lock.js";
 
 interface WsToolCallEvent {
   type: "tool_call";
@@ -260,6 +261,12 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
   }
 
   async connect(): Promise<void> {
+    // Serialise the connect phase across all LiveKit channels in this process.
+    // See livekit-connect-lock.ts for rationale.
+    return withLivekitConnectLock(() => this._connect());
+  }
+
+  private async _connect(): Promise<void> {
     const connectStart = Date.now();
     const token = new AccessToken(
       this.config.apiKey,
