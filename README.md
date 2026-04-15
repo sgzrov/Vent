@@ -207,6 +207,8 @@ Local relay runs (`start_command`) and hosted `agent_url` runs do not use saved 
 
 When you do use saved platform connections, the API and worker must both have `PLATFORM_CONNECTIONS_MASTER_KEY` set to the same 32-byte key material (64 hex chars, base64, or a 32-byte UTF-8 string). That key is used to encrypt saved platform secrets at rest and decrypt them just before execution.
 
+Hosted worker throughput is infra-controlled, not provider-controlled. `WORKER_TOTAL_CONCURRENCY` is the total active-run budget for one worker Machine across all owned user queues.
+
 ## Production Migrations
 
 Production database migrations run inside Fly as part of the API deploy release step.

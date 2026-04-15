@@ -107,6 +107,9 @@ Each `vent run` executes a single call. Run N calls in parallel via separate she
 - `NEXT_PUBLIC_WORKOS_REDIRECT_URI` — WorkOS OAuth callback URL
 - `RUNNER_CALLBACK_SECRET` — HMAC secret for worker→API callbacks
 - `RUNNER_PUBLIC_HOST`, `RUNNER_LISTEN_PORT` — Public host/port for Bland webhook callbacks
+- `WORKER_TOTAL_CONCURRENCY` — Required total active run budget for one worker Machine across all owned user queues. Keep this at or below what one worker box can actually sustain.
+- `FLEET_MAX_ACTIVE_RUNS` — Optional fleet-wide cap on concurrent runs across all machines (default 45). Set to match the lowest external provider concurrency limit (e.g. Deepgram TTS streaming). API returns 429 when the cap is reached.
+- `WORKER_METRICS_PORT` — Optional internal Prometheus scrape port for worker metrics (default `9091`)
 - `WORKOS_API_KEY`, `WORKOS_CLIENT_ID`, `WORKOS_COOKIE_PASSWORD` — WorkOS auth
 - `PLATFORM_CONNECTIONS_MASTER_KEY` — 32-byte hex key for encrypting platform credentials (`openssl rand -hex 32`)
 - `ANTHROPIC_API_KEY`, `DEEPGRAM_API_KEY`, `HUME_API_KEY` — AI/voice providers
