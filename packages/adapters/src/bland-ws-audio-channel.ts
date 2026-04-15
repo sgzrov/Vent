@@ -125,7 +125,11 @@ export class BlandWsAudioChannel extends BaseAudioChannel {
       publicPort: process.env["RUNNER_LISTEN_PORT"] ? null : undefined,
     });
 
-    const webhookUrl = `${this.config.publicBaseUrl}/bland-ws-webhook/${this.channelId}`;
+    const machineId = process.env["FLY_MACHINE_ID"];
+    const webhookPath = machineId
+      ? `/bland-ws-webhook/${machineId}/${this.channelId}`
+      : `/bland-ws-webhook/${this.channelId}`;
+    const webhookUrl = `${this.config.publicBaseUrl}${webhookPath}`;
 
     // Register webhook handler for this channel
     this.webhookServer.registerHandler(this.channelId, (req, res) => this.handleWebhook(req, res));
@@ -205,17 +209,17 @@ export class BlandWsAudioChannel extends BaseAudioChannel {
 
   startComfortNoise(): void {
     if (this.comfortNoiseTimer) return;
+    // Send zero-filled silence frames instead of random noise.
+    // Bland's server-side VAD detects non-zero audio as speech and triggers
+    // barge-in, cutting the agent mid-sentence. Their browser SDK relies on
+    // noise suppression to send near-zero audio when the user is silent.
+    const silenceFrame = Buffer.alloc(COMFORT_NOISE_FRAME_SAMPLES * 2); // zeros
     this.comfortNoiseTimer = setInterval(() => {
       if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
         this.stopComfortNoise();
         return;
       }
-      const frame = Buffer.alloc(COMFORT_NOISE_FRAME_SAMPLES * 2);
-      for (let i = 0; i < COMFORT_NOISE_FRAME_SAMPLES; i++) {
-        const sample = Math.floor((Math.random() - 0.5) * COMFORT_NOISE_AMPLITUDE * 2);
-        frame.writeInt16LE(sample, i * 2);
-      }
-      this.ws.send(frame);
+      this.ws.send(silenceFrame);
     }, COMFORT_NOISE_INTERVAL_MS);
   }
 

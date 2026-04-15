@@ -8,6 +8,8 @@
 
 import http from "node:http";
 
+const BLAND_WEBHOOK_PREFIX = "/bland-ws-webhook/";
+
 export interface WebhookServerConfig {
   publicHost: string;
   /** Fixed port for the HTTP server (default: 0 = random). */
@@ -101,7 +103,7 @@ export class WebhookServer {
         this.handleRequest(req, res);
       });
 
-      this.server.listen(this.config.port ?? 0, () => {
+      this.server.listen(this.config.port ?? 0, "0.0.0.0", () => {
         const addr = this.server!.address();
         if (addr && typeof addr !== "string") {
           this.port = addr.port;
@@ -117,9 +119,19 @@ export class WebhookServer {
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
     const pathname = url.pathname;
 
-    // Bland WS adapter webhook — /bland-ws-webhook/{channelId}
-    if (pathname.startsWith("/bland-ws-webhook/")) {
-      const channelId = pathname.slice("/bland-ws-webhook/".length);
+    if (pathname === "/health") {
+      res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("ok");
+      return;
+    }
+
+    const blandWebhookRoute = this.parseBlandWebhookPath(pathname);
+    if (blandWebhookRoute) {
+      if (this.replayToTargetMachineIfNeeded(req, res, blandWebhookRoute.machineId)) {
+        return;
+      }
+
+      const { channelId } = blandWebhookRoute;
       const handler = this.handlers.get(channelId);
       if (handler) {
         handler(req, res);
@@ -132,5 +144,68 @@ export class WebhookServer {
 
     res.writeHead(404);
     res.end();
+  }
+
+  private parseBlandWebhookPath(pathname: string): { machineId: string | null; channelId: string } | null {
+    if (!pathname.startsWith(BLAND_WEBHOOK_PREFIX)) {
+      return null;
+    }
+
+    const parts = pathname
+      .slice(BLAND_WEBHOOK_PREFIX.length)
+      .split("/")
+      .filter(Boolean)
+      .map((part) => decodeURIComponent(part));
+
+    if (parts.length === 1) {
+      return { machineId: null, channelId: parts[0] };
+    }
+
+    if (parts.length === 2) {
+      return { machineId: parts[0], channelId: parts[1] };
+    }
+
+    return null;
+  }
+
+  private replayToTargetMachineIfNeeded(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    targetMachineId: string | null,
+  ): boolean {
+    const currentMachineId = process.env["FLY_MACHINE_ID"];
+    if (!targetMachineId || !currentMachineId || targetMachineId === currentMachineId) {
+      return false;
+    }
+
+    const replaySource = this.readHeader(req.headers["fly-replay-src"]);
+    if (replaySource.includes(`instance=${currentMachineId}`)) {
+      console.error(
+        `[webhook-server] Replay loop detected for target=${targetMachineId} current=${currentMachineId}`,
+      );
+      res.writeHead(502, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("fly replay loop detected");
+      return true;
+    }
+
+    console.log(`[webhook-server] Replaying Bland callback to machine ${targetMachineId}`);
+    res.writeHead(307, {
+      "Content-Type": "text/plain; charset=utf-8",
+      "Fly-Replay": `instance=${targetMachineId};state=bland-webhook`,
+    });
+    res.end();
+    return true;
+  }
+
+  private readHeader(value: string | string[] | undefined): string {
+    if (typeof value === "string") {
+      return value;
+    }
+
+    if (Array.isArray(value)) {
+      return value.join(",");
+    }
+
+    return "";
   }
 }
