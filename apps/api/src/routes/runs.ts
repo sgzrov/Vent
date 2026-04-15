@@ -2,7 +2,8 @@ import type { FastifyInstance } from "fastify";
 import { eq, and } from "drizzle-orm";
 import { schema } from "@vent/db";
 import { broadcast } from "../lib/run-subscribers.js";
-import { RunSubmitSchema, submitRun, SubmitRunConfigError, UsageLimitError } from "../lib/run-submit.js";
+import { RunSubmitSchema, submitRun, SubmitRunConfigError, UsageLimitError, FleetCapacityError } from "../lib/run-submit.js";
+import { FLEET_ACTIVE_RUNS_KEY } from "@vent/shared";
 
 export async function runRoutes(app: FastifyInstance) {
   const accessTokenPreHandler = { preHandler: app.verifyAccessToken };
@@ -30,6 +31,13 @@ export async function runRoutes(app: FastifyInstance) {
         agentSessionId: parsed.data.agent_session_id,
       });
     } catch (err) {
+      if (err instanceof FleetCapacityError) {
+        return reply.status(429).send({
+          error: err.message,
+          code: "FLEET_CAPACITY",
+          retry_after: 10,
+        });
+      }
       if (err instanceof UsageLimitError) {
         return reply.status(403).send({
           error: err.message,
@@ -193,10 +201,15 @@ export async function runRoutes(app: FastifyInstance) {
         }
       }
 
-      if (run.status === "running") {
-        // Signal worker to abort via Redis key (worker polls this)
-        await app.redis.set(`vent:cancelled:${id}`, "1", "EX", 600);
-      }
+      // Signal worker to skip the run if it was just picked up but has not
+      // started execution yet. This closes the race where BullMQ has the job
+      // active but the DB row still looks queued.
+      await app.redis.set(`vent:cancelled:${id}`, "1", "EX", 600);
+
+      // Release fleet capacity slot (idempotent)
+      const removed = await app.redis.srem(FLEET_ACTIVE_RUNS_KEY, id).catch(() => 0);
+      const activeAfter = await app.redis.scard(FLEET_ACTIVE_RUNS_KEY).catch(() => -1);
+      console.log(`[fleet-cap] SREM cancel run=${id} removed=${removed} active=${activeAfter}`);
 
       // Update DB status
       await app.db

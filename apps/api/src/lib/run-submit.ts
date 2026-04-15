@@ -7,6 +7,7 @@ import {
   ConversationCallSpecSchema,
   CallerAudioEffectsSchema,
   PlatformSummarySchema,
+  FLEET_ACTIVE_RUNS_KEY,
   type PlatformConnectionSummary,
   type PlatformSummary,
 } from "@vent/shared";
@@ -27,6 +28,13 @@ export class UsageLimitError extends Error {
     this.name = "UsageLimitError";
     this.limit = limit;
     this.used = used;
+  }
+}
+
+export class FleetCapacityError extends Error {
+  constructor() {
+    super("All test slots are in use. Please retry in a few minutes.");
+    this.name = "FleetCapacityError";
   }
 }
 
@@ -261,70 +269,50 @@ export async function submitRun(
     platform: platformSummary,
   });
 
-  if (isRemote) {
-    const [run] = await app.db
-      .insert(schema.runs)
-      .values({
-        access_token_id: accessTokenId,
-        user_id: userId,
-        source_type: "remote",
-        status: "queued",
-        test_spec_json: callSpecJson,
-        idempotency_key: hashedIdempotencyKey,
-      })
-      .returning();
+  // Fleet-wide capacity gate — reject before enqueuing to avoid mid-call provider errors.
+  // Uses a Redis SET of run IDs: SADD is idempotent (no drift), SCARD gives exact count.
+  // A Lua script makes the check-and-add atomic so no race between SCARD and SADD.
+  const fleetMax = parseInt(process.env["FLEET_MAX_ACTIVE_RUNS"] ?? "45", 10);
 
-    const runId = run!.id;
+  // Insert DB row first so we have a run_id to track in the SET.
+  // If the SET add fails (capacity full), we mark the row as rejected.
+  const sourceType = isRemote ? "remote" : "session";
 
-    await app.getRunQueue(userId).add("execute-run", {
-      run_id: runId,
-      adapter: resolvedAdapter,
-      call_spec: {
-        call: call ?? null,
-      },
-      voice_config: voiceConfig,
-      start_command: cfg.start_command as string | undefined,
-      health_endpoint: cfg.health_endpoint as string | undefined,
-      agent_url: agentUrl,
-      platform_connection_id: platformConnectionId,
-    }, { jobId: runId });
+  if (!isRemote) {
+    // Local agent via agent session — session must already be active
+    if (!agentSessionId) {
+      throw new SubmitRunConfigError(
+        "Non-remote runs require an agent_session_id. Start an agent session first with `npx vent-hq agent start`.",
+      );
+    }
 
-    return { run_id: runId, status: "queued" };
-  }
+    // Verify the agent session exists, belongs to the user, and is active
+    const [agentSession] = await app.db
+      .select({ id: schema.agentSessions.id, status: schema.agentSessions.status })
+      .from(schema.agentSessions)
+      .where(
+        and(
+          eq(schema.agentSessions.id, agentSessionId),
+          eq(schema.agentSessions.user_id, userId),
+        ),
+      )
+      .limit(1);
 
-  // Local agent via agent session — session must already be active
-  if (!agentSessionId) {
-    throw new SubmitRunConfigError(
-      "Non-remote runs require an agent_session_id. Start an agent session first with `npx vent-hq agent start`.",
-    );
-  }
+    if (!agentSession) {
+      throw new SubmitRunConfigError("Agent session not found", 404);
+    }
+    if (agentSession.status !== "active") {
+      throw new SubmitRunConfigError(
+        `Agent session is "${agentSession.status}" — it must be "active". Ensure the relay tunnel is connected.`,
+      );
+    }
 
-  // Verify the agent session exists, belongs to the user, and is active
-  const [agentSession] = await app.db
-    .select({ id: schema.agentSessions.id, status: schema.agentSessions.status })
-    .from(schema.agentSessions)
-    .where(
-      and(
-        eq(schema.agentSessions.id, agentSessionId),
-        eq(schema.agentSessions.user_id, userId),
-      ),
-    )
-    .limit(1);
-
-  if (!agentSession) {
-    throw new SubmitRunConfigError("Agent session not found", 404);
-  }
-  if (agentSession.status !== "active") {
-    throw new SubmitRunConfigError(
-      `Agent session is "${agentSession.status}" — it must be "active". Ensure the relay tunnel is connected.`,
-    );
-  }
-
-  const relayReady = await app.redis.get(`vent:relay-session:${agentSessionId}`);
-  if (!relayReady) {
-    throw new SubmitRunConfigError(
-      "Agent session relay is no longer connected. Start a new session with `npx vent-hq agent start`.",
-    );
+    const relayReady = await app.redis.get(`vent:relay-session:${agentSessionId}`);
+    if (!relayReady) {
+      throw new SubmitRunConfigError(
+        "Agent session relay is no longer connected. Start a new session with `npx vent-hq agent start`.",
+      );
+    }
   }
 
   const [run] = await app.db
@@ -332,30 +320,54 @@ export async function submitRun(
     .values({
       access_token_id: accessTokenId,
       user_id: userId,
-      source_type: "session",
+      source_type: sourceType,
       status: "queued",
       test_spec_json: callSpecJson,
       idempotency_key: hashedIdempotencyKey,
-      agent_session_id: agentSessionId,
+      ...(agentSessionId ? { agent_session_id: agentSessionId } : {}),
     })
     .returning();
 
   const runId = run!.id;
 
-  // Enqueue immediately — session relay is already connected
-  await app.getRunQueue(userId).add("execute-run", {
+  // Atomic check-and-add: if SET size < fleetMax, SADD run_id and return 1; else return 0.
+  const FLEET_CAP_SCRIPT = `
+    if redis.call('scard', KEYS[1]) < tonumber(ARGV[1]) then
+      redis.call('sadd', KEYS[1], ARGV[2])
+      return 1
+    end
+    return 0
+  `;
+  const admitted = await app.redis.eval(
+    FLEET_CAP_SCRIPT, 1, FLEET_ACTIVE_RUNS_KEY, String(fleetMax), runId,
+  ) as number;
+
+  const activeAfter = await app.redis.scard(FLEET_ACTIVE_RUNS_KEY);
+  if (!admitted) {
+    console.log(`[fleet-cap] REJECTED run=${runId} active=${activeAfter} max=${fleetMax}`);
+    await app.db
+      .update(schema.runs)
+      .set({ status: "fail", finished_at: new Date(), error_text: "Fleet at capacity" })
+      .where(eq(schema.runs.id, runId));
+    throw new FleetCapacityError();
+  }
+  console.log(`[fleet-cap] ADMITTED run=${runId} active=${activeAfter} max=${fleetMax}`);
+
+  // Enqueue the job
+  const jobData = {
     run_id: runId,
     adapter: resolvedAdapter,
-    call_spec: {
-      call: call ?? null,
-    },
+    call_spec: { call: call ?? null },
     voice_config: voiceConfig,
     start_command: cfg.start_command as string | undefined,
     health_endpoint: cfg.health_endpoint as string | undefined,
     agent_url: agentUrl,
-    agent_session_id: agentSessionId,
     platform_connection_id: platformConnectionId,
-  }, { jobId: runId });
+    ...(agentSessionId ? { agent_session_id: agentSessionId } : {}),
+  };
+
+  await app.getRunQueue(userId).add("execute-run", jobData, { jobId: runId });
+  await app.markRunQueueActive(userId);
 
   return { run_id: runId, status: "queued" };
 }

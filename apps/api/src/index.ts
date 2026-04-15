@@ -18,6 +18,7 @@ import { dbPlugin } from "./plugins/db.js";
 import { queuePlugin } from "./plugins/queue.js";
 import { authPlugin } from "./plugins/auth.js";
 import { shutdownSubscribers } from "./lib/run-subscribers.js";
+import { FLEET_ACTIVE_RUNS_KEY } from "@vent/shared";
 
 const port = parseInt(process.env["API_PORT"] ?? "3000", 10);
 const host = process.env["API_HOST"] ?? "0.0.0.0";
@@ -123,8 +124,13 @@ async function main() {
         )
         .returning({ id: schema.runs.id });
 
+      for (const r of stuckRunning) {
+        const removed = await app.redis.srem(FLEET_ACTIVE_RUNS_KEY, r.id).catch(() => 0);
+        console.log(`[fleet-cap] SREM stuck-running run=${r.id} removed=${removed}`);
+      }
       if (stuckRunning.length > 0) {
-        console.log(`Cleaned up ${stuckRunning.length} stuck running run(s): ${stuckRunning.map((r) => r.id).join(", ")}`);
+        const activeAfter = await app.redis.scard(FLEET_ACTIVE_RUNS_KEY).catch(() => -1);
+        console.log(`Cleaned up ${stuckRunning.length} stuck running run(s) active=${activeAfter}: ${stuckRunning.map((r) => r.id).join(", ")}`);
       }
 
       // 2. Runs stuck in "queued" (worker never picked them up)
@@ -144,6 +150,10 @@ async function main() {
         )
         .returning({ id: schema.runs.id });
 
+      for (const r of stuckQueued) {
+        const removed = await app.redis.srem(FLEET_ACTIVE_RUNS_KEY, r.id).catch(() => 0);
+        console.log(`[fleet-cap] SREM stuck-queued run=${r.id} removed=${removed}`);
+      }
       if (stuckQueued.length > 0) {
         console.log(`Cleaned up ${stuckQueued.length} stuck queued run(s): ${stuckQueued.map((r) => r.id).join(", ")}`);
       }
