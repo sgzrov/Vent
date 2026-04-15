@@ -113,7 +113,7 @@ Source-of-truth policy:
    npx vent-hq agent start -f .vent/suite.<adapter>.json
    npx vent-hq run -f .vent/suite.<adapter>.json --call happy-path --session <session-id>
    ```
-5. To run multiple calls, run each as a separate command.
+5. To run multiple calls, **run each as a separate shell command** — Codex executes parallel shell calls concurrently, so each call runs simultaneously. Example: emit one `npx vent-hq run --call happy-path` and one `npx vent-hq run --call edge-case` as separate tool calls.
 6. After results return, **compare with previous run** — Vent saves full result JSON to `.vent/runs/` after every run. Use `--verbose` only when the default result is not enough to explain the failure. Compare status flips, TTFW p50/p95 changes >20%, tool call count drops, cost increases >30%. Skip if no previous run exists.
 7. After code changes, re-run the same way.
 
@@ -123,8 +123,8 @@ If `.vent/` contains more than one suite file, **always check which adapter each
 
 ## Critical Rules
 
-1. **Run calls in parallel with 5min timeout** — Each call is a separate shell command, run them all at once. Set a 300-second (5 min) timeout on each — calls can take up to 5 minutes.
-2. **Handle backgrounded commands** — If a call command gets moved to background by the system, wait for it to complete before proceeding. Never end your response without delivering call results.
+1. **Run all calls in parallel as separate shell commands** — When a suite has multiple calls, emit each `npx vent-hq run` as its own shell tool call in the same response. Codex runs shell calls concurrently — they execute simultaneously. Set a 300-second (5 min) timeout on each. Do NOT combine calls into one command with `&`.
+2. **Wait for all results** — Do not end your response until every call has returned results.
 3. **Output format** — In non-TTY mode (when run by an agent), every SSE event is written to stdout as a JSON line. Results are always in stdout.
 4. **This skill is self-contained** — The full config schema is below.
 
@@ -239,6 +239,7 @@ Retell:
   }
 }
 Credentials auto-resolve from `.env.local`, `.env`, or shell env: RETELL_API_KEY, RETELL_AGENT_ID. Only add retell_api_key/retell_agent_id to the JSON if those env vars are not already available.
+max_concurrency for Retell: Pay-as-you-go includes 20 concurrent calls, with more available on demand; Enterprise has no cap. Ask the user which plan they're on. If unknown, default to 20.
 
 Bland:
 {
@@ -248,6 +249,7 @@ Bland:
   }
 }
 Credentials auto-resolve from `.env.local`, `.env`, or shell env: BLAND_API_KEY, BLAND_PATHWAY_ID, BLAND_PERSONA_ID. Only add bland_api_key/bland_pathway_id/persona_id to the JSON if those env vars are not already available.
+max_concurrency for Bland: Start=10, Build=50, Scale=100, Enterprise=unlimited. Ask the user which plan they're on. If unknown, default to 10.
 Note: All agent config (voice, model, tools, etc.) is set on the pathway itself, not in Vent config.
 
 Vapi:
@@ -258,7 +260,7 @@ Vapi:
   }
 }
 Credentials auto-resolve from `.env.local`, `.env`, or shell env: VAPI_API_KEY, VAPI_ASSISTANT_ID (or VAPI_AGENT_ID). Only add vapi_api_key/vapi_assistant_id to the JSON if those env vars are not already available.
-max_concurrency for Vapi: Starter=10, Growth=50, Enterprise=100+. Ask the user which tier they're on. If unknown, default to 10.
+max_concurrency for Vapi: every account includes 10 concurrent call slots by default; self-serve accounts can buy extra reserved lines, and Enterprise includes unlimited concurrency. Set this to the user's purchased limit. If unknown, default to 10.
 All assistant config (voice, model, transcriber, interruption settings, etc.) is set on the Vapi assistant itself, not in Vent config.
 
 ElevenLabs:
@@ -269,6 +271,7 @@ ElevenLabs:
   }
 }
 Credentials auto-resolve from `.env.local`, `.env`, or shell env: ELEVENLABS_API_KEY, ELEVENLABS_AGENT_ID. Only add elevenlabs_api_key/elevenlabs_agent_id to the JSON if those env vars are not already available.
+max_concurrency for ElevenLabs: Free=4, Starter=6, Creator=10, Pro=20, Scale=30, Business=30. Burst pricing can temporarily allow up to 3x the base limit. Ask the user which plan they're on and whether burst is enabled. If unknown, default to 4.
 
 LiveKit:
 {
@@ -284,7 +287,8 @@ LiveKit:
 Credentials auto-resolve from `.env.local`, `.env`, or shell env: LIVEKIT_API_KEY, LIVEKIT_API_SECRET, LIVEKIT_URL. Only add these to the JSON if those env vars are not already available.
 livekit_agent_name is optional -- only needed if the agent registers with an explicit agent_name in WorkerOptions. Omit for automatic dispatch.
 The livekit adapter requires the LiveKit Agents SDK. It depends on Agents SDK signals (lk.agent.state, lk.transcription) for readiness detection, turn timing, and component latency. Custom LiveKit participants not using the Agents SDK should use the websocket adapter with a relay instead.
-max_concurrency: Free/Build=5, Ship=20, Scale=50+. Ask the user which tier they're on. If unknown, default to 5.
+max_concurrency for LiveKit Cloud: Build=5, Ship=20, Scale=50 managed inference sessions. Agent session concurrency can be higher (Build=5, Ship=20, Scale up to 600), but managed inference is the usual gating limit for voice agents. Ask the user which tier they're on. If unknown, default to 5.
+Know the provider/account concurrency limits and use them in planning, but Vent does not enforce provider caps at runtime. Hosted worker throughput is an infra setting: `WORKER_TOTAL_CONCURRENCY` caps one worker Machine.
 </config_adapter_rules>
 </config_connection>
 

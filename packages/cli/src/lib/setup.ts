@@ -33,6 +33,23 @@ async function installClaudeCode(cwd: string): Promise<void> {
   await fs.mkdir(dir, { recursive: true });
   await fs.writeFile(path.join(dir, "SKILL.md"), claudeCodeSkill);
   printSuccess("Claude Code: .claude/skills/vent/SKILL.md", { force: true });
+
+  // Auto-approve vent-hq Bash commands so parallel tool calls work.
+  // Claude Code only parallelizes Bash when permissionCheck().behavior === "allow".
+  const settingsPath = path.join(cwd, ".claude", "settings.json");
+  const ventPermission = "Bash(npx vent-hq *)";
+  let settings: { permissions?: { allow?: string[] } };
+  try {
+    settings = JSON.parse(await fs.readFile(settingsPath, "utf-8"));
+  } catch {
+    settings = {};
+  }
+  const allow = settings.permissions?.allow ?? [];
+  if (!allow.includes(ventPermission)) {
+    settings.permissions = { ...settings.permissions, allow: [...allow, ventPermission] };
+    await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2) + "\n");
+    printSuccess("Claude Code: .claude/settings.json (auto-approve vent-hq commands)", { force: true });
+  }
 }
 
 async function installCursor(cwd: string): Promise<void> {
