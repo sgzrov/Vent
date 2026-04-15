@@ -7,7 +7,6 @@
 import type {
   TurnEmotionProfile,
   ProsodyMetrics,
-  ProsodyWarning,
 } from "@vent/shared";
 import { withRetry } from "@vent/shared";
 import { pcmToWav } from "@vent/voice";
@@ -258,82 +257,6 @@ function computeAggregates(
 }
 
 // ============================================================
-// Grading
-// ============================================================
-
-/**
- * Grade prosody metrics against thresholds.
- * Returns warnings (informational — does NOT affect pass/fail).
- */
-export function gradeProsodyMetrics(
-  metrics: ProsodyMetrics,
-): ProsodyWarning[] {
-  const warnings: ProsodyWarning[] = [];
-
-  if (metrics.mean_calmness < 0.3) {
-    warnings.push({
-      metric: "mean_calmness",
-      value: metrics.mean_calmness,
-      threshold: 0.3,
-      severity: metrics.mean_calmness < 0.15 ? "critical" : "warning",
-      message: `Agent mean calmness ${metrics.mean_calmness} is low — voice sounds tense or agitated`,
-    });
-  }
-
-  if (metrics.mean_confidence < 0.25) {
-    warnings.push({
-      metric: "mean_confidence",
-      value: metrics.mean_confidence,
-      threshold: 0.25,
-      severity: "warning",
-      message: `Agent mean confidence ${metrics.mean_confidence} is low — voice sounds hesitant or uncertain`,
-    });
-  }
-
-  if (metrics.peak_frustration > 0.5) {
-    warnings.push({
-      metric: "peak_frustration",
-      value: metrics.peak_frustration,
-      threshold: 0.5,
-      severity: metrics.peak_frustration > 0.7 ? "critical" : "warning",
-      message: `Peak frustration ${metrics.peak_frustration} detected — agent voice sounded frustrated or angry`,
-    });
-  }
-
-  if (metrics.emotion_consistency < 0.4) {
-    warnings.push({
-      metric: "emotion_consistency",
-      value: metrics.emotion_consistency,
-      threshold: 0.4,
-      severity: "warning",
-      message: `Emotion consistency ${metrics.emotion_consistency} — agent voice tone is erratic across turns`,
-    });
-  }
-
-  if (metrics.naturalness < 0.4) {
-    warnings.push({
-      metric: "naturalness",
-      value: metrics.naturalness,
-      threshold: 0.4,
-      severity: metrics.naturalness < 0.25 ? "critical" : "warning",
-      message: `Naturalness score ${metrics.naturalness} — agent voice sounds robotic or unnatural`,
-    });
-  }
-
-  if (metrics.emotion_trajectory === "degrading") {
-    warnings.push({
-      metric: "emotion_trajectory",
-      value: 0,
-      threshold: 0,
-      severity: "warning",
-      message: "Emotional trajectory is degrading — agent became less calm over the conversation",
-    });
-  }
-
-  return warnings;
-}
-
-// ============================================================
 // Public entry point
 // ============================================================
 
@@ -344,7 +267,7 @@ export function gradeProsodyMetrics(
  */
 export async function analyzeProsody(
   agentAudioBuffers: Buffer[],
-): Promise<{ metrics: ProsodyMetrics; warnings: ProsodyWarning[] } | null> {
+): Promise<{ metrics: ProsodyMetrics } | null> {
   const apiKey = process.env["HUME_API_KEY"];
   if (!apiKey) {
     console.log("    Prosody analysis skipped: HUME_API_KEY not set");
@@ -392,13 +315,12 @@ export async function analyzeProsody(
 
     const humeLatencyMs = Math.round(performance.now() - start);
     const metrics = computeAggregates(turnProfiles, humeLatencyMs);
-    const warnings = gradeProsodyMetrics(metrics);
 
     console.log(
       `    Prosody analysis complete: ${turnProfiles.length} turns, naturalness=${metrics.naturalness} (${humeLatencyMs}ms)`,
     );
 
-    return { metrics, warnings };
+    return { metrics };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.warn(`    Prosody analysis failed (non-fatal): ${msg}`);
