@@ -77,14 +77,6 @@ Test pathways (`bland_pathway_id`), personas (`persona_id`), or inline prompts (
 
 For voice agents not hosted on a specific platform, you can test over WebSocket. Point Vent at a hosted endpoint with `agent_url`, or test a local agent with `start_command` + `agent_port` — Vent spawns your agent and tunnels audio through a relay so your machine doesn't need a public IP. Agents are required to emit `vent:*` events for full observability and reliable turn detection.
 
-## Packages
-
-| Package | Registry | Description |
-|---------|----------|-------------|
-| [`vent-hq`](https://www.npmjs.com/package/vent-hq) | npm | CLI |
-| [`@vent-hq/livekit`](https://www.npmjs.com/package/@vent-hq/livekit) | npm | LiveKit Agents SDK observability helper |
-| [`vent-livekit`](https://pypi.org/project/vent-livekit/) | PyPI | Python LiveKit observability helper |
-
 ---
 
 [Website](https://vent.dev) · [Documentation](https://docs.vent.dev) · [Changelog](https://github.com/vent-hq/vent/blob/main/CHANGELOG.md) · [X](https://x.com/vent_hq)
