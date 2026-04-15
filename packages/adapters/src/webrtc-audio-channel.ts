@@ -240,6 +240,7 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
   private livekitMetricTimingIndexBySpeechId = new Map<string, number>();
   private toolCallFingerprints = new Set<string>();
   private hasDirectToolCallStream = false;
+  private subscribedTrackSids = new Set<string>();
 
   // Segment-to-turn anchoring: lock each STT segment to the turn that was
   // active when the segment was first observed (interim or final).
@@ -323,6 +324,7 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
     this.livekitMetricTimingIndexBySpeechId.clear();
     this.toolCallFingerprints.clear();
     this.hasDirectToolCallStream = false;
+    this.subscribedTrackSids.clear();
 
     // ── Tool call capture via DataChannel ──────────────────────
     this.room.on(
@@ -459,27 +461,30 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
     // Low-level white noise forces Opus to maintain a baseline bitrate.
     this.startComfortNoise();
 
-    // Subscribe to existing remote audio tracks
+    // Subscribe to existing remote audio tracks (agent only)
     for (const participant of this.room.remoteParticipants.values()) {
       if (participant.kind === ParticipantKind.AGENT) {
         this.agentIdentity = participant.identity;
-      }
-      for (const pub of participant.trackPublications.values()) {
-        if (pub.track && pub.kind === TrackKind.KIND_AUDIO) {
-          this.startReadingTrack(pub.track as RemoteTrack);
+        for (const pub of participant.trackPublications.values()) {
+          if (pub.track && pub.kind === TrackKind.KIND_AUDIO && pub.sid) {
+            this.startReadingTrack(pub.track as RemoteTrack, pub.sid);
+          }
         }
       }
     }
 
-    // Subscribe to new remote audio tracks
+    // Subscribe to new remote audio tracks (agent only, deduplicated)
     this.room.on(
       RoomEvent.TrackSubscribed,
       (track: RemoteTrack, pub: RemoteTrackPublication, participant: RemoteParticipant) => {
-        if (participant.kind === ParticipantKind.AGENT && !this.agentIdentity) {
+        if (participant.kind !== ParticipantKind.AGENT) return;
+        if (!this.agentIdentity) {
           this.agentIdentity = participant.identity;
+        } else if (participant.identity !== this.agentIdentity) {
+          return; // Ignore tracks from unexpected agent participants
         }
-        if (pub.kind === TrackKind.KIND_AUDIO) {
-          this.startReadingTrack(track);
+        if (pub.kind === TrackKind.KIND_AUDIO && pub.sid) {
+          this.startReadingTrack(track, pub.sid);
         }
       }
     );
@@ -1048,8 +1053,13 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
     this.emit("disconnected");
   }
 
-  private startReadingTrack(track: RemoteTrack): void {
-    console.log(`[livekit] Subscribed to remote audio track`);
+  private startReadingTrack(track: RemoteTrack, sid: string): void {
+    if (this.subscribedTrackSids.has(sid)) {
+      console.log(`[livekit] Skipping duplicate audio track subscription (sid=${sid})`);
+      return;
+    }
+    this.subscribedTrackSids.add(sid);
+    console.log(`[livekit] Subscribed to remote audio track (sid=${sid})`);
     const stream = new AudioStream(track, this.livekitSampleRate, 1);
     const reader = stream.getReader();
     let frameCount = 0;
