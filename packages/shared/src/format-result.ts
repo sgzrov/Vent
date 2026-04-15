@@ -13,11 +13,8 @@ import type {
   ObservedToolCall,
   AudioActionResult,
   LatencyMetrics,
-  TranscriptMetrics,
   AudioAnalysisMetrics,
-  AudioAnalysisWarning,
   ProsodyMetrics,
-  ProsodyWarning,
   ToolCallMetrics,
   CallMetadata,
   CallTransfer,
@@ -162,8 +159,6 @@ interface FormattedConversationDebug {
   signal_quality?: SignalQualityMetrics;
   harness_overhead?: HarnessOverhead;
   prosody?: ProsodyMetrics;
-  audio_analysis_warnings?: AudioAnalysisWarning[];
-  prosody_warnings?: ProsodyWarning[];
   provider_warnings?: ProviderWarning[];
   component_latency_per_turn?: ComponentLatency[];
   observed_tool_calls?: FormattedDebugToolCall[];
@@ -178,7 +173,6 @@ export interface FormattedConversationResult {
   error: string | null;
   transcript: FormattedTranscriptTurn[];
   latency: FormattedLatency | null;
-  transcript_quality: Partial<TranscriptMetrics> | null;
   audio_analysis: FormattedAudioAnalysis | null;
   tool_calls: FormattedToolCalls;
   component_latency: FormattedComponentLatency | null;
@@ -213,14 +207,11 @@ export function formatConversationResult(
     error: r.error ?? null,
     transcript: formatTranscript(r.transcript, options),
     latency: r.metrics?.latency ? formatLatency(r.metrics.latency, r.metrics) : null,
-    transcript_quality: r.metrics?.transcript && hasContent(r.metrics.transcript) ? r.metrics.transcript : null,
     audio_analysis: r.metrics?.audio_analysis && hasContent(r.metrics.audio_analysis) ? formatAudioAnalysis(r.metrics.audio_analysis) : null,
     tool_calls: formatToolCalls(r.metrics?.tool_calls, r.observed_tool_calls),
     component_latency: formatComponentLatency(r.metrics?.component_latency),
     call_metadata: formatCallMetadata(r.call_metadata),
     warnings: dedupeStrings([
-      ...(r.metrics?.audio_analysis_warnings ?? []).map(w => w.message),
-      ...(r.metrics?.prosody_warnings ?? []).map(w => w.message),
       ...formatProviderWarningMessages(r.call_metadata?.provider_warnings),
     ]),
     audio_actions: r.audio_action_results ?? [],
@@ -421,8 +412,6 @@ function formatDebug(result: ConversationCallResult): FormattedConversationDebug
     signal_quality: result.metrics?.signal_quality,
     harness_overhead: result.metrics?.harness_overhead,
     prosody: result.metrics?.prosody,
-    audio_analysis_warnings: nonEmptyArray(result.metrics?.audio_analysis_warnings),
-    prosody_warnings: nonEmptyArray(result.metrics?.prosody_warnings),
     provider_warnings: nonEmptyArray(result.call_metadata?.provider_warnings),
     component_latency_per_turn: nonEmptyArray(result.metrics?.component_latency?.per_turn),
     observed_tool_calls: formatDebugToolCalls(result.observed_tool_calls),
@@ -473,3 +462,4 @@ function compactUnknownRecord(
 function hasContent(obj: object): boolean {
   return Object.values(obj).some((v) => v != null);
 }
+

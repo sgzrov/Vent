@@ -29,7 +29,7 @@ import { collectUntilEndOfTurn, linearRegressionSlope } from "../audio-tests/hel
 import { computeAllMetrics } from "../metrics/index.js";
 import { analyzeProsody } from "../metrics/prosody.js";
 import { AdaptiveThreshold } from "./adaptive-threshold.js";
-import { gradeAudioAnalysisMetrics, type TurnAudioData } from "../metrics/audio-analysis.js";
+import { type TurnAudioData } from "../metrics/audio-analysis.js";
 
 function summarizeDebugText(text: string | null | undefined, maxChars = 96): string {
   if (!text) return "";
@@ -1117,14 +1117,11 @@ export async function runConversationCall(
       }
     }
 
-    // Step 8c: Compute metrics AFTER platform transcripts are merged (WER needs platform_transcript)
-    const fullPlatformCallerText = channel.getFullCallerTranscript?.() ?? undefined;
-    const { transcript: transcriptMetrics, latency, audio_analysis, harness_overhead } = await computeAllMetrics(
+    // Step 8c: Compute metrics
+    const { latency, audio_analysis, harness_overhead } = await computeAllMetrics(
       transcript,
       turnAudioData,
       channel.stats.connectLatencyMs,
-      fullPlatformCallerText,
-      spec.language,
     );
 
     // Step 9: Collect platform call metadata (cost, ended reason, recording, analysis)
@@ -1132,11 +1129,6 @@ export async function runConversationCall(
     if (callMetadata) {
       console.log(`    Call metadata: ended_reason=${callMetadata.ended_reason ?? "unknown"}, cost=$${callMetadata.cost_usd?.toFixed(4) ?? "n/a"}`);
     }
-
-    // Grade audio analysis metrics (informational warnings)
-    const audioAnalysisWarnings = audio_analysis
-      ? gradeAudioAnalysisMetrics(audio_analysis)
-      : undefined;
 
     // Aggregate signal quality across turns
     const signalQuality = turnSignalQualities.length > 0
@@ -1166,14 +1158,11 @@ export async function runConversationCall(
     const metrics: ConversationMetrics = {
       mean_ttfb_ms: meanTtfb,
       mean_ttfw_ms: meanTtfw,
-      transcript: transcriptMetrics,
       latency,
       signal_quality: signalQuality,
       tool_calls: toolCallMetrics,
       audio_analysis,
-      audio_analysis_warnings: audioAnalysisWarnings?.length ? audioAnalysisWarnings : undefined,
       prosody: prosodyResult?.metrics,
-      prosody_warnings: prosodyResult?.warnings?.length ? prosodyResult.warnings : undefined,
       harness_overhead,
       component_latency: componentLatencyMetrics,
     };

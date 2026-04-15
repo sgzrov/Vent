@@ -181,25 +181,6 @@ export const RunPlatformSummarySchema = z.object({
   platform: PlatformSummarySchema.nullable(),
 });
 
-export const AudioAnalysisGradeThresholdsSchema = z.object({
-  agent_speech_ratio_min: z.number().min(0).max(1).optional(),
-  talk_ratio_vad_max: z.number().min(0).max(1).optional(),
-  talk_ratio_vad_min: z.number().min(0).max(1).optional(),
-  longest_monologue_max_ms: z.number().min(1000).optional(),
-  silence_gaps_over_2s_max: z.number().int().min(0).optional(),
-  mean_segment_min_ms: z.number().min(0).optional(),
-  mean_segment_max_ms: z.number().min(0).optional(),
-}).optional();
-
-export const AudioAnalysisWarningSchema = z.object({
-  metric: z.string(),
-  value: z.number(),
-  threshold: z.number(),
-  severity: z.enum(["warning", "critical"]),
-  message: z.string(),
-});
-
-
 export const ConversationTurnSchema = z.object({
   role: z.enum(["caller", "agent"]),
   text: z.string(),
@@ -226,24 +207,6 @@ export const ConversationTurnSchema = z.object({
 // ============================================================
 // Deep metric schemas
 // ============================================================
-
-export const HallucinationEventSchema = z.object({
-  error_count: z.number().int().min(1),
-  reference_text: z.string(),
-  hypothesis_text: z.string(),
-});
-
-export const TranscriptMetricsSchema = z.object({
-  wer: z.number().min(0).optional(),
-  cer: z.number().min(0).optional(),
-  hallucination_events: z.array(HallucinationEventSchema).optional(),
-  repetition_score: z.number().min(0).max(1).optional(),
-  reprompt_count: z.number().int().min(0).optional(),
-  reprompt_rate: z.number().min(0).max(1).optional(),
-  filler_word_rate: z.number().min(0).optional(),
-  words_per_minute: z.number().min(0).optional(),
-  vocabulary_diversity: z.number().min(0).max(1).optional(),
-});
 
 export const LatencyMetricsSchema = z.object({
   ttfb_per_turn_ms: z.array(z.number()),
@@ -304,14 +267,6 @@ export const ProsodyMetricsSchema = z.object({
   naturalness: z.number(),
   emotion_trajectory: z.enum(["stable", "improving", "degrading", "volatile"]),
   hume_latency_ms: z.number(),
-});
-
-export const ProsodyWarningSchema = z.object({
-  metric: z.string(),
-  value: z.number(),
-  threshold: z.number(),
-  severity: z.enum(["warning", "critical"]),
-  message: z.string(),
 });
 
 export const HarnessOverheadSchema = z.object({
@@ -402,14 +357,11 @@ export const CallMetadataSchema = z.object({
 export const ConversationMetricsSchema = z.object({
   mean_ttfb_ms: z.number(),
   mean_ttfw_ms: z.number().optional(),
-  transcript: TranscriptMetricsSchema.optional(),
   latency: LatencyMetricsSchema.optional(),
   tool_calls: ToolCallMetricsSchema.optional(),
   signal_quality: SignalQualityMetricsSchema.optional(),
   audio_analysis: AudioAnalysisMetricsSchema.optional(),
-  audio_analysis_warnings: z.array(AudioAnalysisWarningSchema).optional(),
   prosody: ProsodyMetricsSchema.optional(),
-  prosody_warnings: z.array(ProsodyWarningSchema).optional(),
   harness_overhead: HarnessOverheadSchema.optional(),
   component_latency: ComponentLatencyMetricsSchema.optional(),
 });

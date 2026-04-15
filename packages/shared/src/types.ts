@@ -229,24 +229,6 @@ export interface RunPlatformSummary {
 }
 
 
-export interface AudioAnalysisGradeThresholds {
-  agent_speech_ratio_min?: number;
-  talk_ratio_vad_max?: number;
-  talk_ratio_vad_min?: number;
-  longest_monologue_max_ms?: number;
-  silence_gaps_over_2s_max?: number;
-  mean_segment_min_ms?: number;
-  mean_segment_max_ms?: number;
-}
-
-export interface AudioAnalysisWarning {
-  metric: string;
-  value: number;
-  threshold: number;
-  severity: "warning" | "critical";
-  message: string;
-}
-
 // ============================================================
 // Prosody analysis types (Hume Expression Measurement)
 // ============================================================
@@ -286,15 +268,6 @@ export interface ProsodyMetrics {
   emotion_trajectory: "stable" | "improving" | "degrading" | "volatile";
   /** Hume job processing time (ms) — infrastructure overhead */
   hume_latency_ms: number;
-}
-
-/** Warning from prosody grading — informational, never affects pass/fail */
-export interface ProsodyWarning {
-  metric: string;
-  value: number;
-  threshold: number;
-  severity: "warning" | "critical";
-  message: string;
 }
 
 export interface CallSpec {
@@ -338,31 +311,6 @@ export interface ConversationTurn {
 // ============================================================
 // Deep metric types
 // ============================================================
-
-export interface TranscriptMetrics {
-  /** Caller word error rate vs provider caller transcript. May exceed 1.0 when insertions dominate. Omitted when word segmentation is not reliable for the configured language. */
-  wer?: number;
-  /** Caller character error rate vs provider caller transcript. Used when word segmentation is not reliable for the configured language. */
-  cer?: number;
-  /** Consecutive insertion/substitution runs from WER alignment (proxy for STT hallucinations). */
-  hallucination_events?: HallucinationEvent[];
-  repetition_score?: number;
-  reprompt_count?: number;
-  /** Proportion of agent turns that ask the caller to repeat/rephrase (0-1). */
-  reprompt_rate?: number;
-  filler_word_rate?: number;
-  words_per_minute?: number;
-  vocabulary_diversity?: number;
-}
-
-export interface HallucinationEvent {
-  /** Number of consecutive alignment errors in this run. */
-  error_count: number;
-  /** Reference words Vent expected the platform to hear. */
-  reference_text: string;
-  /** Platform STT words observed during the same error run. */
-  hypothesis_text: string;
-}
 
 export interface LatencyMetrics {
   ttfb_per_turn_ms: number[];
@@ -547,15 +495,12 @@ export interface ConversationMetrics {
   mean_ttfb_ms: number;
   /** Mean time to first word (VAD speech onset) across agent turns */
   mean_ttfw_ms?: number;
-  transcript?: TranscriptMetrics;
   latency?: LatencyMetrics;
   tool_calls?: ToolCallMetrics;
   /** Raw audio signal quality (SNR, clipping, energy, F0) — aggregated across turns */
   signal_quality?: SignalQualityMetrics;
   audio_analysis?: AudioAnalysisMetrics;
-  audio_analysis_warnings?: AudioAnalysisWarning[];
   prosody?: ProsodyMetrics;
-  prosody_warnings?: ProsodyWarning[];
   harness_overhead?: HarnessOverhead;
   /** Per-component latency breakdown (STT/LLM/TTS) from platform events */
   component_latency?: ComponentLatencyMetrics;

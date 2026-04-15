@@ -13,7 +13,6 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",
-    "@shelf/text-normalizer": "^2.1.1",
     "@vent/adapters": "workspace:*",
     "@vent/artifacts": "workspace:*",
     "@vent/shared": "workspace:*",
