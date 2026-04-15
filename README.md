@@ -30,7 +30,7 @@ Describe the exact persona, flows, tool calls, transfers, MCPs, logic fallbacks,
 npx vent-hq@latest init
 ```
 
-Paste `npx vent-hq@latest init` into your coding agent. It will automatically log in via GitHub, generate an access token, install skill files, and scaffold a starter config at `.vent/suite.json`. Your coding agent is ready to run calls.
+Paste `npx vent-hq@latest init` into your coding agent. It will automatically log in via GitHub, generate an access token, install skill files, and scaffold a starter config at `.vent/suite.json`.
 
 For unlimited access without GitHub, run `npx vent-hq login` to authenticate via browser.
 
