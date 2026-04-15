@@ -12,6 +12,7 @@ primary_region = "iad"
   API_PORT = "3000"
   API_HOST = "0.0.0.0"
   NODE_ENV = "production"
+  FLEET_MAX_ACTIVE_RUNS = "45"
   DASHBOARD_URL = "https://venthq.dev"
 
 [http_service]

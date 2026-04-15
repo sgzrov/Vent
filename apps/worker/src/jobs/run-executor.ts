@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import IORedis from "ioredis";
 import { createDb, schema, type Database } from "@vent/db";
-import { RUNNER_CALLBACK_HEADER, formatConversationResult } from "@vent/shared";
+import { RUNNER_CALLBACK_HEADER, FLEET_ACTIVE_RUNS_KEY, formatConversationResult } from "@vent/shared";
 import type {
   CallSpec,
   AdapterType,
@@ -57,6 +57,9 @@ interface RunJob {
   agent_session_id?: string;
 }
 
+const redisUrl = process.env["REDIS_URL"] ?? "redis://localhost:6379";
+const redis = new IORedis(redisUrl, { maxRetriesPerRequest: null });
+
 async function resolvePlatformConfig(
   db: Database,
   platformConnectionId?: string | null,
@@ -92,7 +95,10 @@ async function resolvePlatformConfig(
 // Direct execution for already-deployed agents (platform adapters or agent_url)
 // ---------------------------------------------------------------------------
 
-async function executeRemoteRun(db: Database, job: RunJob): Promise<void> {
+async function executeRemoteRun(
+  db: Database,
+  job: RunJob,
+): Promise<void> {
   const apiUrl = process.env["API_URL"]!;
   const callbackSecret = process.env["RUNNER_CALLBACK_SECRET"] ?? "";
   const callbackUrl = `${apiUrl}/internal/runner-callback`;
@@ -166,6 +172,9 @@ async function executeRemoteRun(db: Database, job: RunJob): Promise<void> {
     const errorMessage = err instanceof Error ? err.message : "Unknown error";
     console.error(`Remote run ${job.run_id} failed:`, errorMessage);
 
+    const removed = await redis.srem(FLEET_ACTIVE_RUNS_KEY, job.run_id).catch(() => 0);
+    const active = await redis.scard(FLEET_ACTIVE_RUNS_KEY).catch(() => -1);
+    console.log(`[fleet-cap] SREM remote-error run=${job.run_id} removed=${removed} active=${active}`);
     await db
       .update(schema.runs)
       .set({
@@ -258,6 +267,9 @@ async function executeSessionRun(db: Database, job: RunJob, relayMachineId: stri
     const errorMessage = err instanceof Error ? err.message : "Unknown error";
     console.error(`Session run ${job.run_id} failed:`, errorMessage);
 
+    const removed = await redis.srem(FLEET_ACTIVE_RUNS_KEY, job.run_id).catch(() => 0);
+    const active = await redis.scard(FLEET_ACTIVE_RUNS_KEY).catch(() => -1);
+    console.log(`[fleet-cap] SREM session-error run=${job.run_id} removed=${removed} active=${active}`);
     await db
       .update(schema.runs)
       .set({
@@ -280,19 +292,18 @@ const db = createDb(process.env["DATABASE_URL"]!);
 // ---------------------------------------------------------------------------
 
 async function getSessionMachineId(sessionId: string): Promise<string> {
-  const redisUrl = process.env["REDIS_URL"] ?? "redis://localhost:6379";
-  const redis = new IORedis(redisUrl, { maxRetriesPerRequest: null });
   const key = `vent:relay-session:${sessionId}`;
 
-  try {
-    const machineId = await redis.get(key);
-    if (!machineId) {
-      throw new Error(`Agent session ${sessionId} relay not found in Redis — is the tunnel still connected?`);
-    }
-    return machineId;
-  } finally {
-    redis.disconnect();
+  const machineId = await redis.get(key);
+  if (!machineId) {
+    throw new Error(`Agent session ${sessionId} relay not found in Redis — is the tunnel still connected?`);
   }
+  return machineId;
+}
+
+async function isRunCancelled(runId: string): Promise<boolean> {
+  const cancelled = await redis.get(`vent:cancelled:${runId}`);
+  return cancelled === "1";
 }
 
 // ---------------------------------------------------------------------------
@@ -300,51 +311,76 @@ async function getSessionMachineId(sessionId: string): Promise<string> {
 // ---------------------------------------------------------------------------
 
 export async function executeRun(job: RunJob): Promise<void> {
-  await db
-    .update(schema.runs)
-    .set({ status: "running", started_at: new Date() })
-    .where(eq(schema.runs.id, job.run_id));
+  try {
+    if (await isRunCancelled(job.run_id)) {
+      console.log(`Run ${job.run_id} cancelled before start`);
+      const removed = await redis.srem(FLEET_ACTIVE_RUNS_KEY, job.run_id).catch(() => 0);
+      const active = await redis.scard(FLEET_ACTIVE_RUNS_KEY).catch(() => -1);
+      console.log(`[fleet-cap] SREM cancelled-before-start run=${job.run_id} removed=${removed} active=${active}`);
+      return;
+    }
 
-  await emitEvent(db, job.run_id, "run_started", "Run started");
-
-  // Already-deployed agents: run calls directly in worker process
-  const isPlatformAdapter =
-    job.adapter === "vapi" ||
-    job.adapter === "retell" ||
-    job.adapter === "elevenlabs" ||
-    job.adapter === "bland" ||
-    job.adapter === "livekit";
-  const isRemote =
-    isPlatformAdapter ||
-    !!job.agent_url;
-  if (isRemote) {
-    await emitEvent(db, job.run_id, "connecting", `Connecting to remote agent (${job.adapter ?? "websocket"})...`);
-    return executeRemoteRun(db, job);
-  }
-
-  // Local agent via agent session relay
-  if (!job.agent_session_id) {
     await db
       .update(schema.runs)
-      .set({ status: "fail", finished_at: new Date(), error_text: "Missing agent_session_id for local run" })
+      .set({ status: "running", started_at: new Date() })
       .where(eq(schema.runs.id, job.run_id));
-    return;
-  }
 
-  await emitEvent(db, job.run_id, "connecting", "Connecting to local agent via session relay...");
+    await emitEvent(db, job.run_id, "run_started", "Run started");
 
-  let machineId: string;
-  try {
-    machineId = await getSessionMachineId(job.agent_session_id);
+    // Already-deployed agents: run calls directly in worker process
+    const isPlatformAdapter =
+      job.adapter === "vapi" ||
+      job.adapter === "retell" ||
+      job.adapter === "elevenlabs" ||
+      job.adapter === "bland" ||
+      job.adapter === "livekit";
+    const isRemote =
+      isPlatformAdapter ||
+      !!job.agent_url;
+    if (isRemote) {
+      await emitEvent(db, job.run_id, "connecting", `Connecting to remote agent (${job.adapter ?? "websocket"})...`);
+      await executeRemoteRun(db, job);
+      return;
+    }
+
+    // Local agent via agent session relay
+    if (!job.agent_session_id) {
+      const removed = await redis.srem(FLEET_ACTIVE_RUNS_KEY, job.run_id).catch(() => 0);
+      console.log(`[fleet-cap] SREM missing-session-id run=${job.run_id} removed=${removed}`);
+      await db
+        .update(schema.runs)
+        .set({ status: "fail", finished_at: new Date(), error_text: "Missing agent_session_id for local run" })
+        .where(eq(schema.runs.id, job.run_id));
+      return;
+    }
+
+    await emitEvent(db, job.run_id, "connecting", "Connecting to local agent via session relay...");
+
+    let machineId: string;
+    try {
+      machineId = await getSessionMachineId(job.agent_session_id);
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : "Session lookup failed";
+      console.error(`Session lookup failed for ${job.run_id}:`, errorMessage);
+      const removed = await redis.srem(FLEET_ACTIVE_RUNS_KEY, job.run_id).catch(() => 0);
+      console.log(`[fleet-cap] SREM session-lookup-fail run=${job.run_id} removed=${removed}`);
+      await db
+        .update(schema.runs)
+        .set({ status: "fail", finished_at: new Date(), error_text: errorMessage })
+        .where(eq(schema.runs.id, job.run_id));
+      return;
+    }
+
+    await executeSessionRun(db, job, machineId);
   } catch (err) {
-    const errorMessage = err instanceof Error ? err.message : "Session lookup failed";
-    console.error(`Session lookup failed for ${job.run_id}:`, errorMessage);
+    const errorMessage = err instanceof Error ? err.message : "Unknown error";
+    console.error(`Failed to start run ${job.run_id}:`, errorMessage);
+    const removed = await redis.srem(FLEET_ACTIVE_RUNS_KEY, job.run_id).catch(() => 0);
+    const active = await redis.scard(FLEET_ACTIVE_RUNS_KEY).catch(() => -1);
+    console.log(`[fleet-cap] SREM outer-catch run=${job.run_id} removed=${removed} active=${active}`);
     await db
       .update(schema.runs)
       .set({ status: "fail", finished_at: new Date(), error_text: errorMessage })
       .where(eq(schema.runs.id, job.run_id));
-    return;
   }
-
-  return executeSessionRun(db, job, machineId);
 }

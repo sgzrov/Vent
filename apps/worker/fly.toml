@@ -6,8 +6,10 @@ primary_region = "iad"
 
 [env]
   NODE_ENV = "production"
+  WORKER_TOTAL_CONCURRENCY = "45"
   RUNNER_LISTEN_PORT = "8443"
   RUNNER_PUBLIC_HOST = "vent-worker.fly.dev"
+  WORKER_METRICS_PORT = "9091"
 
 # Expose HTTP port for inbound Bland webhook callbacks
 [http_service]
@@ -16,7 +18,18 @@ primary_region = "iad"
   auto_stop_machines = false
   auto_start_machines = true
 
+[[http_service.checks]]
+  grace_period = "15s"
+  interval = "30s"
+  method = "GET"
+  path = "/health"
+  timeout = "5s"
+
+[metrics]
+  port = 9091
+  path = "/metrics"
+
 [[vm]]
-  memory = "2048mb"
+  memory = "4096mb"
   cpu_kind = "performance"
   cpus = 1

@@ -11,14 +11,15 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@vent/shared": "workspace:*",
+    "@vent/adapters": "workspace:*",
     "@vent/db": "workspace:*",
     "@vent/platform-connections": "workspace:*",
     "@vent/runner": "workspace:*",
-    "@vent/adapters": "workspace:*",
+    "@vent/shared": "workspace:*",
     "bullmq": "catalog:",
     "drizzle-orm": "catalog:",
-    "ioredis": "catalog:"
+    "ioredis": "catalog:",
+    "prom-client": "^15.1.3"
   },
   "devDependencies": {
     "esbuild": "catalog:",

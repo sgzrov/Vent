@@ -131,7 +131,7 @@ export abstract class BaseAudioChannel extends EventEmitter implements AudioChan
   /** Early audio buffer — captures greeting audio before executor attaches listeners. */
   private _earlyAudioBuffer: Buffer[] = [];
   private _bufferingAudio = true;
-  private _recordingCapture: CallRecordingCapture | null = null;
+  private _recordingCapture = new CallRecordingCapture();
 
   get stats(): ChannelStats {
     return this._stats;
@@ -265,6 +265,8 @@ export abstract class BaseAudioChannel extends EventEmitter implements AudioChan
     // Add silence tail (500ms)
     const silenceSamples = Math.floor(this.outputSampleRate * 0.5);
     const silence = new Int16Array(silenceSamples);
+    const silencePcm = Buffer.from(silence.buffer, silence.byteOffset, silence.byteLength);
+    this.captureCallerAudio(silencePcm, performance.now() - this._connectMonotonicMs);
     this._audioQueue.push({ samples: silence, sampleRate: this.outputSampleRate });
 
     // Signal drain loop to exit after processing remaining queue
@@ -344,29 +346,28 @@ export abstract class BaseAudioChannel extends EventEmitter implements AudioChan
   }
 
   protected enableRecordingCapture(): void {
-    if (!this._recordingCapture) {
-      this._recordingCapture = new CallRecordingCapture();
-    }
+    // Recording capture is always available so the live upload path can
+    // initialize before or immediately after connect without adapter-specific setup.
   }
 
   protected captureCallerAudio(pcm: Buffer, _startMs: number): void {
-    this._recordingCapture?.append("caller", pcm);
+    this._recordingCapture.append("caller", pcm);
   }
 
   protected captureAgentAudio(pcm: Buffer, _startMs: number): void {
-    this._recordingCapture?.append("agent", pcm);
+    this._recordingCapture.append("agent", pcm);
   }
 
   async getCallRecording(): Promise<CallRecording | null> {
-    return this._recordingCapture?.render() ?? null;
+    return this._recordingCapture.render();
   }
 
   getLiveCallRecording(): LiveCallRecording | null {
-    return this._recordingCapture?.getLiveRecording() ?? null;
+    return this._recordingCapture.getLiveRecording();
   }
 
   async discardCallRecording(): Promise<void> {
-    await this._recordingCapture?.discard();
+    await this._recordingCapture.discard();
   }
 }
 
@@ -376,50 +377,56 @@ const SILENCE_AMPLITUDE_THRESHOLD = 200;
 
 /**
  * Pipecat-style call recording: two in-memory byte buffers kept in sync
- * via "pad-before-append". No timestamps, no temp files, no clock drift.
+ * via "pad-before-append". Mixed audio is streamed live when requested,
+ * otherwise a post-call WAV can still be rendered from the mixed output.
  */
 class CallRecordingCapture {
-  private callerChunks: Buffer[] = [];
-  private agentChunks: Buffer[] = [];
+  private callerChunks = new PendingBuffer();
+  private agentChunks = new PendingBuffer();
+  private mixedChunks = new PendingBuffer();
   private callerBytes = 0;
   private agentBytes = 0;
   private callerSpeaking = false;
   private agentSpeaking = false;
+  private finalized = false;
+  private liveRecording: LiveRecordingStream | null = null;
 
   append(role: CallSide, pcm: Buffer): void {
-    if (pcm.length === 0) return;
+    if (this.finalized || pcm.length === 0) return;
     const isSpeech = hasSpeech(pcm);
 
     if (role === "caller") {
       // Pad agent buffer to match caller position (only if agent is silent)
       if (!this.agentSpeaking && this.callerBytes > this.agentBytes) {
         const pad = Buffer.alloc(this.callerBytes - this.agentBytes);
-        this.agentChunks.push(pad);
+        this.agentChunks.append(pad);
         this.agentBytes += pad.length;
       }
-      this.callerChunks.push(pcm);
+      this.callerChunks.append(pcm);
       this.callerBytes += pcm.length;
       this.callerSpeaking = isSpeech;
     } else {
       // Pad caller buffer to match agent position (only if caller is silent)
       if (!this.callerSpeaking && this.agentBytes > this.callerBytes) {
         const pad = Buffer.alloc(this.agentBytes - this.callerBytes);
-        this.callerChunks.push(pad);
+        this.callerChunks.append(pad);
         this.callerBytes += pad.length;
       }
-      this.agentChunks.push(pcm);
+      this.agentChunks.append(pcm);
       this.agentBytes += pcm.length;
       this.agentSpeaking = isSpeech;
     }
+
+    this.flushMixedAudio();
   }
 
   async render(): Promise<CallRecording | null> {
-    const callerBuf = Buffer.concat(this.callerChunks);
-    const agentBuf = Buffer.concat(this.agentChunks);
-    const maxLen = Math.max(callerBuf.length, agentBuf.length);
-    if (maxLen === 0) return null;
+    if (this.liveRecording) return null;
 
-    const mixed = mixPcm16(callerBuf, agentBuf, maxLen);
+    this.finalizeOutput();
+    const mixed = this.mixedChunks.takeAll();
+    if (mixed.length === 0) return null;
+
     const header = createWavHeader(mixed.length, CALL_RECORDING_SAMPLE_RATE);
     const wav = Buffer.concat([header, mixed]);
 
@@ -432,15 +439,202 @@ class CallRecordingCapture {
   }
 
   async discard(): Promise<void> {
-    this.callerChunks = [];
-    this.agentChunks = [];
-    this.callerBytes = 0;
-    this.agentBytes = 0;
+    this.finalized = true;
+    this.resetBuffers();
+    this.liveRecording?.abort();
+    this.liveRecording = null;
   }
 
-  getLiveRecording(): null {
-    // Live streaming not supported in simplified recording — use post-call render()
-    return null;
+  getLiveRecording(): LiveCallRecording {
+    if (!this.liveRecording) {
+      this.liveRecording = new LiveRecordingStream();
+      const bufferedMixed = this.mixedChunks.takeAll();
+      if (bufferedMixed.length > 0) {
+        this.liveRecording.enqueue(bufferedMixed);
+      }
+    }
+
+    return {
+      pcm: this.liveRecording.readable,
+      finalize: async () => {
+        this.finalizeOutput();
+      },
+      abort: async () => {
+        this.finalized = true;
+        this.liveRecording?.abort();
+        this.resetBuffers();
+      },
+      cleanup: async () => {
+        this.liveRecording?.cleanup();
+        this.liveRecording = null;
+        this.resetBuffers();
+      },
+    };
+  }
+
+  private finalizeOutput(): void {
+    if (this.finalized) return;
+    this.finalized = true;
+
+    const remaining = this.callerChunks.byteLength - this.agentChunks.byteLength;
+    if (remaining > 0) {
+      this.agentChunks.append(Buffer.alloc(remaining));
+    } else if (remaining < 0) {
+      this.callerChunks.append(Buffer.alloc(-remaining));
+    }
+
+    this.flushMixedAudio();
+    this.liveRecording?.finish();
+  }
+
+  private flushMixedAudio(): void {
+    const readyBytes = Math.min(this.callerChunks.byteLength, this.agentChunks.byteLength);
+    if (readyBytes <= 0) return;
+
+    const callerBuf = this.callerChunks.take(readyBytes);
+    const agentBuf = this.agentChunks.take(readyBytes);
+    const mixed = mixPcm16(callerBuf, agentBuf, readyBytes);
+
+    if (this.liveRecording) {
+      this.liveRecording.enqueue(mixed);
+      return;
+    }
+
+    this.mixedChunks.append(mixed);
+  }
+
+  private resetBuffers(): void {
+    this.callerChunks.clear();
+    this.agentChunks.clear();
+    this.mixedChunks.clear();
+    this.callerBytes = 0;
+    this.agentBytes = 0;
+    this.callerSpeaking = false;
+    this.agentSpeaking = false;
+  }
+}
+
+class PendingBuffer {
+  private chunks: Buffer[] = [];
+  private totalBytes = 0;
+
+  get byteLength(): number {
+    return this.totalBytes;
+  }
+
+  append(chunk: Buffer): void {
+    if (chunk.length === 0) return;
+    this.chunks.push(chunk);
+    this.totalBytes += chunk.length;
+  }
+
+  take(byteLength: number): Buffer {
+    if (byteLength <= 0 || this.totalBytes === 0) return Buffer.alloc(0);
+
+    const parts: Buffer[] = [];
+    let remaining = Math.min(byteLength, this.totalBytes);
+
+    while (remaining > 0 && this.chunks.length > 0) {
+      const head = this.chunks[0]!;
+      if (head.length <= remaining) {
+        parts.push(head);
+        this.chunks.shift();
+        this.totalBytes -= head.length;
+        remaining -= head.length;
+        continue;
+      }
+
+      parts.push(head.subarray(0, remaining));
+      this.chunks[0] = head.subarray(remaining);
+      this.totalBytes -= remaining;
+      remaining = 0;
+    }
+
+    return Buffer.concat(parts);
+  }
+
+  takeAll(): Buffer {
+    return this.take(this.totalBytes);
+  }
+
+  clear(): void {
+    this.chunks = [];
+    this.totalBytes = 0;
+  }
+}
+
+class LiveRecordingReadable extends Readable {
+  private queued: Buffer[] = [];
+  private ended = false;
+  private streamClosed = false;
+
+  _read(): void {
+    this.drain();
+  }
+
+  enqueue(chunk: Buffer): void {
+    if (this.streamClosed || chunk.length === 0) return;
+    this.queued.push(chunk);
+    this.drain();
+  }
+
+  finish(): void {
+    if (this.streamClosed) return;
+    this.ended = true;
+    this.drain();
+  }
+
+  abort(): void {
+    if (this.streamClosed) return;
+    this.queued = [];
+    this.ended = true;
+    this.streamClosed = true;
+    this.push(null);
+  }
+
+  cleanup(): void {
+    this.queued = [];
+    this.ended = true;
+    this.streamClosed = true;
+    if (!this.destroyed) {
+      this.destroy();
+    }
+  }
+
+  private drain(): void {
+    if (this.streamClosed) return;
+
+    while (this.queued.length > 0) {
+      const chunk = this.queued[0]!;
+      const accepted = this.push(chunk);
+      this.queued.shift();
+      if (!accepted) return;
+    }
+
+    if (this.ended) {
+      this.streamClosed = true;
+      this.push(null);
+    }
+  }
+}
+
+class LiveRecordingStream {
+  readonly readable = new LiveRecordingReadable();
+
+  enqueue(chunk: Buffer): void {
+    this.readable.enqueue(chunk);
+  }
+
+  finish(): void {
+    this.readable.finish();
+  }
+
+  abort(): void {
+    this.readable.abort();
+  }
+
+  cleanup(): void {
+    this.readable.cleanup();
   }
 }
 

@@ -1,5 +1,29 @@
 # vent-hq
 
+## 0.9.19
+
+### Patch Changes
+
+- Auto-approve vent-hq Bash commands in .claude/settings.json to enable parallel execution
+
+## 0.9.18
+
+### Patch Changes
+
+- Fix parallel execution: use single shell command with & instead of separate tool calls
+
+## 0.9.17
+
+### Patch Changes
+
+- Move parallel execution to Critical Rules so coding agents never run calls sequentially
+
+## 0.9.16
+
+### Patch Changes
+
+- Instruct coding agents to run multiple calls in parallel instead of sequentially
+
 All notable changes to `vent-hq` are documented in this file.
 
 For the repo-wide summary, see [CHANGELOG.md](../../CHANGELOG.md).

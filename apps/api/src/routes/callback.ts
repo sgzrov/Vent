@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { eq } from "drizzle-orm";
 import { schema } from "@vent/db";
-import { RunnerCallbackV2Schema, RUNNER_CALLBACK_HEADER } from "@vent/shared";
+import { RunnerCallbackV2Schema, RUNNER_CALLBACK_HEADER, FLEET_ACTIVE_RUNS_KEY } from "@vent/shared";
 import { broadcast } from "../lib/run-subscribers.js";
 
 export async function callbackRoutes(app: FastifyInstance) {
@@ -131,6 +131,11 @@ export async function callbackRoutes(app: FastifyInstance) {
     }
 
     const body = RunnerCallbackV2Schema.parse(request.body);
+
+    // Release fleet capacity slot (idempotent — SREM is safe to call multiple times)
+    const removed = await app.redis.srem(FLEET_ACTIVE_RUNS_KEY, body.run_id).catch(() => 0);
+    const activeAfter = await app.redis.scard(FLEET_ACTIVE_RUNS_KEY).catch(() => -1);
+    console.log(`[fleet-cap] SREM callback run=${body.run_id} removed=${removed} active=${activeAfter}`);
 
     // Atomic transaction: DELETE partials → INSERT final results → UPDATE run status.
     // Without a transaction, a long-poll can wake mid-operation and return incomplete data.

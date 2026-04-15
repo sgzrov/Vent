@@ -387,7 +387,7 @@ export const CallMetadataSchema = z.object({
   provider_call_id: z.string().optional(),
   provider_session_id: z.string().optional(),
   ended_reason: z.string().optional(),
-  cost_usd: z.number().optional(),
+  cost_usd: z.number().nullable().optional(),
   cost_breakdown: CostBreakdownSchema.optional(),
   recording_url: z.string().optional(),
   recording_variants: z.record(z.string()).optional(),
