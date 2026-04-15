@@ -13,7 +13,7 @@
 <br>
 <br>
 
-## What is Vent?
+### What is Vent?
 
 Vent is a CLI that lets coding agents call, evaluate, and fix voice agents through vocal agent-to-agent communication. It works with Vapi, Retell, LiveKit, ElevenLabs, Bland, and custom endpoints.
 
