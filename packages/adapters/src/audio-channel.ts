@@ -77,7 +77,7 @@ export interface AudioChannel {
   discardCallRecording?(): Promise<void>;
   /** Get platform's own STT transcripts for cross-referencing with Vent's STT. */
   getTranscripts?(): Array<{ turnIndex: number; text: string }>;
-  /** Get ALL caller speech as a single concatenated string (for WER without turn alignment). */
+  /** Get ALL caller speech as a single concatenated string. */
   getFullCallerTranscript?(): string;
   /** Consume accumulated real-time agent transcript text (resets buffer). Used as STT fallback. */
   consumeAgentText?(): string;

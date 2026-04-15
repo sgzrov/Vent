@@ -5,7 +5,7 @@
  * per-turn speech patterns from batch VAD speech segments.
  */
 
-import type { AudioAnalysisMetrics, AudioAnalysisGradeThresholds, AudioAnalysisWarning } from "@vent/shared";
+import type { AudioAnalysisMetrics } from "@vent/shared";
 import type { SpeechSegment } from "@vent/voice";
 
 export interface TurnAudioData {
@@ -168,99 +168,6 @@ export function computeAudioAnalysisMetrics(
     per_turn_internal_silence_ms: perTurnInternalSilenceMs,
     mean_agent_speech_segment_ms: Math.round(meanSegmentMs),
   };
-}
-
-/**
- * Grade audio analysis metrics against configurable thresholds.
- * Returns warnings (informational — does NOT affect conversation call pass/fail).
- */
-export function gradeAudioAnalysisMetrics(
-  metrics: AudioAnalysisMetrics,
-  thresholds?: AudioAnalysisGradeThresholds,
-): AudioAnalysisWarning[] {
-  const t = {
-    agent_speech_ratio_min: thresholds?.agent_speech_ratio_min ?? 0.5,
-    talk_ratio_vad_max: thresholds?.talk_ratio_vad_max ?? 0.7,
-    talk_ratio_vad_min: thresholds?.talk_ratio_vad_min ?? 0.3,
-    longest_monologue_max_ms: thresholds?.longest_monologue_max_ms ?? 30000,
-    silence_gaps_over_2s_max: thresholds?.silence_gaps_over_2s_max ?? 3,
-    mean_segment_min_ms: thresholds?.mean_segment_min_ms ?? 500,
-    mean_segment_max_ms: thresholds?.mean_segment_max_ms ?? 20000,
-  };
-
-  const warnings: AudioAnalysisWarning[] = [];
-
-  if (metrics.agent_speech_ratio < t.agent_speech_ratio_min) {
-    warnings.push({
-      metric: "agent_speech_ratio",
-      value: metrics.agent_speech_ratio,
-      threshold: t.agent_speech_ratio_min,
-      severity: metrics.agent_speech_ratio < 0.3 ? "critical" : "warning",
-      message: `Agent speech ratio ${metrics.agent_speech_ratio} below ${t.agent_speech_ratio_min} — agent audio is mostly silence`,
-    });
-  }
-
-  if (metrics.talk_ratio_vad > t.talk_ratio_vad_max) {
-    warnings.push({
-      metric: "talk_ratio_vad",
-      value: metrics.talk_ratio_vad,
-      threshold: t.talk_ratio_vad_max,
-      severity: "warning",
-      message: `Talk ratio ${metrics.talk_ratio_vad} exceeds ${t.talk_ratio_vad_max} — caller dominates, agent not contributing enough`,
-    });
-  }
-
-  if (metrics.talk_ratio_vad < t.talk_ratio_vad_min) {
-    warnings.push({
-      metric: "talk_ratio_vad",
-      value: metrics.talk_ratio_vad,
-      threshold: t.talk_ratio_vad_min,
-      severity: "warning",
-      message: `Talk ratio ${metrics.talk_ratio_vad} below ${t.talk_ratio_vad_min} — agent monologuing`,
-    });
-  }
-
-  if (metrics.longest_monologue_ms > t.longest_monologue_max_ms) {
-    warnings.push({
-      metric: "longest_monologue_ms",
-      value: metrics.longest_monologue_ms,
-      threshold: t.longest_monologue_max_ms,
-      severity: "warning",
-      message: `Longest monologue ${metrics.longest_monologue_ms}ms exceeds ${t.longest_monologue_max_ms}ms`,
-    });
-  }
-
-  if (metrics.silence_gaps_over_2s > t.silence_gaps_over_2s_max) {
-    warnings.push({
-      metric: "silence_gaps_over_2s",
-      value: metrics.silence_gaps_over_2s,
-      threshold: t.silence_gaps_over_2s_max,
-      severity: metrics.silence_gaps_over_2s > 5 ? "critical" : "warning",
-      message: `${metrics.silence_gaps_over_2s} silence gaps >2s (max ${t.silence_gaps_over_2s_max})`,
-    });
-  }
-
-  if (metrics.mean_agent_speech_segment_ms > 0 && metrics.mean_agent_speech_segment_ms < t.mean_segment_min_ms) {
-    warnings.push({
-      metric: "mean_agent_speech_segment_ms",
-      value: metrics.mean_agent_speech_segment_ms,
-      threshold: t.mean_segment_min_ms,
-      severity: "warning",
-      message: `Mean speech segment ${metrics.mean_agent_speech_segment_ms}ms below ${t.mean_segment_min_ms}ms — choppy audio`,
-    });
-  }
-
-  if (metrics.mean_agent_speech_segment_ms > t.mean_segment_max_ms) {
-    warnings.push({
-      metric: "mean_agent_speech_segment_ms",
-      value: metrics.mean_agent_speech_segment_ms,
-      threshold: t.mean_segment_max_ms,
-      severity: "warning",
-      message: `Mean speech segment ${metrics.mean_agent_speech_segment_ms}ms exceeds ${t.mean_segment_max_ms}ms`,
-    });
-  }
-
-  return warnings;
 }
 
 function round3(n: number): number {

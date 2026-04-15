@@ -54,7 +54,6 @@ One command. No email, no browser, no human interaction needed. You get 10 free 
 Default output is enough for most work. It already includes:
 - transcript
 - latency
-- transcript quality (`wer` / `cer`)
 - audio analysis
 - tool calls
 - summary cost / recording / transfers
@@ -85,7 +84,6 @@ Skip `--verbose` when:
 Vent always returns one normalized result shape on `stdout` across adapters. Treat these as the stable categories:
 - `transcript`
 - `latency`
-- `transcript_quality`
 - `audio_analysis`
 - `tool_calls`
 - `component_latency`
@@ -492,16 +490,6 @@ A call entry with advanced options (persona, audio actions, prosody):
     "first_turn_ttfw_ms": 1950, "total_silence_ms": 4200, "mean_turn_gap_ms": 380,
     "drift_slope_ms_per_turn": -45.2, "mean_silence_pad_ms": 128, "mouth_to_ear_est_ms": 1020
   },
-  "transcript_quality": {
-    "wer": 0.04,
-    "hallucination_events": [
-      { "error_count": 5, "reference_text": "triple five one two", "hypothesis_text": "five five five nine two" }
-    ],
-    "repetition_score": 0.05,
-    "reprompt_count": 0,
-    "filler_word_rate": 0.8,
-    "words_per_minute": 148
-  },
   "audio_analysis": {
     "caller_talk_time_ms": 12400,
     "agent_talk_time_ms": 28500,
@@ -543,7 +531,7 @@ A call entry with advanced options (persona, audio actions, prosody):
   }
 }
 
-Always present: name, status, caller_prompt, duration_ms, error, transcript, tool_calls, warnings, audio_actions. Nullable when analysis didn't run: latency, transcript_quality, audio_analysis, component_latency, call_metadata, emotion (requires prosody: true), debug (requires --verbose).
+Always present: name, status, caller_prompt, duration_ms, error, transcript, tool_calls, warnings, audio_actions. Nullable when analysis didn't run: latency, audio_analysis, component_latency, call_metadata, emotion (requires prosody: true), debug (requires --verbose).
 
 ### Result presentation
 
@@ -564,7 +552,7 @@ Use the transcript, metrics, test scenario, and relevant agent instructions/syst
 
 | Dimension | What to check |
 |--------|----------------|
-| **Hallucination detection** | Check whether the agent stated anything not grounded in its instructions, tools, or the conversation itself. Treat `transcript_quality.hallucination_events` only as a speech-recognition warning signal, not proof of agent hallucination. |
+| **Hallucination detection** | Check whether the agent stated anything not grounded in its instructions, tools, or the conversation itself. |
 | **Instruction following** | Compare the agent's behavior against its system prompt and the test's expected constraints. |
 | **Context retention** | Check whether the agent forgot or contradicted information established earlier in the call. |
 | **Semantic accuracy** | Check whether the agent correctly understood the caller's intent and responded to the real request. |

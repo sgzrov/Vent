@@ -4,17 +4,14 @@
 
 import type {
   ConversationTurn,
-  TranscriptMetrics,
   LatencyMetrics,
   AudioAnalysisMetrics,
   HarnessOverhead,
 } from "@vent/shared";
-import { computeTranscriptMetrics } from "./transcript.js";
 import { computeLatencyMetrics, computeHarnessOverhead } from "./latency.js";
 import { computeAudioAnalysisMetrics, type TurnAudioData } from "./audio-analysis.js";
 
 export interface ComputedMetrics {
-  transcript: TranscriptMetrics;
   latency: LatencyMetrics;
   audio_analysis: AudioAnalysisMetrics | undefined;
   harness_overhead: HarnessOverhead | undefined;
@@ -27,10 +24,7 @@ export async function computeAllMetrics(
   turns: ConversationTurn[],
   turnAudioData?: TurnAudioData[],
   connectLatencyMs?: number,
-  fullPlatformCallerText?: string,
-  language?: string,
 ): Promise<ComputedMetrics> {
-  const transcript = await computeTranscriptMetrics(turns, fullPlatformCallerText, language);
   const latency = computeLatencyMetrics(turns, connectLatencyMs);
   const harness_overhead = computeHarnessOverhead(turns);
 
@@ -40,10 +34,9 @@ export async function computeAllMetrics(
       ? computeAudioAnalysisMetrics(turnAudioData)
       : undefined;
 
-  return { transcript, latency, audio_analysis, harness_overhead };
+  return { latency, audio_analysis, harness_overhead };
 }
 
-export { computeTranscriptMetrics } from "./transcript.js";
 export { computeLatencyMetrics, computeHarnessOverhead } from "./latency.js";
 export { computeAudioAnalysisMetrics, type TurnAudioData } from "./audio-analysis.js";
-export { analyzeProsody, gradeProsodyMetrics } from "./prosody.js";
+export { analyzeProsody } from "./prosody.js";
