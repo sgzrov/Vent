@@ -8,58 +8,54 @@ Thin helper for forwarding LiveKit Agents SDK observability into Vent.
 npm install @vent-hq/livekit
 ```
 
-## What it does
+## Usage
 
-`instrumentLiveKitAgent()` automatically publishes the existing `vent:*` topics that the Vent LiveKit adapter already understands:
-
-- `vent:metrics`
-- `vent:function-tools-executed`
-- `vent:conversation-item`
-- `vent:user-input-transcribed`
-
-It subscribes to:
-
-- `metrics_collected`
-- `function_tools_executed`
-- `conversation_item_added`
-- `user_input_transcribed`
-- `close`
-
-It does not mirror room-visible signals or redundant derived events:
-
-- no transcript forwarding
-- no agent-state timing forwarding
-- no room/session ID mirroring
-- no separate transfer stream when handoffs can be derived from the forwarded LiveKit events
-
-## Example
+`instrumentLiveKitAgent()` subscribes to LiveKit `AgentSession` events and publishes them on `vent:*` DataChannel topics that the Vent LiveKit adapter already understands.
 
 ```ts
 import { instrumentLiveKitAgent } from "@vent-hq/livekit";
 
-const vent = instrumentLiveKitAgent({
-  ctx,
-  session,
-});
+const vent = instrumentLiveKitAgent({ ctx, session });
+// On shutdown:
+vent.dispose();
 ```
 
-If you are not using the room from `ctx`, you can also pass `room` or `participant` directly.
+You can pass `room` or `participant` directly instead of `ctx`.
 
-If you have extra metadata that the outside room observer cannot already see, you can pass it explicitly:
+## Events forwarded
+
+| LiveKit event            | Vent topic                      |
+| ------------------------ | ------------------------------- |
+| `metrics_collected`      | `vent:metrics`                  |
+| `function_tools_executed`| `vent:function-tools-executed`  |
+| `conversation_item_added`| `vent:conversation-item`        |
+| `user_input_transcribed` | `vent:user-input-transcribed`   |
+| `session_usage_updated`  | `vent:session-usage`            |
+| `close` (with error)     | `vent:warning`                  |
+
+## Bridge methods
+
+The returned bridge publishes data that the outside room observer cannot already see:
+
+```ts
+await vent.publishCallMetadata({ provider_call_id: "pstn-call-123" });
+await vent.publishDebugUrl("insight", "https://...");
+await vent.publishWarning("rate limited", { retry_after_ms: 500 });
+await vent.publishSessionUsage({ llm_tokens: 1200 });
+```
+
+You can also pass `sessionMetadata` and `debugUrls` to `instrumentLiveKitAgent` to publish them on startup:
 
 ```ts
 const vent = instrumentLiveKitAgent({
   ctx,
   session,
-  sessionMetadata: {
-    provider_call_id: "pstn-call-123",
-    provider_debug_urls: { insight: "https://..." },
-  },
+  sessionMetadata: { provider_call_id: "pstn-call-123" },
+  debugUrls: { insight: "https://..." },
 });
 ```
 
 ## Notes
 
-- This keeps `vent:*` as the internal wire format, but the user no longer needs to hand-author those messages.
-- Transcript, room/session identity, and timing should still come from native LiveKit room signals (`lk.transcription`, `lk.agent.state`, room name/sid).
+- Transcript, room/session identity, and agent-state timing come from native LiveKit signals, so this helper does not mirror them.
 - For the Python equivalent, use `vent-livekit` (`pip install vent-livekit`).
