@@ -14,44 +14,27 @@
 
 ### What is Vent?
 
-Vent is a CLI that lets coding agents call, evaluate, and fix voice agents through vocal agent-to-agent communication. It works with Vapi, Retell, LiveKit, ElevenLabs, Bland, and custom endpoints.
+Vent is a CLI for coding agents that lets them place calls and evaluate voice agents through vocal agent-to-agent communication. It works with Vapi, Retell, LiveKit, ElevenLabs, Bland, and custom endpoints.
 
 ### How It Works
 
-Describe the exact persona, flows, tool calls, transfers, MCPs, logic fallbacks, and other perks you need — your coding agent performs test calls with Vent until that behavior is proven to work.
+Your coding agent gains full observability into how prompts, flows, tool calls, transfers, MCPs, fallbacks, and other logic is actually executed, giving it real information that leads to more accurate fixes and less hallucination. Vent can be adapted to simulate any persona (defaults to neutral).
 
-1. Your coding agent writes a test config based on collected context and runs `vent run`. Vent connects to your agent and joins the call as a realistic caller that vocally converses with the agent.
-2. At the end of each call, the coding agent's stdout receives 60+ computed metrics on top of the full transcript, recorded audio, and call metadata — enough for the coding agent to pinpoint what's wrong and fix it. Results of all runs are stored locally so the agent can compare against previous runs.
+1. Your coding agent writes a Vent test caller config and runs `vent run`. Vent joins the call.
+2. Each call returns 60+ computed metrics on top of a full transcript, recorded audio, and call metadata. Results are stored locally so the agent can compare across runs.
 
 ### Install
 
 ```bash
-npx vent-hq@latest init
+npx vent-hq@latest init                          # Agent auto-setup: auth, skills, config
 ```
 
-Paste `npx vent-hq@latest init` into your coding agent. It will automatically log in via GitHub, generate an access token, install skill files, and scaffold a starter config at `.vent/suite.json`.
+The `init` command lets the agent automatically log in via GitHub, generate an access token, install skill files, and scaffold a starter config at `.vent/suite.json`. For access without GitHub, run `login` and then `init`.
 
-For unlimited access without GitHub, run `npx vent-hq login` to authenticate via browser.
-
-### Usage
-
-Your coding agent writes the test config, here's what a minimal one looks like:
-
-```json
-{
-  "connection": {
-    "adapter": "vapi"
-  },
-  "calls": {
-    "reschedule-appointment": {
-      "caller_prompt": "You are Maria calling to reschedule her dentist appointment from Thursday to next Tuesday.",
-      "max_turns": 8
-    }
-  }
-}
-```
+### Quick Start
 
 ```bash
+npx vent-hq@latest init                          # Auto-setup
 npx vent-hq run -f .vent/suite.json              # Run all calls, stream results
 npx vent-hq run -f .vent/suite.json --call foo   # Run a specific call
 ```
