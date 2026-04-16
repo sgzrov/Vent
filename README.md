@@ -43,6 +43,8 @@ npx vent-hq run -f .vent/suite.json --call foo   # Run a specific call
 
 ### Platform Integrations
 
+Platform credentials are stored in an encrypted database (AES-256-GCM) and never appear in chat or run payloads.
+
 #### Vapi, Retell, and ElevenLabs
 
 Hosted only. Set your API key and agent/assistant ID in `.env` and you're ready to go.
