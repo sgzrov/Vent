@@ -318,17 +318,13 @@ function filterSessionMetadataForInAgentOnlySignals(
 
   const providerSessionId = metadata.provider_session_id;
   const roomVisibleSessionId = room?.name ?? room?.sid;
-  const filtered = compactRecord({
+  return compactRecord({
     ...metadata,
     platform: undefined,
     provider_session_id: providerSessionId && providerSessionId !== roomVisibleSessionId
       ? providerSessionId
       : undefined,
   }) as Partial<VentCallMetadata> | undefined;
-
-  if (!filtered) return undefined;
-  const keys = Object.keys(filtered);
-  return keys.length > 0 ? filtered : undefined;
 }
 
 function compactRecord(record: Record<string, unknown>): Record<string, unknown> | undefined {
