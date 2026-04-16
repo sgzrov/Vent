@@ -1,7 +1,11 @@
-<!-- banner placeholder -->
+<p align="center">
+  <img src=".github/logo.png" alt="Vent" width="80" />
+</p>
 
 <p align="center">
-  <strong>Ship reliable voice agents without leaving your editor.</strong>
+  <strong>Agent CLI for voice AI development.</strong>
+  <br />
+  Voice agents are called, evaluated, and iterated on by the coding agent itself.
 </p>
 
 <p align="center">
@@ -20,7 +24,7 @@ Vent is a CLI for coding agents that lets them place calls and evaluate voice ag
 
 Your coding agent gains full observability into how prompts, flows, tool calls, transfers, MCPs, fallbacks, and other logic is actually executed, giving it real information that leads to more accurate fixes and less hallucination. Vent can be adapted to simulate any persona (defaults to neutral).
 
-1. Your coding agent writes a Vent test caller config and runs `vent run`. Vent joins the call.
+1. Your agent writes a Vent caller config and runs `vent run`. Vent joins the call.
 2. Each call returns 60+ computed metrics on top of a full transcript, recorded audio, and call metadata. Results are stored locally so the agent can compare across runs.
 
 ### Install
