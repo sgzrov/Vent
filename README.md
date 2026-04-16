@@ -43,7 +43,7 @@ npx vent-hq run -f .vent/suite.json --call foo   # Run a specific call
 
 ### Platform Integrations
 
-Platform credentials are stored in an encrypted database (AES-256-GCM) and never appear in chat or run payloads.
+Note: Platform credentials are stored in an encrypted database (AES-256-GCM) and never appear in chat or run payloads.
 
 #### Vapi, Retell, and ElevenLabs
 
