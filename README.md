@@ -3,9 +3,7 @@
 </p>
 
 <p align="center">
-  <strong>Agent CLI for voice AI development.</strong>
-  <br />
-  Voice agents are called, evaluated, and iterated on by the coding agent itself.
+  <strong>Agent CLI for voice AI development</strong>
 </p>
 
 <p align="center">
