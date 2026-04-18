@@ -48,8 +48,16 @@ export async function collectUntilEndOfTurn(
   const platformSettleMs = opts.preferPlatformEOT ? (channel.platformEndOfTurnSettleMs ?? 500) : 500;
   const postToolCallContinuationMs = channel.postToolCallContinuationMs ?? 0;
   const postVadContinuationMs = channel.postVadContinuationMs ?? 0;
-  const audibleDrainRmsThreshold = 150;
+  // Noise gate for "audible audio arrived — extending turn" checks. Real
+  // speech on 16-bit PCM sits at RMS 500–5000; platform noise floors
+  // (Retell/Twilio/etc.) are typically 50–200. 500 lands in the gap so
+  // background noise stops resetting the defer window.
+  const audibleDrainRmsThreshold = 500;
   const continuationSettleMs = 150;
+  // Safety net: if noise still spikes above the gate repeatedly, cap the
+  // total defer/extension loop at this budget so the turn can't get stuck
+  // forever and trigger a platform inactivity hangup.
+  const extensionBudgetMs = 8000;
 
   const ownsVAD = !opts.vad;
   const vad = opts.vad ?? new VoiceActivityDetector({ silenceThresholdMs });
@@ -96,6 +104,9 @@ export async function collectUntilEndOfTurn(
       let platformSpeechStartedAt: number | null = null;
       /** True when platform confirmed agent silence and no platformSpeechStart has fired since. */
       let platformConfirmedSilent = false;
+      /** Wall-clock time when VAD first fired EOT in this turn. Reset on genuine
+       *  speech resumption. Used to cap how long noise can extend the turn. */
+      let firstEOTAt: number | null = null;
 
       const clearDeferredEndOfTurn = () => {
         if (!vadDeferTimer) return;
@@ -191,16 +202,47 @@ export async function collectUntilEndOfTurn(
         lastChunkAt = now;
         if (rms > audibleDrainRmsThreshold) {
           lastAudibleAudioAt = now;
-          if (vadDeferTimer && !platformConfirmedSilent) {
-            console.log(`    [vad] Audible audio arrived during continuation window — extending turn`);
-            clearDeferredEndOfTurn();
-            clearPlatformResolve();
-            clearPlatformDrain();
-            vadEOTFired = false;
-            platformEOTFired = false;
-            vad.reset();
+          const budgetExhausted =
+            firstEOTAt !== null && now - firstEOTAt > extensionBudgetMs;
+          // Audio is ground truth; cancel the continuation window regardless of
+          // whether the platform marked itself silent — the acoustic signal can
+          // be wrong mid-phrase and the audio bus is authoritative.
+          if (vadDeferTimer) {
+            if (budgetExhausted) {
+              console.log(
+                `    [vad] audible audio during continuation window but extension budget exhausted (${extensionBudgetMs}ms) — letting defer resolve`
+              );
+            } else {
+              console.log(`    [vad] Audible audio arrived during continuation window — extending turn`);
+              clearDeferredEndOfTurn();
+              clearPlatformResolve();
+              clearPlatformDrain();
+              vadEOTFired = false;
+              platformEOTFired = false;
+              platformConfirmedSilent = false;
+              vad.reset();
+            }
           }
-          if (platformDrainTimer && !platformConfirmedSilent) {
+          // Platform EOT settle window: audible audio means agent resumed.
+          // Cancel the settle regardless of whether platform "confirmed silent" —
+          // the platform's acoustic signal can be wrong mid-list.
+          if (platformEOTResolveTimer) {
+            if (budgetExhausted) {
+              console.log(
+                `    [vad] audible audio during platform EOT settle but extension budget exhausted — letting settle resolve`
+              );
+            } else {
+              console.log(`    [vad] Audible audio arrived during platform EOT settle — extending turn`);
+              clearPlatformResolve();
+              clearDeferredEndOfTurn();
+              clearPlatformDrain();
+              vadEOTFired = false;
+              platformEOTFired = false;
+              platformConfirmedSilent = false;
+              vad.reset();
+            }
+          }
+          if (platformDrainTimer && !platformConfirmedSilent && !budgetExhausted) {
             console.log(`    [vad] Audible audio arrived during drain window — extending turn`);
             schedulePlatformDrain(platformDrainReason || "end_of_turn confirmed", platformDrainMs);
           }
@@ -245,6 +287,7 @@ export async function collectUntilEndOfTurn(
             clearPlatformDrain();
             vadEOTFired = false;
             platformEOTFired = false;
+            firstEOTAt = null;
             vad.reset();
           }
         }
@@ -261,10 +304,12 @@ export async function collectUntilEndOfTurn(
             console.log(`    [vad] Suppressed end_of_turn — tool call in progress`);
             vadEOTFired = false;
             platformEOTFired = false;
+            firstEOTAt = null;
             vad.reset();
           } else if (shouldWaitForPostToolContinuation(now)) {
             if (!vadDeferTimer) {
               vadEOTFired = true;
+              if (firstEOTAt === null) firstEOTAt = now;
               console.log(
                 `    [vad] end_of_turn detected shortly after tool completion — waiting ` +
                 `${postToolCallContinuationMs}ms for assistant continuation`
@@ -276,6 +321,7 @@ export async function collectUntilEndOfTurn(
           } else if (postVadContinuationMs > 0) {
             if (!vadDeferTimer) {
               vadEOTFired = true;
+              if (firstEOTAt === null) firstEOTAt = now;
               console.log(
                 `    [vad] end_of_turn detected — waiting ${postVadContinuationMs}ms ` +
                 `for assistant continuation`
@@ -287,6 +333,7 @@ export async function collectUntilEndOfTurn(
           } else if (opts.preferPlatformEOT && !platformEOTFired) {
             if (!vadDeferTimer) {
               vadEOTFired = true;
+              if (firstEOTAt === null) firstEOTAt = now;
               console.log(`    [vad] end_of_turn detected — waiting up to 3000ms for platformEndOfTurn`);
               vadDeferTimer = setTimeout(() => {
                 vadDeferTimer = null;
@@ -313,6 +360,7 @@ export async function collectUntilEndOfTurn(
         clearPlatformDrain();
         vadEOTFired = false;
         platformEOTFired = false;
+        firstEOTAt = null;
         vad.reset();
       };
 
