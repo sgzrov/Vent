@@ -313,6 +313,8 @@ WebSocket agents can emit richer observability metadata as JSON text frames:
   {"type":"vent:session-report","report":{"room_name":"room-123","events":[...],"metrics":[...]}}
   {"type":"vent:transcript","role":"caller","text":"I need to reschedule","turn_index":0}
 
+`vent:session-report` in the docs is not a blanket instruction for LiveKit agents. In LiveKit mode, only publish what the helper explicitly supports — hand-rolling a report from `ctx.addShutdownCallback` runs after `room.disconnect()` and fails with "engine is closed".
+
 LiveKit agents get all metadata through the `@vent-hq/livekit` (Node) / `vent-livekit` (Python) helper — it subscribes to Agents SDK session events (`metrics_collected`, `function_tools_executed`, `conversation_item_added`, `session_usage_updated`, close) and publishes on Vent topics automatically. Transcript and agent-state timing come from native LiveKit room signals (`lk.transcription`, `lk.agent.state`) — the helper does not duplicate them.
 
 Node.js — `npm install @vent-hq/livekit`:
