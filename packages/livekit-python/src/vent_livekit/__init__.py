@@ -14,10 +14,12 @@ VENT_TOPICS = {
     "debug_url": "vent:debug-url",
     "warning": "vent:warning",
     "metrics": "vent:metrics",
-    "function_tools_executed": "vent:function-tools-executed",
+    "tool_calls": "vent:tool-calls",
+    "transfer": "vent:transfer",
     "conversation_item": "vent:conversation-item",
     "user_input_transcribed": "vent:user-input-transcribed",
     "session_usage": "vent:session-usage",
+    "session_report": "vent:session-report",
 }
 
 
@@ -70,6 +72,9 @@ class VentLiveKitBridge:
 
     _publish: Callable[..., Any] = field(repr=False)
     _teardown_fns: List[Callable[[], None]] = field(default_factory=list, repr=False)
+    _build_default_report: Optional[Callable[[], Optional[Dict[str, Any]]]] = field(
+        default=None, repr=False
+    )
 
     async def publish_call_metadata(self, metadata: Dict[str, Any]) -> None:
         call_metadata = _compact({"platform": "livekit", **metadata}) or {
@@ -93,6 +98,23 @@ class VentLiveKitBridge:
     async def publish_session_usage(self, usage: Dict[str, Any]) -> None:
         await self._publish(VENT_TOPICS["session_usage"], {"usage": usage})
 
+    async def publish_session_report(
+        self, report: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """Publish a session report on ``vent:session-report``.
+
+        If ``report`` is omitted and ``ctx`` was passed to the helper, falls
+        back to ``ctx.make_session_report(session)``. Must be called while the
+        room transport is still alive — the helper publishes one automatically
+        on ``session.on('close')``.
+        """
+        final_report = report
+        if final_report is None:
+            final_report = self._build_default_report() if self._build_default_report else None
+        if not final_report:
+            return
+        await self._publish(VENT_TOPICS["session_report"], {"report": final_report})
+
     def dispose(self) -> None:
         for fn in self._teardown_fns:
             fn()
@@ -108,6 +130,7 @@ def instrument_livekit_agent(
     reliable: bool = True,
     session_metadata: Optional[Dict[str, Any]] = None,
     debug_urls: Optional[Dict[str, str]] = None,
+    auto_publish_session_report: bool = True,
 ) -> VentLiveKitBridge:
     """Instrument a LiveKit agent to forward observability events to Vent.
 
@@ -162,7 +185,22 @@ def instrument_livekit_agent(
         except RuntimeError:
             pass
 
-    bridge = VentLiveKitBridge(_publish=publish, _teardown_fns=teardown_fns)
+    def _build_default_report() -> Optional[Dict[str, Any]]:
+        if ctx is None or not callable(getattr(ctx, "make_session_report", None)):
+            return None
+        try:
+            report = ctx.make_session_report(session) if session is not None else ctx.make_session_report()
+        except Exception as exc:
+            logger.warning("Failed to build LiveKit session report: %s", exc)
+            return None
+        sanitized = _sanitize(report)
+        return sanitized if isinstance(sanitized, dict) else None
+
+    bridge = VentLiveKitBridge(
+        _publish=publish,
+        _teardown_fns=teardown_fns,
+        _build_default_report=_build_default_report,
+    )
 
     # ── Session event subscriptions ──────────────────────────────
 
@@ -189,15 +227,15 @@ def instrument_livekit_agent(
         def _on_function_tools(ev: Any) -> None:
             ev_dict = _event_to_dict(ev)
 
-            # Merge function_calls + function_call_outputs into a tool_calls
-            # array that the Vent adapter can extract (name, arguments as dict,
-            # result, successful).
+            # Python Agents SDK emits snake_case function_calls/function_call_outputs.
+            # Normalize to per-call vent:tool-calls messages (Vent's canonical shape).
             function_calls = ev_dict.get("function_calls") or []
             function_call_outputs = ev_dict.get("function_call_outputs") or []
-            tool_calls = []
             for i, fc in enumerate(function_calls):
                 if not isinstance(fc, dict):
                     fc = _event_to_dict(fc)
+                if not fc.get("name"):
+                    continue
                 output = (
                     function_call_outputs[i]
                     if i < len(function_call_outputs) and function_call_outputs[i] is not None
@@ -213,23 +251,30 @@ def instrument_livekit_agent(
                     except (json.JSONDecodeError, TypeError):
                         pass  # keep as string
 
-                tool_calls.append({
-                    "name": fc.get("name"),
-                    "arguments": args,
-                    "call_id": fc.get("call_id"),
-                    "result": output.get("output") if output else None,
-                    "successful": not output.get("is_error") if output else None,
-                })
+                safe_publish(
+                    VENT_TOPICS["tool_calls"],
+                    {
+                        "name": fc.get("name"),
+                        "arguments": args if args is not None else {},
+                        "call_id": fc.get("call_id"),
+                        "result": output.get("output") if output else None,
+                        "successful": (not output.get("is_error")) if output else None,
+                    },
+                    "tool_call",
+                )
 
-            safe_publish(
-                VENT_TOPICS["function_tools_executed"],
-                {
-                    "event": "function_tools_executed",
-                    "tool_calls": tool_calls if tool_calls else None,
-                    **ev_dict,
-                },
-                "function_tools_executed event",
-            )
+            if ev_dict.get("has_agent_handoff"):
+                destination = ev_dict.get("new_agent_id") or ev_dict.get("new_agent_type")
+                safe_publish(
+                    VENT_TOPICS["transfer"],
+                    {
+                        "transfer_type": "agent_handoff",
+                        "destination": destination,
+                        "status": "completed",
+                        "source": "platform_event",
+                    },
+                    "agent handoff transfer",
+                )
 
         def _on_conversation_item(ev: Any) -> None:
             ev_dict = _event_to_dict(ev)
@@ -290,6 +335,18 @@ def instrument_livekit_agent(
                     },
                     "close warning",
                 )
+            # session close fires before room.disconnect — the last safe
+            # window to publish on the DataChannel. Kicking off the publish
+            # here races it against ctx._on_session_end, giving the FFI
+            # round-trip time to complete before the transport tears down.
+            if auto_publish_session_report:
+                report = _build_default_report()
+                if report:
+                    safe_publish(
+                        VENT_TOPICS["session_report"],
+                        {"report": report},
+                        "session report",
+                    )
 
         _subscribe("metrics_collected", _on_metrics)
         _subscribe("function_tools_executed", _on_function_tools)

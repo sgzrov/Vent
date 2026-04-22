@@ -3,10 +3,12 @@ const LIVEKIT_VENT_TOPICS = {
   debugUrl: "vent:debug-url",
   warning: "vent:warning",
   metrics: "vent:metrics",
-  functionToolsExecuted: "vent:function-tools-executed",
+  toolCalls: "vent:tool-calls",
+  transfer: "vent:transfer",
   conversationItem: "vent:conversation-item",
   userInputTranscribed: "vent:user-input-transcribed",
   sessionUsage: "vent:session-usage",
+  sessionReport: "vent:session-report",
 } as const;
 
 type VentTopic = (typeof LIVEKIT_VENT_TOPICS)[keyof typeof LIVEKIT_VENT_TOPICS];
@@ -85,6 +87,8 @@ export interface LiveKitSessionLike extends LiveKitEventEmitterLike {
 
 export interface LiveKitJobContextLike {
   room?: LiveKitRoomLike;
+  /** LiveKit Agents SDK >=1.x — build the canonical session report. */
+  makeSessionReport?(session?: LiveKitSessionLike): unknown;
 }
 
 export interface VentLiveKitLogger {
@@ -101,6 +105,14 @@ export interface InstrumentLiveKitAgentOptions {
   /** Optional extra metadata not already visible from the LiveKit room itself. */
   sessionMetadata?: Partial<VentCallMetadata>;
   debugUrls?: Record<string, string>;
+  /**
+   * Auto-publish a session report on `vent:session-report` when the session
+   * closes. Default: true. The helper subscribes to the session's `close`
+   * event, which fires BEFORE `room.disconnect()` — publishing in
+   * `ctx.addShutdownCallback()` runs after the transport is torn down and
+   * fails with "engine is closed".
+   */
+  autoPublishSessionReport?: boolean;
 }
 
 export interface VentLiveKitBridge {
@@ -108,6 +120,13 @@ export interface VentLiveKitBridge {
   publishDebugUrl(label: string, url: string): Promise<void>;
   publishWarning(message: string, extras?: Record<string, unknown>): Promise<void>;
   publishSessionUsage(usage: Record<string, unknown>): Promise<void>;
+  /**
+   * Publish a session report on `vent:session-report`. If `report` is omitted
+   * and `ctx` was passed to the helper, falls back to `ctx.makeSessionReport(session)`.
+   * Must be called while the room transport is still alive — by default the
+   * helper already publishes one on `session.close`.
+   */
+  publishSessionReport(report?: Record<string, unknown>): Promise<void>;
   dispose(): void;
 }
 
@@ -163,39 +182,55 @@ export function instrumentLiveKitAgent(options: InstrumentLiveKitAgentOptions): 
     });
   };
 
-  const publishFunctionToolsExecuted = async (event: Record<string, unknown>): Promise<void> => {
-    const functionCalls = event["function_calls"] as Array<Record<string, unknown>> | undefined;
-    const functionCallOutputs = event["function_call_outputs"] as Array<Record<string, unknown> | null> | undefined;
+  const publishToolCall = async (toolCall: Record<string, unknown>): Promise<void> => {
+    await publish(LIVEKIT_VENT_TOPICS.toolCalls, {
+      type: "tool_call",
+      ...toolCall,
+    });
+  };
 
-    // Merge function_calls + function_call_outputs into a tool_calls array
-    // that the Vent adapter can extract (name, arguments as dict, result, successful).
-    const toolCalls: Array<Record<string, unknown>> = [];
+  const publishTransfer = async (transfer: Record<string, unknown>): Promise<void> => {
+    await publish(LIVEKIT_VENT_TOPICS.transfer, transfer);
+  };
+
+  const handleFunctionToolsExecuted = (event: Record<string, unknown>): void => {
+    // Node Agents SDK emits camelCase: functionCalls/functionCallOutputs with
+    // callId/args/name on each call and callId/output/isError on each output.
+    // Normalize to per-call vent:tool-calls messages (Vent's canonical shape).
+    const functionCalls = event["functionCalls"] as Array<Record<string, unknown>> | undefined;
+    const functionCallOutputs = event["functionCallOutputs"] as Array<Record<string, unknown> | null> | undefined;
+
     if (Array.isArray(functionCalls)) {
       for (let i = 0; i < functionCalls.length; i++) {
         const fc = functionCalls[i];
-        if (!fc) continue;
+        if (!fc || !fc["name"]) continue;
         const output = Array.isArray(functionCallOutputs) ? functionCallOutputs[i] : undefined;
 
-        let parsedArgs: unknown = fc["arguments"];
+        let parsedArgs: unknown = fc["args"];
         if (typeof parsedArgs === "string") {
           try { parsedArgs = JSON.parse(parsedArgs); } catch { /* keep as string */ }
         }
 
-        toolCalls.push({
+        safePublish(() => publishToolCall({
           name: fc["name"],
-          arguments: parsedArgs,
-          call_id: fc["call_id"],
+          arguments: parsedArgs ?? {},
+          call_id: fc["callId"],
           result: output?.["output"] ?? undefined,
-          successful: output ? !(output["is_error"]) : undefined,
-        });
+          successful: output ? !output["isError"] : undefined,
+        }), "tool_call");
       }
     }
 
-    await publish(LIVEKIT_VENT_TOPICS.functionToolsExecuted, {
-      event: "function_tools_executed",
-      tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
-      ...event,
-    });
+    if (event["hasAgentHandoff"]) {
+      const destination = (event["newAgentId"] ?? event["newAgentType"]) as string | undefined;
+      safePublish(() => publishTransfer({
+        type: "vent:transfer",
+        transfer_type: "agent_handoff",
+        destination,
+        status: "completed",
+        source: "platform_event",
+      }), "agent handoff transfer");
+    }
   };
 
   const publishConversationItem = async (event: Record<string, unknown>): Promise<void> => {
@@ -230,6 +265,24 @@ export function instrumentLiveKitAgent(options: InstrumentLiveKitAgentOptions): 
     await publish(LIVEKIT_VENT_TOPICS.sessionUsage, { usage });
   };
 
+  const tryBuildSessionReport = (): Record<string, unknown> | undefined => {
+    const ctx = options.ctx;
+    if (!ctx || typeof ctx.makeSessionReport !== "function") return undefined;
+    try {
+      const report = ctx.makeSessionReport(options.session);
+      return asRecord(report);
+    } catch (error) {
+      logger.warn("Failed to build LiveKit session report", error);
+      return undefined;
+    }
+  };
+
+  const publishSessionReport = async (report?: Record<string, unknown>): Promise<void> => {
+    const finalReport = report ?? tryBuildSessionReport();
+    if (!finalReport) return;
+    await publish(LIVEKIT_VENT_TOPICS.sessionReport, { report: finalReport });
+  };
+
   const safePublish = (operation: () => Promise<void>, context: string) => {
     void operation().catch((error) => {
       logger.warn(`Failed to publish LiveKit ${context}`, error);
@@ -243,7 +296,7 @@ export function instrumentLiveKitAgent(options: InstrumentLiveKitAgentOptions): 
     teardownFns.push(unsubscribe);
 
     teardownFns.push(subscribe(options.session, "function_tools_executed", (event) => {
-      safePublish(() => publishFunctionToolsExecuted(asRecord(event)), "function_tools_executed event");
+      handleFunctionToolsExecuted(asRecord(event));
     }));
 
     teardownFns.push(subscribe(options.session, "conversation_item_added", (event) => {
@@ -268,6 +321,13 @@ export function instrumentLiveKitAgent(options: InstrumentLiveKitAgentOptions): 
           "close warning",
         );
       }
+      // session.close fires before room.disconnect — this is the last safe
+      // window to publish on the DataChannel. Kicking off the publish here
+      // and racing it against _onSessionEnd (which awaits a cloud upload)
+      // gives the FFI round-trip plenty of time to complete.
+      if (options.autoPublishSessionReport !== false) {
+        safePublish(() => publishSessionReport(), "session report");
+      }
     }));
   }
 
@@ -285,6 +345,7 @@ export function instrumentLiveKitAgent(options: InstrumentLiveKitAgentOptions): 
     publishDebugUrl,
     publishWarning,
     publishSessionUsage,
+    publishSessionReport,
     dispose() {
       for (const teardown of teardownFns.splice(0)) {
         teardown();

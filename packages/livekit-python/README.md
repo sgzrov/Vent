@@ -27,11 +27,11 @@ You can pass `room` or `participant` directly instead of `ctx`.
 | LiveKit event              | Vent topic                      |
 | -------------------------- | ------------------------------- |
 | `metrics_collected`        | `vent:metrics`                  |
-| `function_tools_executed`  | `vent:function-tools-executed`  |
+| `function_tools_executed`  | `vent:tool-calls` (one message per call), `vent:transfer` (agent handoffs) |
 | `conversation_item_added`  | `vent:conversation-item`        |
 | `user_input_transcribed`   | `vent:user-input-transcribed`   |
 | `session_usage_updated`    | `vent:session-usage`            |
-| `close` (with error)       | `vent:warning`                  |
+| `close`                    | `vent:session-report` (auto), `vent:warning` (on error) |
 
 ## Bridge methods
 

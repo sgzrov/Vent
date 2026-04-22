@@ -111,7 +111,7 @@ Source-of-truth policy:
    npx vent-hq run -f .vent/suite.<adapter>.json --call happy-path --session <session-id>
    ```
 5. To run multiple calls, **run each as a separate shell command** — Codex executes parallel shell calls concurrently, so each call runs simultaneously. Example: emit one `npx vent-hq run --call happy-path` and one `npx vent-hq run --call edge-case` as separate tool calls.
-6. After results return, **compare with previous run** — Vent saves full result JSON to `.vent/runs/` after every run. Use `--verbose` only when the default result is not enough to explain the failure. Compare status flips, TTFW p50/p95 changes >20%, tool call count drops, cost increases >30%. Skip if no previous run exists.
+6. After results return, **compare with previous run** — Vent saves full result JSON to `.vent/runs/` after every run. Shape: `{ run_id, timestamp, git_sha, summary, call_results: [...] }`. Each entry in `call_results` is a flat normalized per-call result: `{ name, status, duration_ms, transcript, observed_tool_calls, metrics, cost_usd, ... }`. Compare: `call_results[i].status` flips, `call_results[i].metrics.latency_p50_ms` / `latency_p95_ms` changes >20%, `call_results[i].observed_tool_calls[].successful` count drops, `summary.total_cost_usd` increases >30%. Correlate with `git diff` between the two runs' `git_sha` values. Use `--verbose` only when the default result is not enough to explain the failure. Skip if no previous run exists.
 7. After code changes, re-run the same way.
 
 ### Multiple suite files
@@ -282,7 +282,7 @@ LiveKit:
   }
 }
 Credentials auto-resolve from `.env.local`, `.env`, or shell env: LIVEKIT_API_KEY, LIVEKIT_API_SECRET, LIVEKIT_URL. Only add these to the JSON if those env vars are not already available.
-livekit_agent_name is optional -- only needed if the agent registers with an explicit agent_name in WorkerOptions. Omit for automatic dispatch.
+livekit_agent_name is optional -- only needed if your LiveKit agent registered with an explicit dispatch name in the SDK, e.g. Python `@server.rtc_session(agent_name="…")` or `WorkerOptions(agent_name="…")`, Node.js `new ServerOptions({ agentName: "…" })`. Omit for automatic dispatch.
 The livekit adapter requires the LiveKit Agents SDK. It depends on Agents SDK signals (lk.agent.state, lk.transcription) for readiness detection, turn timing, and component latency. Custom LiveKit participants not using the Agents SDK should use the websocket adapter with a relay instead.
 max_concurrency for LiveKit Cloud: Build=5, Ship=20, Scale=50 managed inference sessions. Agent session concurrency can be higher (Build=5, Ship=20, Scale up to 600), but managed inference is the usual gating limit for voice agents. Ask the user which tier they're on. If unknown, default to 5.
 Know the provider/account concurrency limits and use them in planning, but Vent does not enforce provider caps at runtime. Hosted worker throughput is an infra setting: `WORKER_TOTAL_CONCURRENCY` caps one worker Machine.
@@ -293,9 +293,8 @@ Know the provider/account concurrency limits and use them in planning, but Vent 
 <call_config>
 <tool_call_capture>
 vapi/retell/elevenlabs/bland: automatic via platform API (no user code needed).
-WebSocket/WebRTC: user's agent must emit tool calls:
-  WebSocket — JSON text frame: {"type":"tool_call","name":"...","arguments":{},"result":{},"successful":true,"duration_ms":150}
-  WebRTC/LiveKit — publishData() or sendText() on topic "vent:tool-calls". Same JSON.
+WebSocket: user's agent must emit a JSON text frame per tool call: {"type":"tool_call","name":"...","arguments":{},"result":{},"successful":true,"duration_ms":150}
+LiveKit: use the `@vent-hq/livekit` (Node) or `vent-livekit` (Python) helper. See the "LiveKit Agent Setup" section. The helper captures tool calls automatically from Agents SDK session events — do not publish on Vent topics manually.
 </tool_call_capture>
 
 <component_timing>
@@ -307,28 +306,22 @@ When modifying a WebSocket agent's code, add this text frame after TTS completes
 </component_timing>
 
 <metadata_capture>
-WebSocket and LiveKit/WebRTC agents can also emit richer observability metadata:
+WebSocket agents can emit richer observability metadata as JSON text frames:
   {"type":"vent:session","platform":"custom","provider_call_id":"call_123","provider_session_id":"session_abc"}
   {"type":"vent:call-metadata","call_metadata":{"recording_url":"https://...","cost_usd":0.12,"provider_debug_urls":{"log":"https://..."}}}
   {"type":"vent:debug-url","label":"trace","url":"https://..."}
   {"type":"vent:session-report","report":{"room_name":"room-123","events":[...],"metrics":[...]}}
-  {"type":"vent:metrics","event":"metrics_collected","metric_type":"eou","metrics":{"speechId":"speech_123","endOfUtteranceDelayMs":420}}
-  {"type":"vent:function-tools-executed","event":"function_tools_executed","hasAgentHandoff":true,"tool_calls":[{"name":"lookup_customer","arguments":{"id":"123"}}]}
-  {"type":"vent:conversation-item","event":"conversation_item_added","item":{"type":"agent_handoff","newAgentId":"billing-agent"}}
-  {"type":"vent:session-usage","usage":{"llm":{"promptTokens":123,"completionTokens":45}}}
-Transport:
-  WebSocket — send JSON text frames with these payloads. WebSocket agents may also emit {"type":"vent:transcript","role":"caller","text":"I need to reschedule","turn_index":0} when they have native transcript text.
-  WebRTC/LiveKit — publishData() or sendText() on the matching "vent:*" topic, e.g. topic "vent:call-metadata" with the JSON body above.
-For LiveKit, transcript and timing stay authoritative from native room signals (`lk.transcription`, `lk.agent.state`). Do not emit `vent:transcript` from LiveKit agents.
-For LiveKit agents, prefer the first-party helper instead of manual forwarding:
+  {"type":"vent:transcript","role":"caller","text":"I need to reschedule","turn_index":0}
+
+`vent:session-report` in the docs is not a blanket instruction for LiveKit agents. In LiveKit mode, only publish what the helper explicitly supports — hand-rolling a report from `ctx.addShutdownCallback` runs after `room.disconnect()` and fails with "engine is closed".
+
+LiveKit agents get all metadata through the `@vent-hq/livekit` (Node) / `vent-livekit` (Python) helper — it subscribes to Agents SDK session events (`metrics_collected`, `function_tools_executed`, `conversation_item_added`, `session_usage_updated`, close) and publishes on Vent topics automatically. Transcript and agent-state timing come from native LiveKit room signals (`lk.transcription`, `lk.agent.state`) — the helper does not duplicate them.
+
 Node.js — `npm install @vent-hq/livekit`:
 ```ts
 import { instrumentLiveKitAgent } from "@vent-hq/livekit";
 
-const vent = instrumentLiveKitAgent({
-  ctx,
-  session,
-});
+const vent = instrumentLiveKitAgent({ ctx, session });
 ```
 Python — `pip install vent-livekit`:
 ```python
@@ -336,15 +329,8 @@ from vent_livekit import instrument_livekit_agent
 
 vent = instrument_livekit_agent(ctx=ctx, session=session)
 ```
-This helper must run inside the LiveKit agent runtime with the existing Agents SDK `session` and `ctx` objects. It is the Vent integration layer on top of the Agents SDK, not a replacement for it.
-This automatically publishes only the in-agent-only LiveKit signals: `metrics_collected`, `function_tools_executed`, `conversation_item_added`, and a session report on close/shutdown.
-Do not use it to mirror room-visible signals like transcript, agent state timing, or room/session ID — Vent already gets those from LiveKit itself.
-For LiveKit inside-agent forwarding, prefer sending the raw LiveKit event payloads on:
-  `vent:metrics`
-  `vent:function-tools-executed`
-  `vent:conversation-item`
-  `vent:session-usage`
-Use these metadata events when the agent runtime already knows native IDs, recordings, warnings, debug links, session reports, metrics events, or handoff artifacts. This gives custom and LiveKit agents parity with hosted adapters without needing a LiveKit Cloud connector.
+
+The helper is the only supported integration path for LiveKit Agents SDK agents. Do not publish on `vent:*` topics manually — let the helper forward SDK events.
 </metadata_capture>
 
 <config_call>
