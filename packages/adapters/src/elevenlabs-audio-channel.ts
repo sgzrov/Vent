@@ -108,6 +108,7 @@ export class ElevenLabsAudioChannel extends BaseAudioChannel {
   private realtimeUserTranscripts: string[] = [];
   private realtimeToolCalls: ObservedToolCall[] = [];
   private realtimeToolCallIndexById = new Map<string, number>();
+  private pendingToolCallIds = new Set<string>();
   private realtimeProviderWarnings: ProviderWarning[] = [];
   private realtimeProviderMetadata: Record<string, unknown[]> = {};
 
@@ -175,6 +176,7 @@ export class ElevenLabsAudioChannel extends BaseAudioChannel {
     this.realtimeUserTranscripts = [];
     this.realtimeToolCalls = [];
     this.realtimeToolCallIndexById.clear();
+    this.pendingToolCallIds.clear();
     this.realtimeProviderWarnings = [];
     this.realtimeProviderMetadata = {};
 
@@ -708,7 +710,8 @@ export class ElevenLabsAudioChannel extends BaseAudioChannel {
     const existing = this.realtimeToolCalls[index];
     if (!existing) return;
 
-    if (toolEvent.state === "success" || toolEvent.state === "failure") {
+    const isTerminal = toolEvent.state === "success" || toolEvent.state === "failure";
+    if (isTerminal) {
       existing.successful = toolEvent.state === "success";
       if (toolEvent.result !== undefined) {
         existing.result = toolEvent.result;
@@ -718,6 +721,9 @@ export class ElevenLabsAudioChannel extends BaseAudioChannel {
       if (existing.timestamp_ms != null && existing.latency_ms == null) {
         existing.latency_ms = Math.max(0, Date.now() - this.connectTimestamp - existing.timestamp_ms);
       }
+      this.markToolCallComplete(toolEvent.toolCallId);
+    } else {
+      this.markToolCallPending(toolEvent.toolCallId);
     }
   }
 
@@ -744,6 +750,21 @@ export class ElevenLabsAudioChannel extends BaseAudioChannel {
     if (existing.timestamp_ms != null && existing.latency_ms == null) {
       existing.latency_ms = Math.max(0, Date.now() - this.connectTimestamp - existing.timestamp_ms);
     }
+
+    this.markToolCallComplete(toolEvent.toolCallId);
+  }
+
+  private markToolCallPending(toolCallId: string | undefined): void {
+    if (!toolCallId || this.pendingToolCallIds.has(toolCallId)) return;
+    const wasEmpty = this.pendingToolCallIds.size === 0;
+    this.pendingToolCallIds.add(toolCallId);
+    if (wasEmpty) this.emit("toolCallActive", true);
+  }
+
+  private markToolCallComplete(toolCallId: string | undefined): void {
+    if (!toolCallId || !this.pendingToolCallIds.has(toolCallId)) return;
+    this.pendingToolCallIds.delete(toolCallId);
+    if (this.pendingToolCallIds.size === 0) this.emit("toolCallActive", false);
   }
 
   private upsertRealtimeToolCall(toolEvent: ElevenLabsRealtimeToolEvent): number | null {

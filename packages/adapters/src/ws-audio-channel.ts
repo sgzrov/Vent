@@ -48,6 +48,12 @@ interface WsToolCallEvent {
   provider_tool_type?: string;
   tool_type?: string;
   duration_ms?: number;
+  /** Optional lifecycle marker. When true, signals tool call started (suspends
+   *  VAD end-of-turn). When false, signals completion. When unset, the frame
+   *  is treated as a completed tool call (backwards-compatible). */
+  in_progress?: boolean;
+  /** Optional stable id for matching start/end frames. */
+  tool_call_id?: string;
 }
 
 interface WsTimingEvent {
@@ -87,6 +93,7 @@ export class WsAudioChannel extends BaseAudioChannel {
   private ws: WebSocket | null = null;
   private config: WsAudioChannelConfig;
   private toolCalls: ObservedToolCall[] = [];
+  private pendingToolCallIds = new Set<string>();
   private componentTimings: ComponentLatency[] = [];
   private platformTranscripts: Array<{ turnIndex: number; text: string }> = [];
   private fullCallerTranscriptParts: string[] = [];
@@ -356,7 +363,9 @@ export class WsAudioChannel extends BaseAudioChannel {
       switch (event.type) {
         case "tool_call": {
           const tc = event as unknown as WsToolCallEvent;
-          if (tc.name) {
+          const isStart = tc.in_progress === true;
+          const isEnd = tc.in_progress === false;
+          if (tc.name && !isStart) {
             this.toolCalls.push({
               name: tc.name,
               arguments: tc.arguments ?? {},
@@ -366,6 +375,14 @@ export class WsAudioChannel extends BaseAudioChannel {
               timestamp_ms: Date.now() - this.connectTimestamp,
               latency_ms: tc.duration_ms,
             });
+          }
+          if (isStart && tc.tool_call_id && !this.pendingToolCallIds.has(tc.tool_call_id)) {
+            const wasEmpty = this.pendingToolCallIds.size === 0;
+            this.pendingToolCallIds.add(tc.tool_call_id);
+            if (wasEmpty) this.emit("toolCallActive", true);
+          } else if (isEnd && tc.tool_call_id && this.pendingToolCallIds.has(tc.tool_call_id)) {
+            this.pendingToolCallIds.delete(tc.tool_call_id);
+            if (this.pendingToolCallIds.size === 0) this.emit("toolCallActive", false);
           }
           break;
         }
