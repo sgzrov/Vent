@@ -3,7 +3,8 @@ const LIVEKIT_VENT_TOPICS = {
   debugUrl: "vent:debug-url",
   warning: "vent:warning",
   metrics: "vent:metrics",
-  functionToolsExecuted: "vent:function-tools-executed",
+  toolCalls: "vent:tool-calls",
+  transfer: "vent:transfer",
   conversationItem: "vent:conversation-item",
   userInputTranscribed: "vent:user-input-transcribed",
   sessionUsage: "vent:session-usage",
@@ -163,39 +164,55 @@ export function instrumentLiveKitAgent(options: InstrumentLiveKitAgentOptions): 
     });
   };
 
-  const publishFunctionToolsExecuted = async (event: Record<string, unknown>): Promise<void> => {
-    const functionCalls = event["function_calls"] as Array<Record<string, unknown>> | undefined;
-    const functionCallOutputs = event["function_call_outputs"] as Array<Record<string, unknown> | null> | undefined;
+  const publishToolCall = async (toolCall: Record<string, unknown>): Promise<void> => {
+    await publish(LIVEKIT_VENT_TOPICS.toolCalls, {
+      type: "tool_call",
+      ...toolCall,
+    });
+  };
 
-    // Merge function_calls + function_call_outputs into a tool_calls array
-    // that the Vent adapter can extract (name, arguments as dict, result, successful).
-    const toolCalls: Array<Record<string, unknown>> = [];
+  const publishTransfer = async (transfer: Record<string, unknown>): Promise<void> => {
+    await publish(LIVEKIT_VENT_TOPICS.transfer, transfer);
+  };
+
+  const handleFunctionToolsExecuted = (event: Record<string, unknown>): void => {
+    // Node Agents SDK emits camelCase: functionCalls/functionCallOutputs with
+    // callId/args/name on each call and callId/output/isError on each output.
+    // Normalize to per-call vent:tool-calls messages (Vent's canonical shape).
+    const functionCalls = event["functionCalls"] as Array<Record<string, unknown>> | undefined;
+    const functionCallOutputs = event["functionCallOutputs"] as Array<Record<string, unknown> | null> | undefined;
+
     if (Array.isArray(functionCalls)) {
       for (let i = 0; i < functionCalls.length; i++) {
         const fc = functionCalls[i];
-        if (!fc) continue;
+        if (!fc || !fc["name"]) continue;
         const output = Array.isArray(functionCallOutputs) ? functionCallOutputs[i] : undefined;
 
-        let parsedArgs: unknown = fc["arguments"];
+        let parsedArgs: unknown = fc["args"];
         if (typeof parsedArgs === "string") {
           try { parsedArgs = JSON.parse(parsedArgs); } catch { /* keep as string */ }
         }
 
-        toolCalls.push({
+        safePublish(() => publishToolCall({
           name: fc["name"],
-          arguments: parsedArgs,
-          call_id: fc["call_id"],
+          arguments: parsedArgs ?? {},
+          call_id: fc["callId"],
           result: output?.["output"] ?? undefined,
-          successful: output ? !(output["is_error"]) : undefined,
-        });
+          successful: output ? !output["isError"] : undefined,
+        }), "tool_call");
       }
     }
 
-    await publish(LIVEKIT_VENT_TOPICS.functionToolsExecuted, {
-      event: "function_tools_executed",
-      tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
-      ...event,
-    });
+    if (event["hasAgentHandoff"]) {
+      const destination = (event["newAgentId"] ?? event["newAgentType"]) as string | undefined;
+      safePublish(() => publishTransfer({
+        type: "vent:transfer",
+        transfer_type: "agent_handoff",
+        destination,
+        status: "completed",
+        source: "platform_event",
+      }), "agent handoff transfer");
+    }
   };
 
   const publishConversationItem = async (event: Record<string, unknown>): Promise<void> => {
@@ -243,7 +260,7 @@ export function instrumentLiveKitAgent(options: InstrumentLiveKitAgentOptions): 
     teardownFns.push(unsubscribe);
 
     teardownFns.push(subscribe(options.session, "function_tools_executed", (event) => {
-      safePublish(() => publishFunctionToolsExecuted(asRecord(event)), "function_tools_executed event");
+      handleFunctionToolsExecuted(asRecord(event));
     }));
 
     teardownFns.push(subscribe(options.session, "conversation_item_added", (event) => {

@@ -14,7 +14,8 @@ VENT_TOPICS = {
     "debug_url": "vent:debug-url",
     "warning": "vent:warning",
     "metrics": "vent:metrics",
-    "function_tools_executed": "vent:function-tools-executed",
+    "tool_calls": "vent:tool-calls",
+    "transfer": "vent:transfer",
     "conversation_item": "vent:conversation-item",
     "user_input_transcribed": "vent:user-input-transcribed",
     "session_usage": "vent:session-usage",
@@ -189,15 +190,15 @@ def instrument_livekit_agent(
         def _on_function_tools(ev: Any) -> None:
             ev_dict = _event_to_dict(ev)
 
-            # Merge function_calls + function_call_outputs into a tool_calls
-            # array that the Vent adapter can extract (name, arguments as dict,
-            # result, successful).
+            # Python Agents SDK emits snake_case function_calls/function_call_outputs.
+            # Normalize to per-call vent:tool-calls messages (Vent's canonical shape).
             function_calls = ev_dict.get("function_calls") or []
             function_call_outputs = ev_dict.get("function_call_outputs") or []
-            tool_calls = []
             for i, fc in enumerate(function_calls):
                 if not isinstance(fc, dict):
                     fc = _event_to_dict(fc)
+                if not fc.get("name"):
+                    continue
                 output = (
                     function_call_outputs[i]
                     if i < len(function_call_outputs) and function_call_outputs[i] is not None
@@ -213,23 +214,30 @@ def instrument_livekit_agent(
                     except (json.JSONDecodeError, TypeError):
                         pass  # keep as string
 
-                tool_calls.append({
-                    "name": fc.get("name"),
-                    "arguments": args,
-                    "call_id": fc.get("call_id"),
-                    "result": output.get("output") if output else None,
-                    "successful": not output.get("is_error") if output else None,
-                })
+                safe_publish(
+                    VENT_TOPICS["tool_calls"],
+                    {
+                        "name": fc.get("name"),
+                        "arguments": args if args is not None else {},
+                        "call_id": fc.get("call_id"),
+                        "result": output.get("output") if output else None,
+                        "successful": (not output.get("is_error")) if output else None,
+                    },
+                    "tool_call",
+                )
 
-            safe_publish(
-                VENT_TOPICS["function_tools_executed"],
-                {
-                    "event": "function_tools_executed",
-                    "tool_calls": tool_calls if tool_calls else None,
-                    **ev_dict,
-                },
-                "function_tools_executed event",
-            )
+            if ev_dict.get("has_agent_handoff"):
+                destination = ev_dict.get("new_agent_id") or ev_dict.get("new_agent_type")
+                safe_publish(
+                    VENT_TOPICS["transfer"],
+                    {
+                        "transfer_type": "agent_handoff",
+                        "destination": destination,
+                        "status": "completed",
+                        "source": "platform_event",
+                    },
+                    "agent handoff transfer",
+                )
 
         def _on_conversation_item(ev: Any) -> None:
             ev_dict = _event_to_dict(ev)

@@ -76,16 +76,6 @@ interface LiveKitMetricsEvent {
   timestamp_ms?: number;
 }
 
-interface LiveKitFunctionToolsExecutedEvent {
-  type?: "vent:function-tools-executed";
-  event?: string;
-  has_agent_handoff?: boolean;
-  hasAgentHandoff?: boolean;
-  tool_calls?: unknown[];
-  function_calls?: unknown[];
-  calls?: unknown[];
-}
-
 interface LiveKitConversationItemEvent {
   type?: "vent:conversation-item";
   event?: string;
@@ -136,7 +126,6 @@ const LIVEKIT_DEBUG_URL_TOPIC = "vent:debug-url";
 const LIVEKIT_WARNING_TOPIC = "vent:warning";
 const LIVEKIT_SESSION_REPORT_TOPIC = "vent:session-report";
 const LIVEKIT_METRICS_TOPIC = "vent:metrics";
-const LIVEKIT_FUNCTION_TOOLS_EXECUTED_TOPIC = "vent:function-tools-executed";
 const LIVEKIT_CONVERSATION_ITEM_TOPIC = "vent:conversation-item";
 const LIVEKIT_USER_INPUT_TRANSCRIBED_TOPIC = "vent:user-input-transcribed";
 const LIVEKIT_SESSION_USAGE_TOPIC = "vent:session-usage";
@@ -246,7 +235,6 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
   private livekitMetricTimings: LiveKitMetricTiming[] = [];
   private livekitMetricTimingIndexBySpeechId = new Map<string, number>();
   private toolCallFingerprints = new Set<string>();
-  private hasDirectToolCallStream = false;
 
   // Segment-to-turn anchoring: lock each STT segment to the turn that was
   // active when the segment was first observed (interim or final).
@@ -329,7 +317,6 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
     this.livekitMetricTimings = [];
     this.livekitMetricTimingIndexBySpeechId.clear();
     this.toolCallFingerprints.clear();
-    this.hasDirectToolCallStream = false;
 
     // ── Tool call capture via DataChannel ──────────────────────
     this.room.on(
@@ -774,7 +761,6 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
     try {
       const event = JSON.parse(text) as WsToolCallEvent;
       if (event.type === "tool_call" && event.name) {
-        this.hasDirectToolCallStream = true;
         this.recordObservedToolCall({
           name: event.name,
           arguments: event.arguments ?? {},
@@ -826,9 +812,6 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
         break;
       case LIVEKIT_METRICS_TOPIC:
         this.handleMetricsEvent(event as unknown as LiveKitMetricsEvent);
-        break;
-      case LIVEKIT_FUNCTION_TOOLS_EXECUTED_TOPIC:
-        this.handleFunctionToolsExecutedEvent(event as unknown as LiveKitFunctionToolsExecutedEvent);
         break;
       case LIVEKIT_CONVERSATION_ITEM_TOPIC:
         this.handleConversationItemEvent(event as unknown as LiveKitConversationItemEvent);
@@ -894,21 +877,6 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
     const extracted = extractLiveKitMetricTiming(metrics, metricType);
     if (extracted) {
       this.upsertMetricTiming(extracted);
-    }
-  }
-
-  private handleFunctionToolsExecutedEvent(event: LiveKitFunctionToolsExecutedEvent): void {
-    this.appendProviderMetadataListItem("livekit_function_tools_events", event);
-
-    if (!this.hasDirectToolCallStream) {
-      for (const toolCall of extractObservedToolCallsFromEvent(event, this.connectTimestamp)) {
-        this.recordObservedToolCall(toolCall);
-      }
-    }
-
-    const derivedTransfer = extractTransferFromFunctionToolsEvent(event);
-    if (derivedTransfer) {
-      this.mergeCallMetadata({ transfers: [derivedTransfer] });
     }
   }
 
@@ -1319,47 +1287,6 @@ function inferLiveKitMetricType(metrics: Record<string, unknown>, ...typeHints: 
   return undefined;
 }
 
-function extractObservedToolCallsFromEvent(
-  event: LiveKitFunctionToolsExecutedEvent,
-  connectTimestamp: number,
-): ObservedToolCall[] {
-  const callRecords = firstRecordArray(event.tool_calls, event.function_calls, event.calls);
-  const observed: ObservedToolCall[] = [];
-  for (const call of callRecords) {
-    const name = firstString(call["name"], call["tool_name"], call["function_name"]);
-    if (!name) continue;
-    observed.push({
-      name,
-      arguments: firstRecord(call["arguments"], call["args"], call["input"]) ?? {},
-      result: call["result"],
-      successful: firstBoolean(call["successful"], call["success"]),
-      provider_tool_type: firstString(call["tool_type"], call["toolType"], call["type"]),
-      latency_ms: firstNumber(call["latency_ms"], call["durationMs"], call["duration_ms"], call["duration"]),
-      timestamp_ms: firstNumber(call["timestamp_ms"], call["timestampMs"], call["timestamp"]) ?? Date.now() - connectTimestamp,
-    });
-  }
-  return observed;
-}
-
-function extractTransferFromFunctionToolsEvent(event: LiveKitFunctionToolsExecutedEvent): CallTransfer | undefined {
-  const hasAgentHandoff = firstBoolean(event.has_agent_handoff, event.hasAgentHandoff);
-  if (!hasAgentHandoff) return undefined;
-
-  const destination = firstString(
-    (event as Record<string, unknown>)["new_agent_id"],
-    (event as Record<string, unknown>)["newAgentId"],
-    (event as Record<string, unknown>)["new_agent_type"],
-    (event as Record<string, unknown>)["newAgentType"],
-  );
-
-  return {
-    type: "agent_handoff",
-    destination,
-    status: "completed",
-    sources: ["platform_event"],
-  };
-}
-
 function extractTransferFromConversationItemEvent(event: LiveKitConversationItemEvent): CallTransfer | undefined {
   const item = firstRecord(event.item, event.conversation_item);
   if (!item) return undefined;
@@ -1522,7 +1449,6 @@ const LIVEKIT_OBSERVABILITY_TOPICS = [
   LIVEKIT_WARNING_TOPIC,
   LIVEKIT_SESSION_REPORT_TOPIC,
   LIVEKIT_METRICS_TOPIC,
-  LIVEKIT_FUNCTION_TOOLS_EXECUTED_TOPIC,
   LIVEKIT_CONVERSATION_ITEM_TOPIC,
   LIVEKIT_USER_INPUT_TRANSCRIBED_TOPIC,
   LIVEKIT_SESSION_USAGE_TOPIC,
