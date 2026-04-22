@@ -200,8 +200,6 @@ export const ConversationTurnSchema = z.object({
     speech_duration_ms: z.number().optional(),
   }).optional(),
   platform_transcript: z.string().optional(),
-  interrupted: z.boolean().optional(),
-  is_interruption: z.boolean().optional(),
 });
 
 // ============================================================
@@ -215,8 +213,6 @@ export const LatencyMetricsSchema = z.object({
   p95_ttfb_ms: z.number(),
   p99_ttfb_ms: z.number(),
   first_turn_ttfb_ms: z.number(),
-  total_silence_ms: z.number(),
-  mean_turn_gap_ms: z.number(),
   ttfw_per_turn_ms: z.array(z.number()).optional(),
   p50_ttfw_ms: z.number().optional(),
   p90_ttfw_ms: z.number().optional(),
@@ -228,25 +224,6 @@ export const LatencyMetricsSchema = z.object({
   drift_slope_ms_per_turn: z.number().optional(),
 });
 
-
-export const AudioAnalysisMetricsSchema = z.object({
-  caller_talk_time_ms: z.number().min(0),
-  agent_talk_time_ms: z.number().min(0),
-  agent_speech_ratio: z.number(),
-  talk_ratio_vad: z.number(),
-  interruption_rate: z.number().min(0).max(1),
-  interruption_count: z.number().int().min(0),
-  agent_overtalk_after_barge_in_ms: z.number().min(0).optional(),
-  agent_interrupting_user_rate: z.number().min(0).max(1),
-  agent_interrupting_user_count: z.number().int().min(0),
-  missed_response_windows: z.number().int().min(0),
-  longest_monologue_ms: z.number(),
-  silence_gaps_over_2s: z.number().int().min(0),
-  total_internal_silence_ms: z.number(),
-  per_turn_speech_segments: z.array(z.number().int().min(0)),
-  per_turn_internal_silence_ms: z.array(z.number().int().min(0)),
-  mean_agent_speech_segment_ms: z.number(),
-});
 
 export const TurnEmotionProfileSchema = z.object({
   turn_index: z.number().int().min(0),
@@ -283,7 +260,6 @@ export const SignalQualityMetricsSchema = z.object({
   sudden_drops: z.number().int().min(0),
   sudden_spikes: z.number().int().min(0),
   clean_edges: z.boolean(),
-  f0_hz: z.number(),
 });
 
 export const ComponentLatencySchema = z.object({
@@ -360,7 +336,6 @@ export const ConversationMetricsSchema = z.object({
   latency: LatencyMetricsSchema.optional(),
   tool_calls: ToolCallMetricsSchema.optional(),
   signal_quality: SignalQualityMetricsSchema.optional(),
-  audio_analysis: AudioAnalysisMetricsSchema.optional(),
   prosody: ProsodyMetricsSchema.optional(),
   harness_overhead: HarnessOverheadSchema.optional(),
   component_latency: ComponentLatencyMetricsSchema.optional(),

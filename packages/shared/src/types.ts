@@ -302,10 +302,6 @@ export interface ConversationTurn {
   component_latency?: ComponentLatency;
   /** Platform's own STT transcript for cross-referencing with Vent's STT */
   platform_transcript?: string;
-  /** True if agent was interrupted mid-sentence by the caller */
-  interrupted?: boolean;
-  /** True if this caller turn was a barge-in interruption */
-  is_interruption?: boolean;
 }
 
 // ============================================================
@@ -319,8 +315,6 @@ export interface LatencyMetrics {
   p95_ttfb_ms: number;
   p99_ttfb_ms: number;
   first_turn_ttfb_ms: number;
-  total_silence_ms: number;
-  mean_turn_gap_ms: number;
   /** Time to first word (VAD speech onset) per agent turn */
   ttfw_per_turn_ms?: number[];
   p50_ttfw_ms?: number;
@@ -359,44 +353,8 @@ export interface SignalQualityMetrics {
   sudden_spikes: number;
   /** All turns have clean start/end (no clicks) */
   clean_edges: boolean;
-  /** Mean fundamental frequency across turns (Hz) */
-  f0_hz: number;
 }
 
-export interface AudioAnalysisMetrics {
-  /** Total caller talk time across the call (ms). */
-  caller_talk_time_ms: number;
-  /** Total agent speech time across the call (ms), excluding internal silence. */
-  agent_talk_time_ms: number;
-  /** Agent speech time / agent total audio time (0-1). Flag if <0.5 */
-  agent_speech_ratio: number;
-  /** VAD-corrected talk ratio: caller_audio / (caller_audio + agent_speech). Flag if >0.7 or <0.3 */
-  talk_ratio_vad: number;
-  /** Caller barges in while agent speech is still active / eligible caller turns */
-  interruption_rate: number;
-  /** Count of caller turns that begin before the prior agent utterance fully ends */
-  interruption_count: number;
-  /** Mean overlap time where the agent keeps speaking after the caller barges in. */
-  agent_overtalk_after_barge_in_ms?: number;
-  /** Agent starts speaking before the caller finished / eligible agent responses */
-  agent_interrupting_user_rate: number;
-  /** Count of agent responses that start before the caller finished speaking */
-  agent_interrupting_user_count: number;
-  /** Count of slow-or-missing agent response windows after caller speech */
-  missed_response_windows: number;
-  /** Longest continuous agent speech segment (ms). Flag if >30000 */
-  longest_monologue_ms: number;
-  /** Count of silence gaps >2s within agent responses (Hamming's SGA metric) */
-  silence_gaps_over_2s: number;
-  /** Total silence within agent responses, excluding between-turn gaps (ms) */
-  total_internal_silence_ms: number;
-  /** Number of distinct speech bursts per agent turn */
-  per_turn_speech_segments: number[];
-  /** Silence ms within each agent turn */
-  per_turn_internal_silence_ms: number[];
-  /** Average speech segment duration (ms). Very short = choppy */
-  mean_agent_speech_segment_ms: number;
-}
 
 // ============================================================
 // Platform component latency (from VAPI WebSocket text frames)
@@ -499,7 +457,6 @@ export interface ConversationMetrics {
   tool_calls?: ToolCallMetrics;
   /** Raw audio signal quality (SNR, clipping, energy, F0) — aggregated across turns */
   signal_quality?: SignalQualityMetrics;
-  audio_analysis?: AudioAnalysisMetrics;
   prosody?: ProsodyMetrics;
   harness_overhead?: HarnessOverhead;
   /** Per-component latency breakdown (STT/LLM/TTS) from platform events */
