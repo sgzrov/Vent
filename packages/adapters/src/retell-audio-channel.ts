@@ -84,6 +84,14 @@ export class RetellAudioChannel extends BaseAudioChannel {
   private realtimeUserTranscripts: string[] = [];
   private lastUserContent = "";
   private realtimeToolCallEntries = new Map<string, Record<string, unknown>>();
+  private pendingToolCallIds = new Set<string>();
+
+  // Retell's `update` event includes an undocumented `turntaking` field that
+  // flips to "user_turn" when Retell itself considers the agent's response done.
+  // Used to gate `agent_stop_talking` emits — that event fires per TTS chunk,
+  // not per response, so it's unreliable on its own.
+  private latestTurntaking: string | null = null;
+  private loggedFirstTurntaking = false;
 
   // Output sample rate for LiveKit WebRTC
   protected override outputSampleRate = RetellAudioChannel.LIVEKIT_SAMPLE_RATE;
@@ -415,7 +423,13 @@ export class RetellAudioChannel extends BaseAudioChannel {
 
       switch (event.event_type) {
         case "agent_stop_talking":
-          this.emit("platformEndOfTurn");
+          // Suppress if Retell itself still thinks it's the agent's turn —
+          // this stop event is a mid-response TTS chunk boundary, not EOT.
+          if (this.latestTurntaking === "agent_turn") {
+            console.log(`    [retell] agent_stop_talking suppressed — turntaking=agent_turn (chunk boundary)`);
+          } else {
+            this.emit("platformEndOfTurn");
+          }
           break;
 
         case "agent_start_talking":
@@ -433,6 +447,13 @@ export class RetellAudioChannel extends BaseAudioChannel {
                 this.realtimeUserTranscripts.push(entry.content);
                 this.lastUserContent = entry.content;
               }
+            }
+          }
+          if (typeof event.turntaking === "string") {
+            this.latestTurntaking = event.turntaking;
+            if (!this.loggedFirstTurntaking) {
+              this.loggedFirstTurntaking = true;
+              console.log(`    [retell] first observed turntaking="${event.turntaking}"`);
             }
           }
           this.captureRealtimeToolCallEntries(event);
@@ -491,6 +512,15 @@ export class RetellAudioChannel extends BaseAudioChannel {
         ...(prior ?? {}),
         ...entry,
       });
+
+      if (role === "tool_call_invocation" && !this.pendingToolCallIds.has(toolCallId)) {
+        const wasEmpty = this.pendingToolCallIds.size === 0;
+        this.pendingToolCallIds.add(toolCallId);
+        if (wasEmpty) this.emit("toolCallActive", true);
+      } else if (role === "tool_call_result" && this.pendingToolCallIds.has(toolCallId)) {
+        this.pendingToolCallIds.delete(toolCallId);
+        if (this.pendingToolCallIds.size === 0) this.emit("toolCallActive", false);
+      }
     }
   }
 

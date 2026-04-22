@@ -29,7 +29,6 @@ import { collectUntilEndOfTurn, linearRegressionSlope } from "../audio-tests/hel
 import { computeAllMetrics } from "../metrics/index.js";
 import { analyzeProsody } from "../metrics/prosody.js";
 import { AdaptiveThreshold } from "./adaptive-threshold.js";
-import { type TurnAudioData } from "../metrics/audio-analysis.js";
 
 function summarizeDebugText(text: string | null | undefined, maxChars = 96): string {
   if (!text) return "";
@@ -48,15 +47,34 @@ function sinceStartMs(startTime: number): number {
   return Math.round(performance.now() - startTime);
 }
 
-function recordTurnAudio(
-  turnAudioData: TurnAudioData[],
-  audioStartTimestampMs: number,
-  data: Omit<TurnAudioData, "audioStartTimestampMs">,
-): void {
-  turnAudioData.push({
-    ...data,
-    audioStartTimestampMs: Math.round(audioStartTimestampMs),
-  });
+// Merge adjacent same-role agent turns. The 1500ms end-of-turn VAD can split a
+// single agent utterance across two executor turns (e.g. "Let me" → caller waits
+// → "ask my mother..."); the resulting pair is one logical turn for the user.
+// Only the first fragment's TTFB/TTFW reflect real response latency; subsequent
+// fragments are a continuation, so their timing fields are dropped.
+function mergeFracturedAgentTurns(turns: ConversationTurn[]): ConversationTurn[] {
+  const merged: ConversationTurn[] = [];
+  for (const turn of turns) {
+    const prev = merged[merged.length - 1];
+    if (prev && prev.role === "agent" && turn.role === "agent") {
+      const joinedText = [prev.text, turn.text].filter((t) => t && t.length > 0).join(" ");
+      prev.text = joinedText;
+      if (turn.audio_duration_ms != null) {
+        prev.audio_duration_ms = (prev.audio_duration_ms ?? 0) + turn.audio_duration_ms;
+      }
+      if (turn.stt_ms != null) {
+        prev.stt_ms = (prev.stt_ms ?? 0) + turn.stt_ms;
+      }
+      if (turn.platform_transcript) {
+        prev.platform_transcript = [prev.platform_transcript, turn.platform_transcript]
+          .filter((t) => t && t.length > 0)
+          .join(" ");
+      }
+      continue;
+    }
+    merged.push({ ...turn });
+  }
+  return merged;
 }
 
 export async function runConversationCall(
@@ -125,23 +143,10 @@ export async function runConversationCall(
     return remainingMs == null || remainingMs > minimumMs;
   };
 
-  const turnAudioData: TurnAudioData[] = [];
   const agentAudioBuffers: Buffer[] = [];
   const turnSignalQualities: AudioQualityMetrics[] = [];
   const audioActionResults: AudioActionResult[] = [];
   let agentText: string | null = null;
-
-  const resolveAgentAudioStartTimestampMs = (
-    turnEndTimestampMs: number,
-    audioDurationMs: number,
-    anchorTimestampMs?: number,
-    ttfbMs?: number,
-  ): number => {
-    if (anchorTimestampMs != null && ttfbMs != null) {
-      return Math.max(0, Math.round(anchorTimestampMs + ttfbMs));
-    }
-    return Math.max(0, Math.round(turnEndTimestampMs - audioDurationMs));
-  };
 
   // Track channel disconnect — when the agent hangs up, the call ends naturally.
   let channelDisconnected = false;
@@ -172,7 +177,7 @@ export async function runConversationCall(
       // ── Greeting turn: just collect agent audio, no caller speech ──
       if (turn === -1) {
         const vadStart = performance.now();
-        transcriber.resetForNextTurn();
+        await transcriber.resetForNextTurn();
         const feedSTT = (chunk: Buffer) => transcriber.feedAudio(chunk);
         channel.on("audio", feedSTT);
         console.log(`    [opening] collect_start t=${sinceStartMs(startTime)}ms`);
@@ -221,11 +226,6 @@ export async function runConversationCall(
           const speechSegments = batchVAD.analyze(agentAudio);
           if (spec.prosody) agentAudioBuffers.push(Buffer.from(agentAudio));
           turnSignalQualities.push(analyzeAudioQuality(agentAudio, speechSegments));
-          recordTurnAudio(turnAudioData, resolveAgentAudioStartTimestampMs(agentTimestamp, audioDurationMs), {
-            role: "agent",
-            audioDurationMs,
-            speechSegments,
-          });
           transcript.push({
             role: "agent",
             text: greetingText,
@@ -251,11 +251,6 @@ export async function runConversationCall(
           text: actionLabel,
           timestamp_ms: Math.round(callerTimestamp),
         });
-        recordTurnAudio(turnAudioData, callerTimestamp, {
-          role: "caller",
-          audioDurationMs: 0,
-          callerDecisionMode: undefined,
-        });
 
         turnVAD.silenceThresholdMs = adaptiveThreshold.thresholdMs;
 
@@ -265,13 +260,8 @@ export async function runConversationCall(
         );
         audioActionResults.push(actionResult);
         agentText = actionAgentText;
-  
+
         const agentTimestamp = performance.now() - startTime;
-        recordTurnAudio(turnAudioData, agentTimestamp, {
-          role: "agent",
-          audioDurationMs: 0,
-          speechSegments: [],
-        });
         transcript.push({
           role: "agent",
           text: actionAgentText,
@@ -291,7 +281,7 @@ export async function runConversationCall(
       // Reset STT (opens new Deepgram connection for this turn).
       // feedSTT is attached right before collection, not here — attaching
       // during LLM+TTS feeds idle audio that slows down CloseStream.
-      transcriber.resetForNextTurn();
+      await transcriber.resetForNextTurn();
       const feedSTT = (chunk: Buffer) => transcriber.feedAudio(chunk);
 
       let sendTime: number;
@@ -437,11 +427,6 @@ export async function runConversationCall(
           const speechSegments = batchVAD.analyze(agentAudio);
           if (spec.prosody) agentAudioBuffers.push(Buffer.from(agentAudio));
           turnSignalQualities.push(analyzeAudioQuality(agentAudio, speechSegments));
-          recordTurnAudio(turnAudioData, resolveAgentAudioStartTimestampMs(agentTimestamp, agentAudioDurationMs), {
-            role: "agent",
-            audioDurationMs: agentAudioDurationMs,
-            speechSegments,
-          });
 
           transcript.push({
             role: "agent",
@@ -460,11 +445,6 @@ export async function runConversationCall(
             `[turn-text] turn=${turn} caller=wait source=empty-audio chars=0 timedOut=${timedOut} ` +
             `firstChunk=${stats.firstChunkAt !== null} speechOnset=${stats.speechOnsetAt !== null}`
           );
-          recordTurnAudio(turnAudioData, agentTimestamp, {
-            role: "agent",
-            audioDurationMs: 0,
-            speechSegments: [],
-          });
           transcript.push({
             role: "agent",
             text: "",
@@ -538,11 +518,6 @@ export async function runConversationCall(
         audio_duration_ms: audioDurationMs,
         tts_ms: ttsMs,
       });
-      recordTurnAudio(turnAudioData, callerTimestamp, {
-        role: "caller",
-        audioDurationMs,
-        callerDecisionMode: callerDecision.mode,
-      });
 
       // Audio was already sent to the channel during the streaming pipeline.
       // For noise_on_caller actions, we need to re-send with noise mixed in.
@@ -575,11 +550,6 @@ export async function runConversationCall(
 
         agentText = actionAgentText;
         const agentTimestamp = performance.now() - startTime;
-        recordTurnAudio(turnAudioData, agentTimestamp, {
-          role: "agent",
-          audioDurationMs: 0,
-          speechSegments: [],
-        });
         transcript.push({
           role: "agent",
           text: actionAgentText,
@@ -599,11 +569,6 @@ export async function runConversationCall(
 
         agentText = actionAgentText;
         const agentTimestamp = performance.now() - startTime;
-        recordTurnAudio(turnAudioData, agentTimestamp, {
-          role: "agent",
-          audioDurationMs: 0,
-          speechSegments: [],
-        });
         transcript.push({
           role: "agent",
           text: actionAgentText,
@@ -657,15 +622,6 @@ export async function runConversationCall(
           const speechSegments = batchVAD.analyze(peekResult.audio);
           if (spec.prosody) agentAudioBuffers.push(Buffer.from(peekResult.audio));
           turnSignalQualities.push(analyzeAudioQuality(peekResult.audio, speechSegments));
-          recordTurnAudio(
-            turnAudioData,
-            resolveAgentAudioStartTimestampMs(agentTimestamp, audioDurationMs, callerTimestamp, ttfbMs),
-            {
-              role: "agent",
-              audioDurationMs,
-              speechSegments,
-            },
-          );
           transcript.push({
             role: "agent",
             text: agentText,
@@ -684,7 +640,7 @@ export async function runConversationCall(
         const partialAgentText = partialText.text || "";
         console.log(`    [interrupt-plan] turn=${turn} sending planned interruption="${plannedInterrupt.text.slice(0, 60)}"`);
 
-        // Record partial agent turn (interrupted)
+        // Record partial agent turn (was interrupted mid-speech)
         const agentTimestamp = performance.now() - startTime;
         const preAudioDurationMs = Math.round((peekResult.audio.length / 2 / 24000) * 1000);
         const preTtfbMs = peekResult.stats.firstChunkAt !== null ? Math.max(0, peekResult.stats.firstChunkAt - sendTime) : undefined;
@@ -692,16 +648,6 @@ export async function runConversationCall(
         const preSpeechSegments = batchVAD.analyze(peekResult.audio);
         if (spec.prosody) agentAudioBuffers.push(Buffer.from(peekResult.audio));
         turnSignalQualities.push(analyzeAudioQuality(peekResult.audio, preSpeechSegments));
-        recordTurnAudio(
-          turnAudioData,
-          resolveAgentAudioStartTimestampMs(agentTimestamp, preAudioDurationMs, callerTimestamp, preTtfbMs),
-          {
-            role: "agent",
-            audioDurationMs: preAudioDurationMs,
-            speechSegments: preSpeechSegments,
-            interrupted: true,
-          },
-        );
         transcript.push({
           role: "agent",
           text: partialAgentText,
@@ -709,7 +655,6 @@ export async function runConversationCall(
           audio_duration_ms: preAudioDurationMs,
           ttfb_ms: preTtfbMs,
           ttfw_ms: preTtfwMs,
-          interrupted: true,
         });
 
         // Send interrupt (raw = skip clear/mark for immediate delivery)
@@ -720,23 +665,16 @@ export async function runConversationCall(
 
         const interruptCallerTimestamp = performance.now() - startTime;
         const interruptAudioDurationMs = Math.round((interruptAudio.length / 2 / 24000) * 1000);
-        recordTurnAudio(turnAudioData, interruptCallerTimestamp, {
-          role: "caller",
-          audioDurationMs: interruptAudioDurationMs,
-          callerDecisionMode: "continue",
-          isInterruption: true,
-        });
         transcript.push({
           role: "caller",
           text: plannedInterrupt.text,
           timestamp_ms: Math.round(interruptCallerTimestamp),
           caller_decision_mode: "continue",
           audio_duration_ms: interruptAudioDurationMs,
-          is_interruption: true,
         });
 
         // Collect post-interrupt agent response
-        transcriber.resetForNextTurn();
+        await transcriber.resetForNextTurn();
         const feedPostSTT = (chunk: Buffer) => transcriber.feedAudio(chunk);
         channel.on("audio", feedPostSTT);
 
@@ -768,15 +706,6 @@ export async function runConversationCall(
         const postSpeechSegments = batchVAD.analyze(postAudio);
         if (spec.prosody) agentAudioBuffers.push(Buffer.from(postAudio));
         turnSignalQualities.push(analyzeAudioQuality(postAudio, postSpeechSegments));
-        recordTurnAudio(
-          turnAudioData,
-          resolveAgentAudioStartTimestampMs(postAgentTimestamp, postAudioDurationMs, interruptCallerTimestamp, postTtfbMs),
-          {
-            role: "agent",
-            audioDurationMs: postAudioDurationMs,
-            speechSegments: postSpeechSegments,
-          },
-        );
         transcript.push({
           role: "agent",
           text: postAgentText,
@@ -883,7 +812,7 @@ export async function runConversationCall(
 
             const fillerAudio = agentAudio;
 
-            transcriber.resetForNextTurn();
+            await transcriber.resetForNextTurn();
             const feedContinuationSTT = (chunk: Buffer) => transcriber.feedAudio(chunk);
             channel.on("audio", feedContinuationSTT);
 
@@ -945,15 +874,6 @@ export async function runConversationCall(
         if (spec.prosody) agentAudioBuffers.push(Buffer.from(agentAudio));
         // Signal quality analysis on raw audio buffer
         turnSignalQualities.push(analyzeAudioQuality(agentAudio, speechSegments));
-        recordTurnAudio(
-          turnAudioData,
-          resolveAgentAudioStartTimestampMs(agentTimestamp, agentAudioDurationMs, callerTimestamp, turnTtfb),
-          {
-            role: "agent",
-            audioDurationMs: agentAudioDurationMs,
-            speechSegments,
-          },
-        );
 
         transcript.push({
           role: "agent",
@@ -974,11 +894,6 @@ export async function runConversationCall(
           `[turn-text] turn=${turn} source=empty-audio chars=0 timedOut=${timedOut} ` +
           `firstChunk=${stats.firstChunkAt !== null} speechOnset=${stats.speechOnsetAt !== null}`
         );
-        recordTurnAudio(turnAudioData, agentTimestamp, {
-          role: "agent",
-          audioDurationMs: 0,
-          speechSegments: [],
-        });
         transcript.push({
           role: "agent",
           text: "",
@@ -993,6 +908,12 @@ export async function runConversationCall(
 
     // End the call cleanly so it doesn't hang until Vapi's silence timeout fires.
     await safeDisconnect();
+
+    // Collapse transcript fragments created by VAD end-of-turn splitting so
+    // downstream turn-index matching and latency stats see one logical turn.
+    const mergedTranscript = mergeFracturedAgentTurns(transcript);
+    transcript.length = 0;
+    transcript.push(...mergedTranscript);
 
     // Step 6: Collect tool call data from the channel (if supported)
     const observedToolCalls: ObservedToolCall[] = await channel.getCallData?.() ?? [];
@@ -1118,9 +1039,8 @@ export async function runConversationCall(
     }
 
     // Step 8c: Compute metrics
-    const { latency, audio_analysis, harness_overhead } = await computeAllMetrics(
+    const { latency, harness_overhead } = await computeAllMetrics(
       transcript,
-      turnAudioData,
       channel.stats.connectLatencyMs,
     );
 
@@ -1143,9 +1063,6 @@ export async function runConversationCall(
           sudden_drops: turnSignalQualities.reduce((a, q) => a + q.sudden_drops, 0),
           sudden_spikes: turnSignalQualities.reduce((a, q) => a + q.sudden_spikes, 0),
           clean_edges: turnSignalQualities.every((q) => q.clean_start && q.clean_end),
-          f0_hz: Math.round(
-            turnSignalQualities.reduce((a, q) => a + q.f0_hz, 0) / turnSignalQualities.length,
-          ),
         }
       : undefined;
 
@@ -1161,7 +1078,6 @@ export async function runConversationCall(
       latency,
       signal_quality: signalQuality,
       tool_calls: toolCallMetrics,
-      audio_analysis,
       prosody: prosodyResult?.metrics,
       harness_overhead,
       component_latency: componentLatencyMetrics,

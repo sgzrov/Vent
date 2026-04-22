@@ -84,7 +84,6 @@ Skip `--verbose` when:
 Vent always returns one normalized result shape on `stdout` across adapters. Treat these as the stable categories:
 - `transcript`
 - `latency`
-- `audio_analysis`
 - `tool_calls`
 - `component_latency`
 - `call_metadata`
@@ -478,8 +477,8 @@ A call entry with advanced options (persona, audio actions, prosody):
   "transcript": [
     { "role": "caller", "text": "Hi, I'd like to book..." },
     { "role": "agent", "text": "Sure! What date?", "ttfb_ms": 650, "ttfw_ms": 780, "audio_duration_ms": 2400 },
-    { "role": "agent", "text": "Let me check avail—", "ttfb_ms": 540, "ttfw_ms": 620, "audio_duration_ms": 1400, "interrupted": true },
-    { "role": "caller", "text": "Just the earliest slot please", "audio_duration_ms": 900, "is_interruption": true },
+    { "role": "agent", "text": "Let me check availability.", "ttfb_ms": 540, "ttfw_ms": 620, "audio_duration_ms": 1400 },
+    { "role": "caller", "text": "Just the earliest slot please", "audio_duration_ms": 900 },
     { "role": "agent", "text": "Sure, the earliest is 9 AM tomorrow.", "ttfb_ms": 220, "ttfw_ms": 260, "audio_duration_ms": 2100 }
   ],
   "latency": {
@@ -487,24 +486,8 @@ A call entry with advanced options (persona, audio actions, prosody):
     "p50_response_time_ms": 850, "p90_response_time_ms": 1100, "p95_response_time_ms": 1400, "p99_response_time_ms": 1550,
     "first_response_time_ms": 1950,
     "mean_ttfw_ms": 890, "p50_ttfw_ms": 850, "p95_ttfw_ms": 1400, "p99_ttfw_ms": 1550,
-    "first_turn_ttfw_ms": 1950, "total_silence_ms": 4200, "mean_turn_gap_ms": 380,
+    "first_turn_ttfw_ms": 1950,
     "drift_slope_ms_per_turn": -45.2, "mean_silence_pad_ms": 128, "mouth_to_ear_est_ms": 1020
-  },
-  "audio_analysis": {
-    "caller_talk_time_ms": 12400,
-    "agent_talk_time_ms": 28500,
-    "agent_speech_ratio": 0.72,
-    "talk_ratio_vad": 0.69,
-    "interruption_rate": 0.25,
-    "interruption_count": 1,
-    "agent_overtalk_after_barge_in_ms": 280,
-    "agent_interrupting_user_rate": 0.0,
-    "agent_interrupting_user_count": 0,
-    "missed_response_windows": 0,
-    "longest_monologue_ms": 5800,
-    "silence_gaps_over_2s": 1,
-    "total_internal_silence_ms": 2400,
-    "mean_agent_speech_segment_ms": 3450
   },
   "tool_calls": {
     "total": 2, "successful": 2, "failed": 0, "mean_latency_ms": 340,
@@ -531,7 +514,7 @@ A call entry with advanced options (persona, audio actions, prosody):
   }
 }
 
-Always present: name, status, caller_prompt, duration_ms, error, transcript, tool_calls, warnings, audio_actions. Nullable when analysis didn't run: latency, audio_analysis, component_latency, call_metadata, emotion (requires prosody: true), debug (requires --verbose).
+Always present: name, status, caller_prompt, duration_ms, error, transcript, tool_calls, warnings, audio_actions. Nullable when analysis didn't run: latency, component_latency, call_metadata, emotion (requires prosody: true), debug (requires --verbose).
 
 ### Result presentation
 
@@ -559,18 +542,17 @@ Use the transcript, metrics, test scenario, and relevant agent instructions/syst
 | **Goal completion** | Decide whether the agent achieved what the test scenario was designed to verify. |
 | **Transfer correctness** | For transfer scenarios, judge whether transfer was appropriate, whether it completed, whether it went to the expected destination, and whether enough context was passed during the handoff. |
 
+Ignore minor STT mis-transcriptions in `transcript` text (e.g. `"check teach hat"` for `"check that"`, swapped homophones, missing question marks on short tails). These are streaming-STT artifacts, not agent bugs. Judge on semantic intent, not exact spelling. Only flag transcript quality when it prevents understanding what the agent actually said.
+
 ### Interruption evaluation
 
-When the transcript contains `interrupted: true` / `is_interruption: true` turns, evaluate these metrics by reading the transcript:
+Evaluate interruption handling by reading the transcript and listening to the recording. Flag any turn where the agent ignores a barge-in, repeats itself from scratch, or loses context after being cut off.
 
-| Metric | How to evaluate | Target |
-|--------|----------------|--------|
-| **Recovery rate** | For each interrupted turn: does the post-interrupt agent response acknowledge or address the interruption? | >90% |
-| **Context retention** | After the interruption, does the agent remember pre-interrupt conversation state? | >95% |
-| **Agent overtalk after barge-in** | Use `audio_analysis.agent_overtalk_after_barge_in_ms` when available. Lower is better because it measures how long the agent kept speaking after the caller cut in. | <500ms acceptable |
-| **Agent interrupting user rate** | Use `audio_analysis.agent_interrupting_user_rate` and the transcript to see whether the agent starts speaking before the caller finished. | 0 ideal |
-
-Report these alongside standard metrics when interruption calls run.
+| Dimension | How to evaluate |
+|--------|----------------|
+| **Recovery** | After a caller cuts in, does the agent's next reply acknowledge or address the barge-in rather than restarting from scratch? |
+| **Context retention** | After the interruption, does the agent remember pre-interrupt conversation state? |
+| **Overtalk** | Does the agent keep speaking for long after the caller starts, or does it yield promptly? Use the recording to judge. |
 </output_conversation_test>
 </call_config>
 

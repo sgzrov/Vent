@@ -1,27 +1,16 @@
 /**
- * Streaming STT via Deepgram WebSocket.
+ * Streaming STT via Deepgram WebSocket — one socket per turn.
  *
- * Opens a persistent WebSocket to Deepgram's live transcription API.
- * Audio chunks are piped in real-time during collection. Deepgram emits
- * is_final segments as it processes — these accumulate in finalSegments
- * and are available instantly via getAccumulatedTranscript().
- *
- * At end-of-turn, the executor reads the accumulated transcript (no network
- * call) and optionally sends a non-blocking Finalize to flush any trailing
- * audio. The connection stays open across turns.
- *
- * Usage:
- *   const transcriber = new StreamingTranscriber();
- *   await transcriber.connect();
- *   // During audio collection:
- *   transcriber.feedAudio(chunk);
- *   // When end-of-turn fires — instant, no network call:
- *   const { text, confidence } = transcriber.getAccumulatedTranscript();
- *   transcriber.finalizeInBackground(); // non-blocking flush
- *   // For next turn — keeps connection alive:
- *   transcriber.resetForNextTurn();
- *   // When done:
- *   transcriber.close();
+ * Deepgram's prescribed end-of-utterance pattern (per docs): enable
+ * interim_results + utterance_end_ms + endpointing together. Endpointing
+ * emits is_final after 300ms of audio silence; utterance_end_ms provides a
+ * word-timing signal for noisy audio. We track the latest interim as a
+ * fallback — if the stream ends with an un-finalized tail (noisy audio
+ * defeated silence-based endpointing), finalize() appends the interim as
+ * the tail. Segments are deduplicated at push-time so overlapping is_finals
+ * ("This is our" + "This is our inspection scheduling line.") collapse to
+ * the superset. finalize() sends CloseStream and force-closes the socket.
+ * resetForNextTurn() opens a fresh socket for the next turn.
  */
 
 import {
@@ -49,6 +38,11 @@ export class StreamingTranscriber {
 
   /** Accumulated final transcript segments for the current turn. */
   private finalSegments: { text: string; confidence: number }[] = [];
+
+  /** Latest interim transcript (not yet promoted to is_final). Used as a
+   *  fallback when the stream ends before endpointing silence detects the
+   *  tail of the final utterance (e.g. noisy audio). */
+  private latestInterim: { text: string; confidence: number } | null = null;
 
   /** Track whether we've received any audio this turn. */
   private hasFedAudio = false;
@@ -85,7 +79,12 @@ export class StreamingTranscriber {
         channels: 1,
         model: this.model,
         punctuate: true,
-        interim_results: false,
+        // interim_results + utterance_end_ms is Deepgram's prescribed
+        // end-of-utterance pattern for noisy audio. endpointing alone is
+        // unreliable because it needs actual silence, which platform audio
+        // streams often don't have (they send low-level noise frames).
+        interim_results: true,
+        utterance_end_ms: 1000,
         endpointing: 300,
         vad_events: false,
         ...(this.language ? { language: this.language } : {}),
@@ -134,16 +133,18 @@ export class StreamingTranscriber {
       this.connection.on(
         LiveTranscriptionEvents.Transcript,
         (msg: LiveTranscriptionEvent) => {
-          if (!msg.is_final) {
-            return;
-          }
-
           const alt = msg.channel?.alternatives?.[0];
           const text = alt?.transcript ?? "";
           const confidence = alt?.confidence ?? 0;
 
-          if (text.length > 0) {
-            this.finalSegments.push({ text, confidence });
+          if (msg.is_final) {
+            if (text.length > 0) {
+              this.pushSegmentDeduped({ text, confidence });
+            }
+            // A finalized segment supersedes any pending interim for it.
+            this.latestInterim = null;
+          } else if (text.length > 0) {
+            this.latestInterim = { text, confidence };
           }
         },
       );
@@ -202,69 +203,104 @@ export class StreamingTranscriber {
   }
 
   /**
-   * Send Finalize to flush trailing audio and wait up to 500ms for any
-   * remaining is_final segments. Returns the accumulated transcript.
-   *
-   * Like Pipecat: if a new segment arrives quickly (Finalize response),
-   * resolve immediately. Otherwise timeout at 500ms with what we have.
-   * Connection stays open.
+   * Send CloseStream and wait for the socket Close event. Deepgram flushes
+   * any buffered interim transcript as is_final before closing, so by the
+   * time Close fires every segment for this turn has been pushed into
+   * finalSegments. Returns the complete transcript.
    */
   async finalize(): Promise<TranscriptionResult> {
     if (!this.hasFedAudio) {
       return { text: "", confidence: 0 };
     }
 
-    const segmentsBefore = this.finalSegments.length;
-    const textBefore = this.finalSegments.map((s) => s.text).join(" ");
-    console.log(`[STT] finalize segments=${segmentsBefore} text="${textBefore.slice(0, 100)}"`);
-
-    // Send Finalize to flush Deepgram's buffer — keeps connection open.
-    if (this.connection?.isConnected()) {
-      this.connection.finalize();
-    } else {
+    const conn = this.connection;
+    if (!conn?.isConnected()) {
       return this.buildTranscript();
     }
 
-    // Wait up to 500ms for any new segments from the flush.
-    // Resolve immediately if a new segment arrives (Finalize response is fast).
+    const segmentsBefore = this.finalSegments.length;
+    console.log(`[STT] finalize segments=${segmentsBefore}`);
+
+    const closeStreamAt = Date.now();
+
     return new Promise<TranscriptionResult>((resolve) => {
-      const startCount = this.finalSegments.length;
+      let settled = false;
+      let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
-      // Check every 50ms if new segments arrived
-      const checkInterval = setInterval(() => {
-        if (this.finalSegments.length > startCount) {
-          clearInterval(checkInterval);
-          clearTimeout(timeout);
-          const result = this.buildTranscript();
-          console.log(`[STT] finalize resolved early segments=${this.finalSegments.length} text="${result.text.slice(0, 100)}"`);
-          resolve(result);
+      const finish = (reason: string) => {
+        if (settled) return;
+        settled = true;
+        if (debounceTimer) clearTimeout(debounceTimer);
+        clearTimeout(deadline);
+        this.clearKeepAlive();
+        const c = this.connection;
+        this.connection = null;
+        if (c) {
+          c.removeAllListeners();
+          try {
+            c.disconnect();
+          } catch {}
         }
-      }, 50);
-
-      // Hard timeout at 500ms
-      const timeout = setTimeout(() => {
-        clearInterval(checkInterval);
+        // Last-resort tail recovery: if a pending interim was never
+        // promoted to is_final (noisy audio defeated endpointing), append
+        // it now. Deduped so it doesn't duplicate what's already there.
+        if (this.latestInterim && this.latestInterim.text.length > 0) {
+          const before = this.finalSegments.length;
+          this.pushSegmentDeduped(this.latestInterim);
+          const added = this.finalSegments.length > before;
+          console.log(
+            `[STT] finalize recovered_interim added=${added} text="${this.latestInterim.text.slice(0, 60)}"`,
+          );
+          this.latestInterim = null;
+        }
         const result = this.buildTranscript();
-        console.log(`[STT] finalize timeout (500ms) segments=${this.finalSegments.length} text="${result.text.slice(0, 100)}"`);
+        console.log(
+          `[STT] finalize ${reason} segments=${this.finalSegments.length} text="${result.text.slice(0, 100)}"`,
+        );
         resolve(result);
-      }, 500);
+      };
+
+      const armDebounce = (ms: number, reason: string) => {
+        if (debounceTimer) clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => finish(reason), ms);
+      };
+
+      // With endpointing enabled, most is_finals have already arrived
+      // before finalize() is called. CloseStream flushes any trailing
+      // interim (typically a short tail). 500ms covers the round-trip.
+      armDebounce(500, "idle");
+
+      conn.on(LiveTranscriptionEvents.Transcript, (msg: LiveTranscriptionEvent) => {
+        if (msg.is_final) {
+          const elapsed = Date.now() - closeStreamAt;
+          const alt = msg.channel?.alternatives?.[0];
+          const text = (alt?.transcript ?? "").slice(0, 60);
+          console.log(`[STT] finalize is_final t+${elapsed}ms text="${text}"`);
+          armDebounce(250, "flushed");
+        }
+      });
+
+      // Fast path: server closes cleanly on its own.
+      conn.once(LiveTranscriptionEvents.Close, () => finish("closed"));
+
+      // Hard deadline — bound worst-case.
+      const deadline = setTimeout(() => finish("deadline"), 1500);
+
+      conn.requestClose();
     });
   }
 
   /**
-   * Reset state for the next conversation turn.
-   * Keeps the WebSocket connection alive — no reconnect needed.
+   * Reset state and open a fresh WebSocket for the next turn.
+   * Must be awaited — the socket is closed by finalize().
    */
-  resetForNextTurn(): void {
+  async resetForNextTurn(): Promise<void> {
     this.finalSegments = [];
+    this.latestInterim = null;
     this.hasFedAudio = false;
     this.pendingAudio = [];
-
-    // If connection died, reconnect
-    if (!this.connection?.isConnected() && !this.reconnecting) {
-      this.connect().catch((err) => {
-        console.warn(`[STT] Reconnect failed: ${err instanceof Error ? err.message : err}`);
-      });
+    if (!this.connection?.isConnected()) {
+      await this.connect();
     }
   }
 
@@ -293,6 +329,28 @@ export class StreamingTranscriber {
     return this.connection?.isConnected() ?? false;
   }
 
+  /**
+   * Append a segment, deduplicating against the previous one. Handles the
+   * case where Deepgram emits overlapping is_finals (e.g. "This is our"
+   * followed by "This is our inspection scheduling line.") and where a
+   * fallback interim covers ground already in the last is_final.
+   */
+  private pushSegmentDeduped(seg: { text: string; confidence: number }): void {
+    const last = this.finalSegments[this.finalSegments.length - 1];
+    if (last) {
+      const a = normalizeForDedup(last.text);
+      const b = normalizeForDedup(seg.text);
+      if (a === b) return; // exact duplicate
+      if (b.startsWith(a)) {
+        // New segment is a superset — replace the earlier partial.
+        this.finalSegments[this.finalSegments.length - 1] = seg;
+        return;
+      }
+      if (a.startsWith(b)) return; // new is a prefix of what's already there
+    }
+    this.finalSegments.push(seg);
+  }
+
   private buildTranscript(): TranscriptionResult {
     if (this.finalSegments.length === 0) {
       return { text: "", confidence: 0 };
@@ -305,4 +363,8 @@ export class StreamingTranscriber {
 
     return { text, confidence };
   }
+}
+
+function normalizeForDedup(s: string): string {
+  return s.toLowerCase().replace(/[.!?,;:]+$/g, "").trim();
 }

@@ -128,9 +128,21 @@ export abstract class BaseAudioChannel extends EventEmitter implements AudioChan
     connectLatencyMs: 0,
   };
 
-  /** Early audio buffer — captures greeting audio before executor attaches listeners. */
+  /**
+   * No-listener audio buffer. Captures audio emitted whenever there are
+   * zero "audio" listeners — not just initially, but also between turns
+   * when the executor has detached one collector and not yet attached the
+   * next one. Without this, any agent audio that arrives in the gap
+   * (common when the agent responds while we're still in caller-TTS/
+   * caller-send) gets emitted to zero listeners and silently dropped.
+   *
+   * Capped by INPUT_SAMPLE_RATE × 2 bytes/sample × NO_LISTENER_BUFFER_SECONDS
+   * so a long listener-less gap can't grow unbounded. Oldest chunks are
+   * evicted when the cap is hit.
+   */
   private _earlyAudioBuffer: Buffer[] = [];
-  private _bufferingAudio = true;
+  private _earlyAudioBufferBytes = 0;
+  private static readonly NO_LISTENER_BUFFER_SECONDS = 30;
   private _recordingCapture = new CallRecordingCapture();
 
   get stats(): ChannelStats {
@@ -138,31 +150,40 @@ export abstract class BaseAudioChannel extends EventEmitter implements AudioChan
   }
 
   /**
-   * Override emit to buffer audio events before any listener attaches.
-   * This ensures agent greeting audio is never lost, regardless of adapter timing.
+   * Override emit to buffer audio events whenever no "audio" listener is
+   * attached. Fans out to real listeners otherwise.
    */
   emit<E extends keyof AudioChannelEvents>(event: E, ...args: Parameters<AudioChannelEvents[E]>): boolean {
-    if (event === "audio" && this._bufferingAudio) {
-      this._earlyAudioBuffer.push(args[0] as Buffer);
+    if (event === "audio" && this.listenerCount("audio") === 0) {
+      const chunk = args[0] as Buffer;
+      const cap = BaseAudioChannel.INPUT_SAMPLE_RATE * 2 * BaseAudioChannel.NO_LISTENER_BUFFER_SECONDS;
+      this._earlyAudioBuffer.push(chunk);
+      this._earlyAudioBufferBytes += chunk.length;
+      while (this._earlyAudioBufferBytes > cap && this._earlyAudioBuffer.length > 1) {
+        const evicted = this._earlyAudioBuffer.shift()!;
+        this._earlyAudioBufferBytes -= evicted.length;
+      }
       return true;
     }
     return super.emit(event, ...args);
   }
 
   /**
-   * Override on to flush buffered greeting audio when the first audio listener attaches.
+   * Override on to flush the buffered no-listener audio whenever any
+   * listener attaches and the buffer is non-empty. Flushes via super.emit
+   * on nextTick so every listener attached in the same tick (e.g. the
+   * executor's feedSTT AND collectUntilEndOfTurn's VAD onAudio) receives
+   * the buffered chunks, not just the first one to subscribe.
    */
   on<E extends keyof AudioChannelEvents>(event: E, listener: AudioChannelEvents[E]): this {
     super.on(event, listener);
-    if (event === "audio" && this._bufferingAudio) {
-      this._bufferingAudio = false;
-      // Flush buffered greeting audio to the new listener on next tick
-      // (so the listener is fully registered before receiving events)
+    if (event === "audio" && this._earlyAudioBuffer.length > 0) {
       const buffered = this._earlyAudioBuffer;
       this._earlyAudioBuffer = [];
+      this._earlyAudioBufferBytes = 0;
       process.nextTick(() => {
         for (const chunk of buffered) {
-          (listener as AudioChannelEvents["audio"])(chunk);
+          super.emit("audio", chunk);
         }
       });
     }

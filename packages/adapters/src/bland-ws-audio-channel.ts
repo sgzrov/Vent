@@ -531,6 +531,9 @@ export class BlandWsAudioChannel extends BaseAudioChannel {
           }
         }
 
+        // Bland webhooks fire only after tool completion — no real-time tool-call-start
+        // signal, so toolCallActive gating is not available on this adapter.
+
         // Capture dynamic_data events
         if (eventType === "dynamic_data") {
           const data = (typeof event.data === "object" && event.data !== null ? event.data : event) as Record<string, unknown>;

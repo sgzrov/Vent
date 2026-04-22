@@ -101,7 +101,7 @@ async function executeInterrupt(
   ctx.channel.sendAudio(interruptAudio);
 
   // Collect post-interrupt response
-  ctx.transcriber.resetForNextTurn();
+  await ctx.transcriber.resetForNextTurn();
   const feedSTT = (chunk: Buffer) => ctx.transcriber.feedAudio(chunk);
   ctx.channel.on("audio", feedSTT);
 
@@ -169,7 +169,7 @@ async function executeInjectNoise(
   ctx.channel.sendAudio(noise);
 
   // Collect rest of agent response
-  ctx.transcriber.resetForNextTurn();
+  await ctx.transcriber.resetForNextTurn();
   const feedSTT = (chunk: Buffer) => ctx.transcriber.feedAudio(chunk);
   ctx.channel.on("audio", feedSTT);
 
@@ -244,7 +244,7 @@ async function executeSplitSentence(
   await ctx.channel.sendAudio(audioB);
 
   // Collect the agent's full response
-  ctx.transcriber.resetForNextTurn();
+  await ctx.transcriber.resetForNextTurn();
   const feedSTT = (chunk: Buffer) => ctx.transcriber.feedAudio(chunk);
   ctx.channel.on("audio", feedSTT);
 
@@ -285,7 +285,7 @@ async function executeNoiseOnCaller(
   // the caller's already-synthesized audio before sending.
   // The actual mixing happens in the executor; this just collects the response.
 
-  ctx.transcriber.resetForNextTurn();
+  await ctx.transcriber.resetForNextTurn();
   const feedSTT = (chunk: Buffer) => ctx.transcriber.feedAudio(chunk);
   ctx.channel.on("audio", feedSTT);
 

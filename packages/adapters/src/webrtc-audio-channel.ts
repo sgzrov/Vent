@@ -113,6 +113,9 @@ interface LiveKitAgentStateTransition {
   nextLastAgentState: string;
   emitPlatformSpeechStart: boolean;
   emitPlatformEndOfTurn: boolean;
+  /** Set to true when entering `thinking` mid-response (tool call / LLM work),
+   *  false when leaving it. null means no change. */
+  emitToolCallActive: boolean | null;
 }
 
 interface LiveKitRoomDisconnectState {
@@ -156,6 +159,7 @@ export function applyLiveKitAgentStateChange(
         nextLastAgentState: agentState,
         emitPlatformSpeechStart: false,
         emitPlatformEndOfTurn: false,
+        emitToolCallActive: previousState === "speaking" ? true : null,
       };
 
     case "speaking":
@@ -166,6 +170,7 @@ export function applyLiveKitAgentStateChange(
         nextLastAgentState: agentState,
         emitPlatformSpeechStart: previousState !== "speaking",
         emitPlatformEndOfTurn: false,
+        emitToolCallActive: previousState === "thinking" ? false : null,
       };
 
     case "listening": {
@@ -177,6 +182,7 @@ export function applyLiveKitAgentStateChange(
         nextLastAgentState: agentState,
         emitPlatformSpeechStart: false,
         emitPlatformEndOfTurn: wasSpeaking && previousState !== "listening",
+        emitToolCallActive: previousState === "thinking" ? false : null,
       };
     }
 
@@ -185,6 +191,7 @@ export function applyLiveKitAgentStateChange(
         nextLastAgentState: agentState,
         emitPlatformSpeechStart: false,
         emitPlatformEndOfTurn: false,
+        emitToolCallActive: null,
       };
   }
 }
@@ -461,12 +468,18 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
 
     // Subscribe to existing remote audio tracks
     for (const participant of this.room.remoteParticipants.values()) {
+      console.log(
+        `[livekit] pre-existing remote participant identity=${participant.identity} kind=${participant.kind} tracks=${participant.trackPublications.size}`
+      );
       if (participant.kind === ParticipantKind.AGENT) {
         this.agentIdentity = participant.identity;
       }
       for (const pub of participant.trackPublications.values()) {
         if (pub.track && pub.kind === TrackKind.KIND_AUDIO) {
-          this.startReadingTrack(pub.track as RemoteTrack);
+          console.log(
+            `[livekit] subscribing to pre-existing audio track participant=${participant.identity} kind=${participant.kind} trackSid=${pub.sid}`
+          );
+          this.startReadingTrack(pub.track as RemoteTrack, participant.identity, participant.kind);
         }
       }
     }
@@ -479,55 +492,66 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
           this.agentIdentity = participant.identity;
         }
         if (pub.kind === TrackKind.KIND_AUDIO) {
-          this.startReadingTrack(track);
+          console.log(
+            `[livekit] TrackSubscribed audio participant=${participant.identity} kind=${participant.kind} trackSid=${pub.sid}`
+          );
+          this.startReadingTrack(track, participant.identity, participant.kind);
         }
       }
     );
 
-    // Wait for agent to reach "listening" state — this means:
-    // 1. Agent has joined the room
-    // 2. Agent has published its audio track
-    // 3. AEC warmup is complete (~3s)
-    // 4. Agent is ready to process audio input
-    // Without this, we'd send audio during AEC warmup and the agent would ignore it.
+    // Wait for the agent's audio track to be published/subscribed — matches
+    // the canonical pattern used by Retell/ElevenLabs/Pipecat LiveKit
+    // transports. We don't gate on agent.state because LiveKit Agents
+    // publishes a single persistent track at session.start() and transitions
+    // through "initializing → listening → speaking" — "listening" only
+    // fires AFTER the greeting finishes, which means gating on it hides the
+    // greeting and opens a first-listener race in our early-audio buffer.
+    // agent.state transitions are still used for per-turn EOT elsewhere.
     const AGENT_READY_TIMEOUT = 45_000;
     const agentReady = await new Promise<boolean>((resolve) => {
-      // Define listener first so timeout cleanup can reference it
-      const onAttrsChanged = (attrs: Record<string, string>, participant: Participant) => {
-        if (participant.kind !== ParticipantKind.AGENT) return;
-        this.agentIdentity = participant.identity;
-        const state = attrs[LIVEKIT_AGENT_STATE_ATTR];
-        if (state === "listening") {
-          clearTimeout(timer);
-          this.room?.off(RoomEvent.ParticipantAttributesChanged, onAttrsChanged);
-          resolve(true);
+      const alreadyHasAudio = (p: RemoteParticipant) => {
+        if (p.kind !== ParticipantKind.AGENT) return false;
+        for (const pub of p.trackPublications.values()) {
+          if (pub.track && pub.kind === TrackKind.KIND_AUDIO) return true;
         }
+        return false;
+      };
+
+      const onTrackSubscribed = (
+        _t: RemoteTrack,
+        pub: RemoteTrackPublication,
+        participant: RemoteParticipant,
+      ) => {
+        if (participant.kind !== ParticipantKind.AGENT) return;
+        if (pub.kind !== TrackKind.KIND_AUDIO) return;
+        this.agentIdentity = participant.identity;
+        clearTimeout(timer);
+        this.room?.off(RoomEvent.TrackSubscribed, onTrackSubscribed);
+        resolve(true);
       };
 
       const timer = setTimeout(() => {
-        this.room?.off(RoomEvent.ParticipantAttributesChanged, onAttrsChanged);
+        this.room?.off(RoomEvent.TrackSubscribed, onTrackSubscribed);
         resolve(false);
       }, AGENT_READY_TIMEOUT);
 
-      // Check if agent is already in "listening" state
+      // Fast-path: agent already published audio before we got here.
       for (const p of this.room!.remoteParticipants.values()) {
-        if (p.kind === ParticipantKind.AGENT) {
+        if (alreadyHasAudio(p)) {
           this.agentIdentity = p.identity;
-          const state = p.attributes?.[LIVEKIT_AGENT_STATE_ATTR];
-          if (state === "listening") {
-            clearTimeout(timer);
-            resolve(true);
-            return;
-          }
+          clearTimeout(timer);
+          resolve(true);
+          return;
         }
       }
 
-      this.room!.on(RoomEvent.ParticipantAttributesChanged, onAttrsChanged);
+      this.room!.on(RoomEvent.TrackSubscribed, onTrackSubscribed);
     });
 
     if (!agentReady) {
       throw new Error(
-        `LiveKit agent did not reach "listening" state in room "${this.config.roomName}" within ${AGENT_READY_TIMEOUT / 1000}s. ` +
+        `LiveKit agent did not publish an audio track in room "${this.config.roomName}" within ${AGENT_READY_TIMEOUT / 1000}s. ` +
         `Ensure your agent is running and connected to ${this.config.livekitUrl}. ` +
         `If your agent uses agent_name in WorkerOptions, set "agent_name" in the platform config.`
       );
@@ -894,6 +918,15 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
     if (derivedTransfer) {
       this.mergeCallMetadata({ transfers: [derivedTransfer] });
     }
+    // conversation_item_added(role=="assistant") is the canonical "this
+    // assistant turn is complete" signal — the message has been committed to
+    // conversation history. More reliable than agent.state→listening, which
+    // can flicker on barge-in or chained say() calls.
+    const item = firstRecord(event.item, event.conversation_item);
+    const role = item ? firstString(item["role"])?.toLowerCase() : undefined;
+    if (role === "assistant") {
+      this.emit("platformEndOfTurn");
+    }
   }
 
   private handleSessionUsageEvent(event: Record<string, unknown>): void {
@@ -1036,6 +1069,9 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
     if (transition.emitPlatformEndOfTurn) {
       this.emit("platformEndOfTurn");
     }
+    if (transition.emitToolCallActive !== null) {
+      this.emit("toolCallActive", transition.emitToolCallActive);
+    }
   }
 
   private handleRoomDisconnected(reason: DisconnectReason): void {
@@ -1048,11 +1084,20 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
     this.emit("disconnected");
   }
 
-  private startReadingTrack(track: RemoteTrack): void {
-    console.log(`[livekit] Subscribed to remote audio track`);
+  private startReadingTrack(
+    track: RemoteTrack,
+    participantIdentity?: string,
+    participantKind?: ParticipantKind,
+  ): void {
+    const who = `participant=${participantIdentity ?? "?"} kind=${participantKind ?? "?"}`;
+    console.log(`[livekit] startReadingTrack ${who}`);
     const stream = new AudioStream(track, this.livekitSampleRate, 1);
     const reader = stream.getReader();
     let frameCount = 0;
+    let sumAbs = 0;
+    let sampleCount = 0;
+    let peakAbs = 0;
+    let lastDiagFrame = 0;
 
     const readLoop = async () => {
       try {
@@ -1061,8 +1106,36 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
           if (done || !frame) break;
 
           frameCount++;
+
+          // Sample-level diagnostics on raw pre-resample frame
+          const rawSamples = new Int16Array(
+            frame.data.buffer,
+            frame.data.byteOffset,
+            frame.data.byteLength / 2,
+          );
+          let frameSumAbs = 0;
+          let framePeak = 0;
+          for (let i = 0; i < rawSamples.length; i++) {
+            const v = Math.abs(rawSamples[i]!);
+            frameSumAbs += v;
+            if (v > framePeak) framePeak = v;
+          }
+          sumAbs += frameSumAbs;
+          sampleCount += rawSamples.length;
+          if (framePeak > peakAbs) peakAbs = framePeak;
+
           if (frameCount === 1) {
-            console.log(`[livekit] First agent audio frame received (${frame.data.byteLength} bytes)`);
+            console.log(
+              `[livekit] first_frame ${who} bytes=${frame.data.byteLength} samples=${rawSamples.length} sampleRate=${frame.sampleRate} peak=${framePeak} meanAbs=${Math.round(frameSumAbs / rawSamples.length)}`
+            );
+          }
+          // Every 100 frames (~1s at 10ms), log cumulative stats to detect
+          // whether signal is truly silent or just below VAD threshold.
+          if (frameCount - lastDiagFrame >= 100) {
+            lastDiagFrame = frameCount;
+            console.log(
+              `[livekit] frame=${frameCount} ${who} cumMeanAbs=${Math.round(sumAbs / Math.max(1, sampleCount))} cumPeak=${peakAbs}`
+            );
           }
 
           const frameBuffer = Buffer.from(
@@ -1082,7 +1155,10 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
           this._stats.errorEvents.push(err.message);
         }
       }
-      console.log(`[livekit] Audio read loop ended after ${frameCount} frames`);
+      const finalMean = sampleCount > 0 ? Math.round(sumAbs / sampleCount) : 0;
+      console.log(
+        `[livekit] Audio read loop ended ${who} frames=${frameCount} meanAbs=${finalMean} peak=${peakAbs}`
+      );
     };
 
     readLoop();

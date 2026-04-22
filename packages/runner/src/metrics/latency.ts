@@ -45,23 +45,6 @@ export function computeLatencyMetrics(turns: ConversationTurn[], connectLatencyM
     .map((t) => t.silence_pad_ms)
     .filter((v): v is number => v !== undefined);
 
-  // Turn gaps: time between end of one turn and start of next
-  const turnGaps: number[] = [];
-  for (let i = 1; i < turns.length; i++) {
-    const prev = turns[i - 1]!;
-    const curr = turns[i]!;
-    const prevEnd = prev.timestamp_ms + (prev.audio_duration_ms ?? 0);
-    const gap = curr.timestamp_ms - prevEnd;
-    if (gap > 0) turnGaps.push(gap);
-  }
-
-  // Total silence: sum of gaps where no one is talking
-  const totalSilenceMs = turnGaps.reduce((sum, g) => sum + g, 0);
-
-  const meanTurnGapMs = turnGaps.length > 0
-    ? turnGaps.reduce((sum, g) => sum + g, 0) / turnGaps.length
-    : 0;
-
   // Base TTFB metrics (always present)
   const result: LatencyMetrics = {
     ttfb_per_turn_ms: ttfbValues,
@@ -70,8 +53,6 @@ export function computeLatencyMetrics(turns: ConversationTurn[], connectLatencyM
     p95_ttfb_ms: percentile(sorted, 95),
     p99_ttfb_ms: percentile(sorted, 99),
     first_turn_ttfb_ms: ttfbValues[0] ?? 0,
-    total_silence_ms: totalSilenceMs,
-    mean_turn_gap_ms: meanTurnGapMs,
   };
 
   // TTFW metrics (only when data exists)
