@@ -31,7 +31,7 @@ You can pass `room` or `participant` directly instead of `ctx`.
 | `conversation_item_added`| `vent:conversation-item`        |
 | `user_input_transcribed` | `vent:user-input-transcribed`   |
 | `session_usage_updated`  | `vent:session-usage`            |
-| `close` (with error)     | `vent:warning`                  |
+| `close`                  | `vent:session-report` (auto), `vent:warning` (on error) |
 
 ## Bridge methods
 
