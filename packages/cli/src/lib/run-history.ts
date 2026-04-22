@@ -7,8 +7,6 @@ interface RunHistoryEntry {
   run_id: string;
   timestamp: string;
   git_sha: string | null;
-  git_branch: string | null;
-  git_dirty: boolean;
   summary: {
     status: string;
     calls_total: number;
@@ -20,14 +18,11 @@ interface RunHistoryEntry {
   call_results: Array<Record<string, unknown>>;
 }
 
-function gitInfo(): { sha: string | null; branch: string | null; dirty: boolean } {
+function gitSha(): string | null {
   try {
-    const sha = execSync("git rev-parse HEAD", { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
-    const branch = execSync("git branch --show-current", { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim() || null;
-    const status = execSync("git status --porcelain", { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
-    return { sha, branch, dirty: status.length > 0 };
+    return execSync("git rev-parse HEAD", { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
   } catch {
-    return { sha: null, branch: null, dirty: false };
+    return null;
   }
 }
 
@@ -40,7 +35,6 @@ export async function saveRunHistory(
     const dir = path.join(process.cwd(), ".vent", "runs");
     await fs.mkdir(dir, { recursive: true });
 
-    const git = gitInfo();
     const now = new Date();
     const timestamp = now.toISOString().replace(/[:.]/g, "-").slice(0, 19);
     const shortId = runId.slice(0, 8);
@@ -55,9 +49,7 @@ export async function saveRunHistory(
     const entry: RunHistoryEntry = {
       run_id: runId,
       timestamp: now.toISOString(),
-      git_sha: git.sha,
-      git_branch: git.branch,
-      git_dirty: git.dirty,
+      git_sha: gitSha(),
       summary: {
         status: runCompleteData.status as string ?? "unknown",
         calls_total: total,
@@ -66,7 +58,11 @@ export async function saveRunHistory(
         total_duration_ms: aggregate?.total_duration_ms as number | undefined,
         total_cost_usd: aggregate?.total_cost_usd as number | undefined,
       },
-      call_results: callResults.map((e) => e.metadata_json ?? {}),
+      call_results: callResults.map((e) => {
+        const meta = (e.metadata_json ?? {}) as Record<string, unknown>;
+        const result = (meta.result ?? {}) as Record<string, unknown>;
+        return { ...result, status: meta.status };
+      }),
     };
 
     const filename = `${timestamp}_${shortId}.json`;
