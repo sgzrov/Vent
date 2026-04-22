@@ -283,6 +283,9 @@ export async function executeCall(opts: ExecuteCallOpts): Promise<ExecuteCallRes
     const errorMsg = err instanceof Error ? err.message : String(err);
     console.error(`    ${callName}: error — ${errorMsg}`);
 
+    const observedToolCalls = await channel.getCallData?.().catch(() => []) ?? [];
+    const callMetadata = await channel.getCallMetadata?.().catch(() => null) ?? null;
+
     result = {
       name: spec.name,
       caller_prompt: spec.caller_prompt,
@@ -291,6 +294,8 @@ export async function executeCall(opts: ExecuteCallOpts): Promise<ExecuteCallRes
       duration_ms: Date.now() - start,
       metrics: { mean_ttfb_ms: 0 },
       error: errorMsg,
+      observed_tool_calls: observedToolCalls.length > 0 ? observedToolCalls : undefined,
+      call_metadata: callMetadata ?? undefined,
     };
     await attachRecordingUrl(result, channel, perCallChannelConfig.adapter, recordingUpload, runId);
     console.log(JSON.stringify({
