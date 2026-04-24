@@ -50,9 +50,10 @@ export interface BlandWsAudioChannelConfig {
   callOptions?: BlandCallOptions;
 }
 
-/** Audio silence detection constants (same pattern as ElevenLabs adapter) */
-const SILENCE_DURATION_MS = 350;
-const NO_FRAMES_FALLBACK_MS = 3_000;
+/** Audio energy threshold for detecting agent speech start. Below this
+ *  amplitude a frame is considered silent. Used only to fire
+ *  `platformSpeechStart` so the collector can extend a turn through
+ *  inter-sentence pauses — never to fire `platformEndOfTurn`. */
 const SILENCE_MAX_AMPLITUDE = 200;
 
 /** Comfort noise: 20ms frame at 44100Hz = 882 samples = 1764 bytes */
@@ -69,8 +70,18 @@ export class BlandWsAudioChannel extends BaseAudioChannel {
   protected override outputSampleRate = 44100;
   protected override pacingIntervalMs = 10; // 2x real-time
 
-  hasPlatformEndOfTurn = true;
-  platformEndOfTurnSettleMs = 1500;
+  // Bland's WS does not emit reliable agent speech-state events (its client SDK
+  // just generic-forwards JSON, no transcript/speech_start/speech_stop event
+  // types exist on the wire). An audio-silence heuristic on the receive PCM
+  // is too aggressive for inter-sentence TTS pauses and was truncating
+  // greetings mid-utterance. Match Vapi's strategy: drive end-of-turn from
+  // the collector's VAD with a continuation grace, and only emit
+  // `platformSpeechStart` from local energy detection so the collector can
+  // extend a turn when the agent resumes after a pause.
+  hasPlatformEndOfTurn = false;
+  preferredSilenceThresholdMs = 1200;
+  postVadContinuationMs = 1000;
+  postToolCallContinuationMs = 2000;
 
   private config: BlandWsAudioChannelConfig;
   private ws: WebSocket | null = null;
@@ -85,10 +96,10 @@ export class BlandWsAudioChannel extends BaseAudioChannel {
   private realtimeToolCalls: ObservedToolCall[] = [];
   private realtimeCitations: unknown[] = [];
 
-  // Audio silence detection state
+  // Tracks transitions silent → speaking on the receive audio so we can fire
+  // `platformSpeechStart` once per resumption (used by the collector to
+  // cancel the post-VAD continuation grace when the agent picks back up).
   private _agentSpeaking = false;
-  private _silenceStartedAt: number | null = null;
-  private _noFramesFallbackTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Comfort noise
   private comfortNoiseTimer: ReturnType<typeof setInterval> | null = null;
@@ -232,13 +243,7 @@ export class BlandWsAudioChannel extends BaseAudioChannel {
 
   async disconnect(): Promise<void> {
     this.stopComfortNoise();
-
-    if (this._noFramesFallbackTimer) {
-      clearTimeout(this._noFramesFallbackTimer);
-      this._noFramesFallbackTimer = null;
-    }
     this._agentSpeaking = false;
-    this._silenceStartedAt = null;
 
     // Close WebSocket
     if (this.ws) {
@@ -433,7 +438,7 @@ export class BlandWsAudioChannel extends BaseAudioChannel {
     }
   }
 
-  // ── Audio silence detection (ElevenLabs pattern) ──────────
+  // ── Speech-start detection on receive audio ───────────────
 
   private static isSilentFrame(pcm: Buffer): boolean {
     const int16 = new Int16Array(pcm.buffer, pcm.byteOffset, pcm.length / 2);
@@ -446,42 +451,15 @@ export class BlandWsAudioChannel extends BaseAudioChannel {
   }
 
   private processAgentAudioSilence(pcm24k: Buffer): void {
-    const now = Date.now();
-    this.resetNoFramesFallback();
-
     const silent = BlandWsAudioChannel.isSilentFrame(pcm24k);
-
     if (silent) {
-      if (this._agentSpeaking) {
-        if (this._silenceStartedAt === null) {
-          this._silenceStartedAt = now;
-        }
-        if (now - this._silenceStartedAt >= SILENCE_DURATION_MS) {
-          this._agentSpeaking = false;
-          this._silenceStartedAt = null;
-          this.emit("platformEndOfTurn");
-        }
-      }
-    } else {
-      this._silenceStartedAt = null;
-      if (!this._agentSpeaking) {
-        this._agentSpeaking = true;
-        this.emit("platformSpeechStart");
-      }
+      if (this._agentSpeaking) this._agentSpeaking = false;
+      return;
     }
-  }
-
-  private resetNoFramesFallback(): void {
-    if (this._noFramesFallbackTimer) {
-      clearTimeout(this._noFramesFallbackTimer);
+    if (!this._agentSpeaking) {
+      this._agentSpeaking = true;
+      this.emit("platformSpeechStart");
     }
-    this._noFramesFallbackTimer = setTimeout(() => {
-      this._noFramesFallbackTimer = null;
-      if (!this._agentSpeaking) return;
-      this._agentSpeaking = false;
-      this._silenceStartedAt = null;
-      this.emit("platformEndOfTurn");
-    }, NO_FRAMES_FALLBACK_MS);
   }
 
   // ── Webhook handler ───────────────────────────────────────
