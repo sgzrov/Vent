@@ -60,7 +60,12 @@ export class RetellAudioChannel extends BaseAudioChannel {
   /** Retell fires agent_stop_talking between sentences, not just at end of full
    *  response. A 1500ms settle window lets agent_start_talking cancel before we
    *  commit to resolving the turn. */
-  platformEndOfTurnSettleMs = 1500;
+  // Retell's mid-response pauses during tool-call processing can run 3-5
+  // seconds. Settle must be longer than the longest legitimate pause so
+  // agent_start_talking for the next chunk can cancel the resolve. 6s covers
+  // observed pauses with margin; real end-of-turn (agent waiting for user
+  // response) is typically >10s silence, so 6s cleanly separates the cases.
+  platformEndOfTurnSettleMs = 6000;
 
   private config: RetellAudioChannelConfig;
   private client: Retell;
@@ -78,20 +83,40 @@ export class RetellAudioChannel extends BaseAudioChannel {
   private connectTimestamp = 0;
   private disconnectTimestamp = 0;
 
-  // Real-time agent text from DataChannel "update" events
-  private agentTextBuffer = "";
-  private lastAgentContent = "";
+  // Real-time agent text from DataChannel "update" events.
+  //
+  // Retell's DataChannel update payload (measured, 2026-04-23):
+  //   { event_type: "update", transcript: [{ role, content }, ...] }
+  // Only `role` and `content` per entry — no words[], no ids, no timestamps.
+  // Retell's documented Utterance schema (get-call, LLM-websocket) includes
+  // words[0].start, but that's the pruned post-call / server-to-server view.
+  // Real-time DataChannel is stripped down.
+  //
+  // Content is progressive: the same utterance grows word-by-word across
+  // many updates ("Let" → "Let me" → "Let me pull" → ...). New utterances
+  // appear as new array entries that do not share any prefix with existing
+  // ones. So the identity signal is the content itself: if incoming extends
+  // an existing slot (startsWith), it's the same utterance; otherwise new.
+  //
+  // Slots hold the longest content we've seen. consumeAgentText returns the
+  // per-slot character delta since the last consume, which handles utterances
+  // that straddle turn boundaries without duplication or loss.
+  private agentSlots: string[] = [];
+  private returnedAgentLengthBySlot: number[] = [];
   private realtimeUserTranscripts: string[] = [];
-  private lastUserContent = "";
+  private seenUserContent = new Set<string>();
+  private loggedFirstDataEvent = false;
+  private loggedFirstAgentEntry = false;
   private realtimeToolCallEntries = new Map<string, Record<string, unknown>>();
   private pendingToolCallIds = new Set<string>();
 
-  // Retell's `update` event includes an undocumented `turntaking` field that
-  // flips to "user_turn" when Retell itself considers the agent's response done.
-  // Used to gate `agent_stop_talking` emits — that event fires per TTS chunk,
-  // not per response, so it's unreliable on its own.
+  // Diagnostic-only: log the first observed `turntaking` value so we can verify
+  // Retell DataChannel events are flowing. Don't gate behavior on this field —
+  // production logs showed Retell keeps it set to "agent_turn" through entire
+  // chunked responses, so any suppression based on it swallows real EOT signals.
+  /** Most recently seen `turntaking` value. Every change is logged. A
+   *  transition into "user_turn" from any non-user state is real end-of-turn. */
   private latestTurntaking: string | null = null;
-  private loggedFirstTurntaking = false;
 
   // Output sample rate for LiveKit WebRTC
   protected override outputSampleRate = RetellAudioChannel.LIVEKIT_SAMPLE_RATE;
@@ -149,17 +174,25 @@ export class RetellAudioChannel extends BaseAudioChannel {
     this.connectTimestamp = Date.now();
     this._connectTimestampMs = this.connectTimestamp;
     this._connectMonotonicMs = performance.now();
-    this.agentTextBuffer = "";
-    this.lastAgentContent = "";
+    this.agentSlots = [];
+    this.returnedAgentLengthBySlot = [];
+    this.loggedFirstDataEvent = false;
+    this.loggedFirstAgentEntry = false;
+    this.latestTurntaking = null;
     this.realtimeUserTranscripts = [];
-    this.lastUserContent = "";
+    this.seenUserContent.clear();
     this.realtimeToolCallEntries.clear();
 
     // ── DataChannel listener for Retell JSON events ──────────────
+    // Don't filter by participant identity. Retell publishes audio under
+    // identity="server", but DataPackets (agent_stop_talking, update with
+    // turntaking, etc.) come from a different participant — production logs
+    // showed zero DataReceived events when filtering on "server", which made
+    // platformEndOfTurn never fire and forced the collector onto local VAD,
+    // which can't handle Retell's chunked TTS pauses during tool calls.
     this.room.on(
       RoomEvent.DataReceived,
-      (payload: Uint8Array, participant?: RemoteParticipant, _kind?: unknown, _topic?: string) => {
-        if (participant?.identity !== RetellAudioChannel.SERVER_IDENTITY) return;
+      (payload: Uint8Array, _participant?: RemoteParticipant, _kind?: unknown, _topic?: string) => {
         this.handleRetellDataEvent(payload);
       }
     );
@@ -403,64 +436,133 @@ export class RetellAudioChannel extends BaseAudioChannel {
     return extractRetellCallerTranscript(this.cachedCallResponse) || this.realtimeUserTranscripts.join(" ");
   }
 
-  /** Consume accumulated real-time agent transcript text (resets buffer). */
+  /** Return agent text spoken since the previous consume.
+   *  Walks slots in insertion order, emits the character delta per slot. */
   consumeAgentText(): string {
-    const text = this.agentTextBuffer;
-    this.agentTextBuffer = "";
-    return text;
+    const deltas: string[] = [];
+    const diag: string[] = [];
+    for (let i = 0; i < this.agentSlots.length; i++) {
+      const full = this.agentSlots[i]!;
+      const returned = this.returnedAgentLengthBySlot[i] ?? 0;
+      const grew = full.length > returned;
+      diag.push(`[${i}]len=${full.length}${grew ? `+${full.length - returned}` : ""}`);
+      if (grew) {
+        deltas.push(full.slice(returned).trimStart());
+        this.returnedAgentLengthBySlot[i] = full.length;
+      }
+    }
+    // Full per-slot snapshot on every consume so we can prove whether Retell
+    // shipped a given utterance at all. If the Wednesday-slots sentence never
+    // appears in any slot across consumes, Retell simply didn't send it. If
+    // it appears, we can see exactly what content/length was there.
+    if (this.agentSlots.length > 0) {
+      console.log(`    [retell] consume slots=${this.agentSlots.length} ${diag.join(" ")}`);
+      for (let i = 0; i < this.agentSlots.length; i++) {
+        console.log(`    [retell] slot[${i}]="${this.agentSlots[i]!.slice(0, 200)}${this.agentSlots[i]!.length > 200 ? "…" : ""}"`);
+      }
+    }
+    return deltas.join(" ").trim();
+  }
+
+  /** Merge an incoming agent content string into our slot list.
+   *  Matches by prefix relationship against existing slots:
+   *  - Incoming extends an existing slot → grow that slot.
+   *  - Existing slot extends the incoming → no-op (we already have a later
+   *    snapshot; sliding-window re-sends land here).
+   *  - No prefix match on any slot → new utterance, new slot. */
+  private mergeAgentContent(content: string): void {
+    if (!content) return;
+    for (let i = 0; i < this.agentSlots.length; i++) {
+      const existing = this.agentSlots[i]!;
+      if (existing === content) return;
+      if (content.startsWith(existing)) {
+        this.agentSlots[i] = content;
+        return;
+      }
+      if (existing.startsWith(content)) return;
+    }
+    this.agentSlots.push(content);
+    this.returnedAgentLengthBySlot.push(0);
   }
 
   // ── Private helpers ────────────────────────────────────────────
 
   private handleRetellDataEvent(payload: Uint8Array): void {
+    const text = new TextDecoder().decode(payload);
+    let event: {
+      event_type?: string;
+      transcript?: Array<{ role: string; content: string }>;
+      [key: string]: unknown;
+    };
     try {
-      const text = new TextDecoder().decode(payload);
-      const event = JSON.parse(text) as {
-        event_type: string;
-        transcript?: Array<{ role: string; content: string }>;
-        [key: string]: unknown;
-      };
-
-      switch (event.event_type) {
-        case "agent_stop_talking":
-          // Suppress if Retell itself still thinks it's the agent's turn —
-          // this stop event is a mid-response TTS chunk boundary, not EOT.
-          if (this.latestTurntaking === "agent_turn") {
-            console.log(`    [retell] agent_stop_talking suppressed — turntaking=agent_turn (chunk boundary)`);
-          } else {
-            this.emit("platformEndOfTurn");
-          }
-          break;
-
-        case "agent_start_talking":
-          this.emit("platformSpeechStart");
-          break;
-
-        case "update":
-          if (event.transcript) {
-            // Extract latest agent text — transcript is a sliding window of last ~5 sentences
-            for (const entry of event.transcript) {
-              if (entry.role === "agent" && entry.content !== this.lastAgentContent) {
-                this.agentTextBuffer += (this.agentTextBuffer ? " " : "") + entry.content;
-                this.lastAgentContent = entry.content;
-              } else if (entry.role === "user" && entry.content !== this.lastUserContent) {
-                this.realtimeUserTranscripts.push(entry.content);
-                this.lastUserContent = entry.content;
-              }
-            }
-          }
-          if (typeof event.turntaking === "string") {
-            this.latestTurntaking = event.turntaking;
-            if (!this.loggedFirstTurntaking) {
-              this.loggedFirstTurntaking = true;
-              console.log(`    [retell] first observed turntaking="${event.turntaking}"`);
-            }
-          }
-          this.captureRealtimeToolCallEntries(event);
-          break;
-      }
+      event = JSON.parse(text);
     } catch {
-      // Ignore malformed data
+      if (!this.loggedFirstDataEvent) {
+        this.loggedFirstDataEvent = true;
+        console.log(`    [retell] first DataReceived (non-JSON) len=${text.length} head="${text.slice(0, 60)}"`);
+      }
+      return;
+    }
+
+    if (!this.loggedFirstDataEvent) {
+      this.loggedFirstDataEvent = true;
+      console.log(`    [retell] first DataReceived event_type="${event.event_type ?? "?"}"`);
+    }
+
+    switch (event.event_type) {
+      case "agent_stop_talking":
+        // Retell fires this per chunk, not per response — between every sentence
+        // and during tool-call thinking. Emit platformEndOfTurn anyway; the
+        // collector's settle window (platformEndOfTurnSettleMs) debounces: if
+        // agent_start_talking (→ platformSpeechStart) cancels within the
+        // window, the turn extends; if the window elapses with no resumption,
+        // the agent is genuinely done and the turn resolves. The settle MUST
+        // be longer than Retell's longest mid-response pause (tool calls can
+        // take 4–5s), which is why platformEndOfTurnSettleMs is set high.
+        this.emit("platformEndOfTurn");
+        break;
+
+      case "agent_start_talking":
+        this.emit("platformSpeechStart");
+        break;
+
+      case "update":
+        if (event.transcript) {
+          for (const entry of event.transcript) {
+            if (entry.role === "agent") {
+              // Snapshot the entry shape on first sight. If Retell ever adds
+              // a stable id (words[0].start, utterance_id, segment_id...) we'll
+              // see it in the `keys=` list and can switch to that signal.
+              if (!this.loggedFirstAgentEntry) {
+                this.loggedFirstAgentEntry = true;
+                console.log(
+                  `    [retell] first agent entry: keys=${Object.keys(entry).join(",")} ` +
+                  `contentLen=${entry.content.length}`
+                );
+              }
+              this.mergeAgentContent(entry.content);
+            } else if (entry.role === "user" && !this.seenUserContent.has(entry.content)) {
+              this.realtimeUserTranscripts.push(entry.content);
+              this.seenUserContent.add(entry.content);
+            }
+          }
+        }
+        // turntaking is Retell's authoritative turn-boundary signal. Log every
+        // change so we can see its actual flow. Transition INTO user_turn from
+        // any non-user state means the agent has yielded — that's end-of-turn.
+        if (typeof event.turntaking === "string") {
+          const prev = this.latestTurntaking;
+          if (prev !== event.turntaking) {
+            this.latestTurntaking = event.turntaking;
+            console.log(`    [retell] turntaking: ${prev ?? "null"} → ${event.turntaking}`);
+            if (prev !== null && prev !== "user_turn" && event.turntaking === "user_turn") {
+              console.log(`    [retell] emitting platformEndOfTurn (turntaking → user_turn)`);
+              this.emit("platformEndOfTurn");
+            }
+          }
+        }
+        this.captureRealtimeToolCallEntries(event);
+        break;
     }
   }
 
