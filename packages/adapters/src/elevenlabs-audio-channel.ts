@@ -531,14 +531,36 @@ export class ElevenLabsAudioChannel extends BaseAudioChannel {
         }
 
         case "agent_response_correction": {
+          // Per ElevenLabs SDK: this event carries both `original_agent_response`
+          // and `corrected_agent_response`. It is a REPLACE, not an append —
+          // the corrected version supersedes the original. Appending both
+          // duplicates the text in the buffer (prior bug). Find the trailing
+          // occurrence of the original and swap it for the corrected version.
           const evt = event.agent_response_correction_event as Record<string, unknown> | undefined;
+          const original = firstString(
+            evt?.original_agent_response,
+            event.original_agent_response,
+          )?.trim();
           const corrected = firstString(
             evt?.corrected_agent_response,
             evt?.agent_response,
             event.corrected_agent_response,
             event.agent_response,
-          );
-          if (corrected) {
+          )?.trim();
+          if (!corrected) break;
+          if (original && this.agentTextBuffer.endsWith(original)) {
+            this.agentTextBuffer = this.agentTextBuffer.slice(0, -original.length) + corrected;
+          } else if (original && this.agentTextBuffer.includes(original)) {
+            // Rare: correction targets a non-trailing prior response (the
+            // agent self-corrected after more text already arrived). Replace
+            // the last occurrence.
+            const idx = this.agentTextBuffer.lastIndexOf(original);
+            this.agentTextBuffer =
+              this.agentTextBuffer.slice(0, idx) +
+              corrected +
+              this.agentTextBuffer.slice(idx + original.length);
+          } else {
+            // No original given or not found — append as a standalone turn.
             this.agentTextBuffer += (this.agentTextBuffer ? " " : "") + corrected;
           }
           break;
