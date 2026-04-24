@@ -229,8 +229,23 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
   private lastAgentState: string | null = null;
   private roomDisconnected = false;
 
-  // Agent transcript accumulator for consumeAgentText()
+  // Agent transcript accumulator for consumeAgentText(). Each LiveKit STT
+  // segment fires an interim stream followed by a final stream, both sharing
+  // a segment_id. We only append final streams and dedup by segment_id so a
+  // retry (or a duplicate final) can't double-count.
   private agentTextBuffer = "";
+  private finalizedAgentSegments = new Set<string>();
+  // Cumulative receive-path stats, for diagnosing "agent went silent" failures.
+  // Surfaced via getReceiveDiagnostics() and logged by the executor when a
+  // collection times out with no speech detected.
+  private rxTracks = 0;
+  private rxFrames = 0;
+  private rxSumAbs = 0;
+  private rxSampleCount = 0;
+  private rxPeakAbs = 0;
+  private rxLastFrameAt: number | null = null;
+  private rxLastAssistantItemAt: number | null = null;
+  private rxLastAgentStateAt: number | null = null;
   private callMetadata: CallMetadata = { platform: "livekit" };
   private livekitMetricTimings: LiveKitMetricTiming[] = [];
   private livekitMetricTimingIndexBySpeechId = new Map<string, number>();
@@ -287,6 +302,15 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
     this.agentIdentity = null;
     this.lastAgentState = null;
     this.agentTextBuffer = "";
+    this.finalizedAgentSegments.clear();
+    this.rxTracks = 0;
+    this.rxFrames = 0;
+    this.rxSumAbs = 0;
+    this.rxSampleCount = 0;
+    this.rxPeakAbs = 0;
+    this.rxLastFrameAt = null;
+    this.rxLastAssistantItemAt = null;
+    this.rxLastAgentStateAt = null;
     this.callMetadata = { platform: "livekit" };
 
     // On Fly.io (and other containerized environments), direct UDP is unreliable
@@ -408,7 +432,17 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
             }
           }
         } else {
-          // Agent transcription — capture first chunk timestamp for LLM latency + accumulate text
+          // Agent transcription. Per LiveKit docs, every STT segment produces
+          // TWO streams sharing a segment_id: an interim stream (while the
+          // segment is being processed) and a final stream (once complete).
+          // "Replace interim messages with the final message when
+          // lk.transcription_final is true." Accumulating both duplicates
+          // every segment's text. We still read interim streams to capture
+          // the first-token timestamp for TTFW latency, but only append
+          // content from final streams — and dedup by segment_id in case a
+          // retry produces the same final twice.
+          const isFinal = reader.info?.attributes?.["lk.transcription_final"] === "true";
+          const segmentId = reader.info?.attributes?.["lk.segment_id"];
           let firstChunkCaptured = false;
           const chunks: string[] = [];
           for await (const chunk of reader) {
@@ -420,6 +454,9 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
               firstChunkCaptured = true;
             }
           }
+          if (!isFinal) return;
+          if (segmentId && this.finalizedAgentSegments.has(segmentId)) return;
+          if (segmentId) this.finalizedAgentSegments.add(segmentId);
           const text = chunks.join("");
           if (text) {
             this.agentTextBuffer += (this.agentTextBuffer ? " " : "") + text;
@@ -746,6 +783,26 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
       .join(" ");
   }
 
+  /** Receive-path diagnostics. Used by executor to log rich context when a
+   *  collection times out with no speech — lets us tell whether the LiveKit
+   *  agent never published a track, published a track with zeroed samples
+   *  (TTS failure), or produced audio that was too quiet for VAD. */
+  getReceiveDiagnostics(): string {
+    const now = Date.now();
+    const meanAbs = this.rxSampleCount > 0 ? Math.round(this.rxSumAbs / this.rxSampleCount) : 0;
+    const lastFrameAge = this.rxLastFrameAt !== null ? now - this.rxLastFrameAt : null;
+    const lastAssistantAge = this.rxLastAssistantItemAt !== null ? now - this.rxLastAssistantItemAt : null;
+    const lastAgentStateAge = this.rxLastAgentStateAt !== null ? now - this.rxLastAgentStateAt : null;
+    return (
+      `[livekit-diag] tracks=${this.rxTracks} frames=${this.rxFrames} ` +
+      `meanAbs=${meanAbs} peakAbs=${this.rxPeakAbs} ` +
+      `lastFrameAge=${lastFrameAge ?? "n/a"}ms ` +
+      `agentState="${this.lastAgentState ?? "?"}" agentStateAge=${lastAgentStateAge ?? "n/a"}ms ` +
+      `lastAssistantItemAge=${lastAssistantAge ?? "n/a"}ms ` +
+      `agentIdentity="${this.agentIdentity ?? "?"}" roomDisconnected=${this.roomDisconnected}`
+    );
+  }
+
   // ── Private helpers ─────────────────────────────────────────
 
   private handleToolCallData(payload: Uint8Array): void {
@@ -893,6 +950,7 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
     const item = firstRecord(event.item, event.conversation_item);
     const role = item ? firstString(item["role"])?.toLowerCase() : undefined;
     if (role === "assistant") {
+      this.rxLastAssistantItemAt = Date.now();
       this.emit("platformEndOfTurn");
     }
   }
@@ -1031,6 +1089,7 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
     const turn = this.currentTurnIndex >= 0 ? this.turnTimings[this.currentTurnIndex] : undefined;
     const transition = applyLiveKitAgentStateChange(this.lastAgentState, turn, agentState, now);
     this.lastAgentState = transition.nextLastAgentState;
+    this.rxLastAgentStateAt = now;
     if (transition.emitPlatformSpeechStart) {
       this.emit("platformSpeechStart");
     }
@@ -1059,6 +1118,7 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
   ): void {
     const who = `participant=${participantIdentity ?? "?"} kind=${participantKind ?? "?"}`;
     console.log(`[livekit] startReadingTrack ${who}`);
+    this.rxTracks++;
     const stream = new AudioStream(track, this.livekitSampleRate, 1);
     const reader = stream.getReader();
     let frameCount = 0;
@@ -1091,6 +1151,15 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
           sumAbs += frameSumAbs;
           sampleCount += rawSamples.length;
           if (framePeak > peakAbs) peakAbs = framePeak;
+          // Accumulate into instance stats so getReceiveDiagnostics() can expose
+          // them after the fact (used by executor when a collection timeout
+          // fires with no speech, to distinguish "no audio track" from "all
+          // zero samples" from "audio exists but below VAD threshold").
+          this.rxFrames++;
+          this.rxSumAbs += frameSumAbs;
+          this.rxSampleCount += rawSamples.length;
+          if (framePeak > this.rxPeakAbs) this.rxPeakAbs = framePeak;
+          this.rxLastFrameAt = Date.now();
 
           if (frameCount === 1) {
             console.log(
