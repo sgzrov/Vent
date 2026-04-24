@@ -77,9 +77,19 @@ function mergeFracturedAgentTurns(turns: ConversationTurn[]): ConversationTurn[]
   return merged;
 }
 
+export interface RunConversationCallOpts {
+  /** Called after channel.connect() resolves, while runConversationCall owns
+   *  the lifecycle. Used by the outer runner to start recording upload after
+   *  the channel is ready — kept as a callback so connect() can be invoked
+   *  here, not before runConversationCall, so the STT listener is attached
+   *  BEFORE the transport starts emitting audio. */
+  onConnected?: () => Promise<void>;
+}
+
 export async function runConversationCall(
   spec: ConversationCallSpec,
   channel: AudioChannel,
+  opts: RunConversationCallOpts = {},
 ): Promise<ConversationCallResult> {
   const startTime = performance.now();
   const transcript: ConversationTurn[] = [];
@@ -103,6 +113,19 @@ export async function runConversationCall(
     batchVAD.init(),
     transcriber.connect(),
   ]);
+
+  // Attach the opening STT feed BEFORE connecting the channel's transport so
+  // no audio frames can arrive with zero listeners. Greeting-start clipping
+  // (the "Hi, Thanks" prefix getting dropped from the transcript) comes from
+  // this exact window — any audio emitted before the listener attaches is
+  // lost (we deliberately don't buffer, since bursting a buffer into Deepgram
+  // collapses its endpointing). Detached again after the opening finalize
+  // so subsequent turns can manage their own attach/detach without duplicate
+  // listeners double-feeding Deepgram.
+  const openingFeedSTT = (chunk: Buffer) => transcriber.feedAudio(chunk);
+  channel.on("audio", openingFeedSTT);
+  await channel.connect();
+  await opts.onConnected?.();
 
   // Resolve accent → TTS voice ID (accent takes priority over language default)
   const ttsVoiceId = spec.caller_audio?.accent
@@ -177,9 +200,9 @@ export async function runConversationCall(
       // ── Greeting turn: just collect agent audio, no caller speech ──
       if (turn === -1) {
         const vadStart = performance.now();
-        await transcriber.resetForNextTurn();
-        const feedSTT = (chunk: Buffer) => transcriber.feedAudio(chunk);
-        channel.on("audio", feedSTT);
+        // No resetForNextTurn or feedSTT attach here — transcriber is already
+        // connected and feedSTT is already attached at call setup so the
+        // opening's first audio chunks aren't lost to an unattached listener.
         console.log(`    [opening] collect_start t=${sinceStartMs(startTime)}ms`);
 
         turnVAD.silenceThresholdMs = adaptiveThreshold.thresholdMs;
@@ -192,7 +215,6 @@ export async function runConversationCall(
             debugLabel: "opening",
           }
         );
-        channel.off("audio", feedSTT);
         console.log(
           `    [opening] collect_end t=${sinceStartMs(startTime)}ms bytes=${agentAudio.length} ` +
           `timedOut=${timedOut} speechOnset=${stats.speechOnsetAt !== null}`
@@ -209,10 +231,13 @@ export async function runConversationCall(
           const { text } = await transcriber.finalize();
           greetingSttMs = Math.round(performance.now() - sttStart);
           greetingText = text;
-          channel.consumeAgentText?.();
-        } else {
-          channel.consumeAgentText?.();
         }
+        // Release the call-level STT listener now that the opening is done.
+        // Subsequent turns manage their own feedSTT attach/detach around
+        // collection to avoid feeding Deepgram during caller-LLM/TTS idle
+        // audio (which slows CloseStream).
+        channel.off("audio", openingFeedSTT);
+        channel.consumeAgentText?.();
 
         if (greetingText) {
           const vadMs = Math.round(performance.now() - vadStart);
@@ -393,6 +418,8 @@ export async function runConversationCall(
             break;
           }
           channel.off("audio", feedSTT);
+          const diag = channel.getReceiveDiagnostics?.();
+          if (diag) console.log(diag);
           throw new Error(
             `Agent stopped responding — no speech detected for 30s after turn ${turn + 1}. ` +
             `This may indicate the agent's backend (STT/LLM/TTS) is overwhelmed or rate-limited.`
@@ -409,7 +436,10 @@ export async function runConversationCall(
           const sttStart = performance.now();
           let { text, confidence } = await transcriber.finalize();
           const sttMs = Math.round(performance.now() - sttStart);
-          let textSource = text ? "stt" : "empty";
+          const textSource = text ? "stt" : "empty";
+          // Drain platform transcript buffer so it doesn't accumulate across
+          // turns. Vent's own STT is authoritative — we listen like a real
+          // caller would hear the call.
           channel.consumeAgentText?.();
 
           agentText = text;
@@ -745,6 +775,8 @@ export async function runConversationCall(
       // Fail fast: if no speech detected within timeout, agent has stopped responding
       if (timedOut && stats.speechOnsetAt === null) {
         channel.off("audio", feedSTT);
+        const diag = channel.getReceiveDiagnostics?.();
+        if (diag) console.log(diag);
         throw new Error(
           `Agent stopped responding — no speech detected for 30s after turn ${turn + 1}. ` +
           `This may indicate the agent's backend (STT/LLM/TTS) is overwhelmed or rate-limited.`
@@ -790,8 +822,9 @@ export async function runConversationCall(
         const sttStart = performance.now();
         let { text, confidence } = await transcriber.finalize();
         let sttMs = Math.round(performance.now() - sttStart);
-        let textSource = text ? "stt" : "empty";
-        // Consume and discard platform transcript buffers. Vent STT stays authoritative.
+        const textSource = text ? "stt" : "empty";
+        // Drain platform buffer — Vent's own STT is authoritative (we listen
+        // like a real caller).
         channel.consumeAgentText?.();
 
         agentText = text;
