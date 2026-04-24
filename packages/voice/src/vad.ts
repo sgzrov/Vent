@@ -24,9 +24,22 @@ export interface VoiceActivityDetectorConfig {
    * Frames below this are treated as silence without consulting the neural
    * network. Filters WebRTC comfort noise (~30-200 RMS) that otherwise
    * triggers false positives and prevents end-of-turn detection.
-   * Default: 250
+   * Default: 100 — chosen to sit just above typical comfort-noise floor so
+   * quieter platform TTS (Retell/LiveKit, meanAbs often 200-300) reaches the
+   * neural model. Isolated comfort-noise false positives that slip past the
+   * gate are filtered by `minSpeechOnsetFrames` hysteresis below.
    */
   energyFloorRms?: number;
+  /**
+   * Minimum consecutive voice-classified frames required to flip from the
+   * "no speech yet" state to "speech". Once in speech state, a single voice
+   * frame resets the silence counter — this hysteresis only applies to the
+   * initial onset. Filters isolated neural-VAD false positives on comfort
+   * noise (observed ~17% single-frame rate) without losing sensitivity to
+   * real speech onsets (which last many consecutive frames).
+   * Default: 2 (≈32ms at 16kHz / hopSize 256).
+   */
+  minSpeechOnsetFrames?: number;
 }
 
 interface TenVADModule {
@@ -54,10 +67,15 @@ export class VoiceActivityDetector {
   private readonly hopSize: number;
   private readonly vadThreshold: number;
   private readonly energyFloorRms: number;
+  private readonly minSpeechOnsetFrames: number;
   /** Silence duration (ms) after speech before returning "end_of_turn". Mutable for adaptive thresholds. */
   silenceThresholdMs: number;
 
   private hasSpeech = false;
+  /** Count of consecutive "voice" frames while hasSpeech is still false.
+   *  Reset on any non-voice frame. Used to gate speech-onset transitions
+   *  so a single false-positive voice frame can't flip the state. */
+  private pendingSpeechFrames = 0;
 
   // Audio-timeline silence tracking (frame count, not wall-clock).
   // Each frame = hopSize samples at 16kHz = hopSize/16 ms.
@@ -81,7 +99,8 @@ export class VoiceActivityDetector {
     this.hopSize = config.hopSize ?? 256;
     this.vadThreshold = config.vadThreshold ?? 0.5;
     this.silenceThresholdMs = config.silenceThresholdMs ?? 1500;
-    this.energyFloorRms = config.energyFloorRms ?? 250;
+    this.energyFloorRms = config.energyFloorRms ?? 100;
+    this.minSpeechOnsetFrames = config.minSpeechOnsetFrames ?? 2;
     this.sampleBuffer = new Int16Array(this.hopSize);
     // 256 samples at 16kHz = 16ms per frame
     this.frameDurationMs = (this.hopSize / 16000) * 1000;
@@ -188,6 +207,7 @@ export class VoiceActivityDetector {
 
     if (rms < this.energyFloorRms) {
       // Below noise floor — treat as silence without consulting the model
+      this.pendingSpeechFrames = 0;
       if (!this.hasSpeech) return "silence";
       this.silenceFrames++;
       if (this.silenceFrames * this.frameDurationMs >= this.silenceThresholdMs) {
@@ -218,12 +238,24 @@ export class VoiceActivityDetector {
     const isVoice = mod.HEAP32[this.flagPtr >> 2] === 1;
 
     if (isVoice) {
-      this.hasSpeech = true;
       this.silenceFrames = 0;
-      return "speech";
+      if (this.hasSpeech) {
+        // Already in speech state — a single voice frame is enough to stay there.
+        return "speech";
+      }
+      // First-onset hysteresis: require minSpeechOnsetFrames consecutive voice
+      // frames before flipping to the "speech" state. Filters isolated neural
+      // false positives that the energy gate let through.
+      this.pendingSpeechFrames++;
+      if (this.pendingSpeechFrames >= this.minSpeechOnsetFrames) {
+        this.hasSpeech = true;
+        return "speech";
+      }
+      return "silence";
     }
 
-    // No voice detected
+    // Not voice — reset pending onset counter and handle silence
+    this.pendingSpeechFrames = 0;
     if (!this.hasSpeech) {
       return "silence";
     }
@@ -247,6 +279,7 @@ export class VoiceActivityDetector {
   reset(): void {
     this.hasSpeech = false;
     this.silenceFrames = 0;
+    this.pendingSpeechFrames = 0;
     this.sampleBufferOffset = 0;
 
     // Reset WASM model state by destroying and recreating the VAD handle.
