@@ -107,6 +107,13 @@ export async function collectUntilEndOfTurn(
       /** Wall-clock time when VAD first fired EOT in this turn. Reset on genuine
        *  speech resumption. Used to cap how long noise can extend the turn. */
       let firstEOTAt: number | null = null;
+      /** Wall-clock time of the most recent platformEndOfTurn signal from the
+       *  adapter. Lets the VAD silence path treat a recent platform EOT as
+       *  authoritative (resolve via drain) instead of waiting 3s for another
+       *  platform EOT that won't come — Retell only sends one final
+       *  agent_stop_talking, then goes silent waiting for the user. */
+      let lastPlatformEOTAt: number | null = null;
+      const PLATFORM_EOT_FRESH_MS = 5000;
 
       const clearDeferredEndOfTurn = () => {
         if (!vadDeferTimer) return;
@@ -220,6 +227,12 @@ export async function collectUntilEndOfTurn(
               vadEOTFired = false;
               platformEOTFired = false;
               platformConfirmedSilent = false;
+              // Real speech (RMS > audibleDrainRmsThreshold) resumed — this is a
+              // legitimate continuation, not noise. Reset the extension budget so
+              // the next pause-then-resume cycle gets a fresh window. Without this,
+              // chunked TTS responses with multiple tool-call pauses (Retell, etc.)
+              // accumulate against an 8s cap and resolve mid-response.
+              firstEOTAt = null;
               vad.reset();
             }
           }
@@ -239,6 +252,7 @@ export async function collectUntilEndOfTurn(
               vadEOTFired = false;
               platformEOTFired = false;
               platformConfirmedSilent = false;
+              firstEOTAt = null;
               vad.reset();
             }
           }
@@ -331,7 +345,18 @@ export async function collectUntilEndOfTurn(
               }, postVadContinuationMs);
             }
           } else if (opts.preferPlatformEOT && !platformEOTFired) {
-            if (!vadDeferTimer) {
+            // If the platform recently fired EOT (within FRESH window) and audible
+            // tail audio reset platformEOTFired, trust the platform signal — the
+            // tail was the agent finishing, not resuming. Resolve via drain
+            // instead of waiting 3s for a phantom new platform EOT (Retell only
+            // emits one final agent_stop_talking, then goes silent).
+            const platformAgeMs = lastPlatformEOTAt !== null ? now - lastPlatformEOTAt : Infinity;
+            if (platformAgeMs < PLATFORM_EOT_FRESH_MS && !platformDrainTimer) {
+              console.log(
+                `    [vad] end_of_turn detected (platformEndOfTurn was ${platformAgeMs}ms ago) — resolving via drain`
+              );
+              resolveAfterPlatformDrain("end_of_turn after recent platformEndOfTurn");
+            } else if (!vadDeferTimer) {
               vadEOTFired = true;
               if (firstEOTAt === null) firstEOTAt = now;
               console.log(`    [vad] end_of_turn detected — waiting up to 3000ms for platformEndOfTurn`);
@@ -404,6 +429,7 @@ export async function collectUntilEndOfTurn(
         if (!opts.preferPlatformEOT) return;
         platformEOTFired = true;
         platformConfirmedSilent = true;
+        lastPlatformEOTAt = Date.now();
         console.log(`    [vad] platformEndOfTurn fired vadEOTFired=${vadEOTFired} toolCallInProgress=${toolCallInProgress}`);
         if (toolCallInProgress) {
           console.log(`    [vad] platformEndOfTurn ignored while tool call is active`);
