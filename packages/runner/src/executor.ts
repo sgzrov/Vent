@@ -268,9 +268,15 @@ export async function executeCall(opts: ExecuteCallOpts): Promise<ExecuteCallRes
   let recordingUpload: ActiveRecordingUpload | null = null;
 
   try {
-    await channel.connect();
-    recordingUpload = await startRecordingUpload(channel, spec.name, spec.caller_prompt, runId);
-    const callResult = await runConversationCall(spec, channel);
+    // Defer channel.connect() into runConversationCall so the STT listener
+    // is attached BEFORE the transport starts emitting audio. Without this,
+    // the first ~500ms of the agent's greeting flows to zero listeners and
+    // gets dropped — Deepgram only sees audio starting mid-sentence.
+    const callResult = await runConversationCall(spec, channel, {
+      onConnected: async () => {
+        recordingUpload = await startRecordingUpload(channel, spec.name, spec.caller_prompt, runId);
+      },
+    });
     result = callResult;
     await attachRecordingUrl(result, channel, perCallChannelConfig.adapter, recordingUpload, runId);
     console.log(`    Status: ${result.status} (${result.duration_ms}ms)`);

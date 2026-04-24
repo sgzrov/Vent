@@ -3,6 +3,7 @@ dist/
 .next/
 .turbo/
 .env*
+!.env.example
 *.tsbuildinfo
 .DS_Store
 coverage/

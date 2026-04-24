@@ -46,6 +46,7 @@ export class StreamingTranscriber {
 
   /** Track whether we've received any audio this turn. */
   private hasFedAudio = false;
+  private bytesFed = 0;
 
   /** Audio buffered while connection is being established. */
   private pendingAudio: Buffer[] = [];
@@ -83,9 +84,18 @@ export class StreamingTranscriber {
         // end-of-utterance pattern for noisy audio. endpointing alone is
         // unreliable because it needs actual silence, which platform audio
         // streams often don't have (they send low-level noise frames).
+        //
+        // Short endpointing (300ms) causes Deepgram to split a multi-sentence
+        // agent response into many segments, one per sentence. On each new
+        // segment, Deepgram's model needs ~100–200ms to re-lock onto speech
+        // and the first word often gets clipped ("Hi." and "This", "How"
+        // dropped from real agent greetings). 1200ms keeps a multi-sentence
+        // response as a single segment so segmentation doesn't steal the
+        // first words — normal inter-sentence pauses (300–800ms) stay part
+        // of the same segment.
         interim_results: true,
         utterance_end_ms: 1000,
-        endpointing: 300,
+        endpointing: 1200,
         vad_events: false,
         ...(this.language ? { language: this.language } : {}),
       });
@@ -140,6 +150,9 @@ export class StreamingTranscriber {
           if (msg.is_final) {
             if (text.length > 0) {
               this.pushSegmentDeduped({ text, confidence });
+              console.log(`[STT] is_final conf=${confidence.toFixed(2)} text="${text.slice(0, 80)}"`);
+            } else {
+              console.log(`[STT] is_final EMPTY conf=${confidence.toFixed(2)}`);
             }
             // A finalized segment supersedes any pending interim for it.
             this.latestInterim = null;
@@ -181,6 +194,7 @@ export class StreamingTranscriber {
       );
       this.connection.send(audio);
       this.hasFedAudio = true;
+      this.bytesFed += chunk.byteLength;
     } else {
       // Buffer audio so it can be replayed after reconnect
       this.pendingAudio.push(Buffer.from(chunk));
@@ -219,7 +233,8 @@ export class StreamingTranscriber {
     }
 
     const segmentsBefore = this.finalSegments.length;
-    console.log(`[STT] finalize segments=${segmentsBefore}`);
+    const audioSec = (this.bytesFed / 2 / this.sampleRate).toFixed(1);
+    console.log(`[STT] finalize segments=${segmentsBefore} bytesFed=${this.bytesFed} (~${audioSec}s)`);
 
     const closeStreamAt = Date.now();
 
@@ -265,10 +280,13 @@ export class StreamingTranscriber {
         debounceTimer = setTimeout(() => finish(reason), ms);
       };
 
-      // With endpointing enabled, most is_finals have already arrived
-      // before finalize() is called. CloseStream flushes any trailing
-      // interim (typically a short tail). 500ms covers the round-trip.
-      armDebounce(500, "idle");
+      // After CloseStream, Deepgram flushes any remaining transcripts as
+      // is_finals and then sends Close. Wait for Close as the primary signal.
+      // The per-is_final debounce exists only for the (rare) case where Close
+      // never arrives — in that case we wait for is_finals to stop coming.
+      // Buffer timings are generous: chunked TTS audio with pauses can make
+      // Deepgram emit is_finals seconds apart; short debounces cut off content.
+      armDebounce(2000, "idle");
 
       conn.on(LiveTranscriptionEvents.Transcript, (msg: LiveTranscriptionEvent) => {
         if (msg.is_final) {
@@ -276,7 +294,7 @@ export class StreamingTranscriber {
           const alt = msg.channel?.alternatives?.[0];
           const text = (alt?.transcript ?? "").slice(0, 60);
           console.log(`[STT] finalize is_final t+${elapsed}ms text="${text}"`);
-          armDebounce(250, "flushed");
+          armDebounce(1500, "flushed");
         }
       });
 
@@ -284,7 +302,7 @@ export class StreamingTranscriber {
       conn.once(LiveTranscriptionEvents.Close, () => finish("closed"));
 
       // Hard deadline — bound worst-case.
-      const deadline = setTimeout(() => finish("deadline"), 1500);
+      const deadline = setTimeout(() => finish("deadline"), 5000);
 
       conn.requestClose();
     });
@@ -297,6 +315,7 @@ export class StreamingTranscriber {
   async resetForNextTurn(): Promise<void> {
     this.finalSegments = [];
     this.latestInterim = null;
+    this.bytesFed = 0;
     this.hasFedAudio = false;
     this.pendingAudio = [];
     if (!this.connection?.isConnected()) {
