@@ -1,5 +1,11 @@
 # vent-hq
 
+## 0.10.1
+
+### Patch Changes
+
+- 5a02a64: Warn coding agents not to hand-roll `vent:session-report` for LiveKit agents. The skill files now flag that seeing the event in the WebSocket-mode examples does not authorize publishing it manually from a LiveKit agent — `ctx.addShutdownCallback` runs after `room.disconnect()` and the publish fails with "engine is closed". In LiveKit mode only publish what the helper explicitly supports.
+
 ## 0.9.19
 
 ### Patch Changes
