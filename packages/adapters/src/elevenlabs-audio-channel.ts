@@ -74,8 +74,10 @@ export class ElevenLabsAudioChannel extends BaseAudioChannel {
   private static readonly SILENCE_DURATION_MS = 350;
 
   /** If no audio frames arrive for this long, force platformEndOfTurn.
-   *  Matches Pipecat's BOT_VAD_STOP_FALLBACK_SECS (3s). */
-  private static readonly NO_FRAMES_FALLBACK_MS = 3_000;
+   *  Bumped from Pipecat's 3s default to 5s to tolerate brief network/codec
+   *  hiccups mid-utterance — a 3s gap during a long agent response was
+   *  triggering false EOT before the rest of the utterance arrived. */
+  private static readonly NO_FRAMES_FALLBACK_MS = 5_000;
 
   /** ElevenLabs has no explicit "agent stopped talking" signal — we detect
    *  it from audio silence, mirroring their SDK's playback-drain approach. */
@@ -195,7 +197,12 @@ export class ElevenLabsAudioChannel extends BaseAudioChannel {
     );
 
     // ── Disconnect detection ─────────────────────────────────────
+    // Same pattern as retell-audio-channel: clear `collecting` so the
+    // `connected` getter returns false (it's `room !== null && collecting`),
+    // but don't null `room`/`audioSource`/`localTrack` — `disconnect()`
+    // needs them to release the FFI handles cleanly.
     this.room.once(RoomEvent.Disconnected, () => {
+      this.collecting = false;
       this.emit("disconnected");
     });
 

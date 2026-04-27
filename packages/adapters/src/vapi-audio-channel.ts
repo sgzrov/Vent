@@ -656,6 +656,14 @@ export class VapiAudioChannel extends BaseAudioChannel {
     });
   }
 
+  // Shared post-call budget across all fetchCallResponse callers (getCallData,
+  // getCallMetadata, getPostCallMessages). Without this, each caller burned
+  // its own ~15s polling budget and a single failed Vapi call could keep the
+  // worker busy ~45s past hangup. Once the budget is exhausted the pollers
+  // return what they have (possibly null) and the runner moves on.
+  private postCallBudgetDeadlineMs: number | null = null;
+  private static readonly POST_CALL_TOTAL_BUDGET_MS = 15_000;
+
   private async fetchCallResponse(
     opts: { requireMessages?: boolean } = {}
   ): Promise<VapiCallResponse | null> {
@@ -664,6 +672,10 @@ export class VapiAudioChannel extends BaseAudioChannel {
     }
     if (!this.callId) return null;
 
+    if (this.postCallBudgetDeadlineMs == null) {
+      this.postCallBudgetDeadlineMs = Date.now() + VapiAudioChannel.POST_CALL_TOTAL_BUDGET_MS;
+    }
+
     // Poll with exponential backoff — Vapi needs time to finalize artifacts after disconnect.
     // Keep the richest ended response we have seen, but do not freeze on the first bare
     // "ended" state if messages are still missing.
@@ -671,7 +683,13 @@ export class VapiAudioChannel extends BaseAudioChannel {
     const delays = [500, 1000, 2000, 4000, 8000];
     let bestSeen: VapiCallResponse | null = this.cachedCallResponse;
     for (let i = 0; i < delays.length; i++) {
-      await sleep(delays[i]!);
+      const remaining = this.postCallBudgetDeadlineMs - Date.now();
+      if (remaining <= 0) {
+        console.log(`    [vapi-postcall] shared budget exhausted (${VapiAudioChannel.POST_CALL_TOTAL_BUDGET_MS}ms) — returning best available`);
+        break;
+      }
+      const wait = Math.min(delays[i]!, remaining);
+      await sleep(wait);
       try {
         const call = await client.calls.get({ id: this.callId });
         const data = call as unknown as VapiCallResponse;

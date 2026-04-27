@@ -244,6 +244,11 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
   private rxSampleCount = 0;
   private rxPeakAbs = 0;
   private rxLastFrameAt: number | null = null;
+  // Primary track lock for multi-track agents — see Retell adapter for the
+  // detailed rationale. Defaults null (no lock); first track to exceed the
+  // amplitude threshold becomes primary, others are dropped.
+  private primaryAgentTrackSid: string | null = null;
+  private static readonly PRIMARY_TRACK_MEAN_ABS_THRESHOLD = 100;
   private rxLastAssistantItemAt: number | null = null;
   private rxLastAgentStateAt: number | null = null;
   private callMetadata: CallMetadata = { platform: "livekit" };
@@ -1104,6 +1109,7 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
   private handleRoomDisconnected(reason: DisconnectReason): void {
     this.collecting = false;
     this.roomDisconnected = true;
+    this.primaryAgentTrackSid = null;
     this.stopComfortNoise();
     const state = resolveLiveKitRoomDisconnectState(reason, Date.now(), this.disconnectTimestamp);
     this.disconnectTimestamp = state.disconnectTimestamp;
@@ -1183,6 +1189,26 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
           this._stats.bytesReceived += frameBuffer.length;
           // Resample from LiveKit rate → 24kHz for consumers
           const pcm24k = resample(frameBuffer, this.livekitSampleRate, 24000);
+
+          // Defense against multi-track agents (rare in stock LiveKit Agents
+          // but possible with chained STT/TTS pipelines): lock onto the first
+          // track that emits non-silent audio. Other tracks are read (drained)
+          // but their PCM is dropped to avoid 50Hz interleave aliasing.
+          const frameMeanAbs = frameSumAbs / Math.max(1, rawSamples.length);
+          const trackSid = (track as { sid?: string }).sid ?? null;
+          if (
+            this.primaryAgentTrackSid === null
+            && frameMeanAbs > WebRtcAudioChannel.PRIMARY_TRACK_MEAN_ABS_THRESHOLD
+          ) {
+            this.primaryAgentTrackSid = trackSid;
+            console.log(`[livekit] locked primary agent track ${who} sid=${trackSid}`);
+          }
+          // Allow through if we haven't locked yet (single-track case) OR
+          // this is the locked track. Drop secondary track audio post-lock.
+          if (this.primaryAgentTrackSid !== null && this.primaryAgentTrackSid !== trackSid) {
+            continue;
+          }
+
           this.captureAgentAudio(pcm24k, performance.now() - this._connectMonotonicMs);
           this.emit("audio", pcm24k);
         }

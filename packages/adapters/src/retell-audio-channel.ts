@@ -76,6 +76,19 @@ export class RetellAudioChannel extends BaseAudioChannel {
   private localTrack: LocalAudioTrack | null = null;
   private collecting = false;
   private comfortNoiseActive = false;
+  // Retell's "server" participant publishes TWO audio tracks: the agent voice
+  // and a near-silent secondary. Subscribing to both and feeding both into
+  // captureAgentAudio interleaves chunks at ~10ms granularity, producing a
+  // ~50Hz chopping/aliasing in the mixed recording (the "garbled" symptom).
+  // Lock onto the first track that exceeds a per-frame amplitude threshold;
+  // ignore the rest for recording/audio-emit purposes.
+  private primaryAgentTrackSid: string | null = null;
+  private primaryTrackFallbackTimer: ReturnType<typeof setTimeout> | null = null;
+  private static readonly PRIMARY_TRACK_MEAN_ABS_THRESHOLD = 100;
+  // If neither track exceeds the threshold within this window, lock to the
+  // first one we saw. Prevents quiet greetings (under threshold) from being
+  // dropped silently for the entire call.
+  private static readonly PRIMARY_TRACK_FALLBACK_MS = 1500;
 
   // Call state
   private callId: string | null = null;
@@ -182,6 +195,7 @@ export class RetellAudioChannel extends BaseAudioChannel {
     this.realtimeUserTranscripts = [];
     this.seenUserContent.clear();
     this.realtimeToolCallEntries.clear();
+    this.primaryAgentTrackSid = null;
 
     // ── DataChannel listener for Retell JSON events ──────────────
     // Don't filter by participant identity. Retell publishes audio under
@@ -198,7 +212,19 @@ export class RetellAudioChannel extends BaseAudioChannel {
     );
 
     // ── Disconnect detection ─────────────────────────────────────
+    // Mark `collecting = false` so subsequent connected checks return false
+    // and the read loop exits. Do NOT null `room`/`audioSource`/`localTrack`
+    // here — the explicit disconnect() path needs them to call .close() on
+    // the FFI handles. Setting them to null before disconnect() runs leaks
+    // the underlying LiveKit FFI handles (Rust-side resources). Just clear
+    // the per-call lock state and let disconnect() handle the rest.
     this.room.once(RoomEvent.Disconnected, () => {
+      this.collecting = false;
+      this.primaryAgentTrackSid = null;
+      if (this.primaryTrackFallbackTimer) {
+        clearTimeout(this.primaryTrackFallbackTimer);
+        this.primaryTrackFallbackTimer = null;
+      }
       this.emit("disconnected");
     });
 
@@ -217,7 +243,10 @@ export class RetellAudioChannel extends BaseAudioChannel {
       if (participant.identity === RetellAudioChannel.SERVER_IDENTITY) {
         for (const pub of participant.trackPublications.values()) {
           if (pub.track && pub.kind === TrackKind.KIND_AUDIO) {
-            this.startReadingTrack(pub.track as RemoteTrack);
+            console.log(
+              `[retell] subscribing to pre-existing audio track participant=${participant.identity} trackSid=${pub.sid}`
+            );
+            this.startReadingTrack(pub.track as RemoteTrack, participant.identity, pub.sid);
           }
         }
       }
@@ -227,7 +256,10 @@ export class RetellAudioChannel extends BaseAudioChannel {
       RoomEvent.TrackSubscribed,
       (track: RemoteTrack, pub: RemoteTrackPublication, participant: RemoteParticipant) => {
         if (participant.identity === RetellAudioChannel.SERVER_IDENTITY && pub.kind === TrackKind.KIND_AUDIO) {
-          this.startReadingTrack(track);
+          console.log(
+            `[retell] TrackSubscribed audio participant=${participant.identity} trackSid=${pub.sid}`
+          );
+          this.startReadingTrack(track, participant.identity, pub.sid);
         }
       }
     );
@@ -336,6 +368,10 @@ export class RetellAudioChannel extends BaseAudioChannel {
     this.collecting = false;
     this.stopComfortNoise();
     this.disconnectTimestamp = Date.now();
+    if (this.primaryTrackFallbackTimer) {
+      clearTimeout(this.primaryTrackFallbackTimer);
+      this.primaryTrackFallbackTimer = null;
+    }
     if (this.audioSource) {
       await this.audioSource.close();
       this.audioSource = null;
@@ -626,16 +662,88 @@ export class RetellAudioChannel extends BaseAudioChannel {
     }
   }
 
-  private startReadingTrack(track: RemoteTrack): void {
+  private startReadingTrack(track: RemoteTrack, participantIdentity?: string, trackSid?: string): void {
+    const who = `participant=${participantIdentity ?? "?"} trackSid=${trackSid ?? "?"}`;
+    console.log(`[retell] startReadingTrack ${who}`);
     const sampleRate = RetellAudioChannel.LIVEKIT_SAMPLE_RATE;
     const stream = new AudioStream(track, sampleRate, 1);
     const reader = stream.getReader();
+
+    let frameCount = 0;
+    let sumAbs = 0;
+    let sampleCount = 0;
+    let peakAbs = 0;
+    let lastDiagFrame = 0;
 
     const readLoop = async () => {
       try {
         while (this.collecting) {
           const { value: frame, done } = await reader.read();
           if (done || !frame) break;
+
+          frameCount++;
+
+          // Sample-level diagnostics on raw pre-resample frame
+          const rawSamples = new Int16Array(
+            frame.data.buffer,
+            frame.data.byteOffset,
+            frame.data.byteLength / 2,
+          );
+          let frameSumAbs = 0;
+          let framePeak = 0;
+          for (let i = 0; i < rawSamples.length; i++) {
+            const v = Math.abs(rawSamples[i]!);
+            frameSumAbs += v;
+            if (v > framePeak) framePeak = v;
+          }
+          sumAbs += frameSumAbs;
+          sampleCount += rawSamples.length;
+          if (framePeak > peakAbs) peakAbs = framePeak;
+
+          if (frameCount === 1) {
+            console.log(
+              `[retell] first_frame ${who} bytes=${frame.data.byteLength} samples=${rawSamples.length} sampleRate=${frame.sampleRate} peak=${framePeak} meanAbs=${Math.round(frameSumAbs / rawSamples.length)}`
+            );
+          }
+          if (frameCount - lastDiagFrame >= 100) {
+            lastDiagFrame = frameCount;
+            console.log(
+              `[retell] frame=${frameCount} ${who} cumMeanAbs=${Math.round(sumAbs / Math.max(1, sampleCount))} cumPeak=${peakAbs} requestedRate=${sampleRate} actualRate=${frame.sampleRate}`
+            );
+          }
+
+          // Lock onto the first track that produces non-silent audio.
+          // Silent secondary tracks are read (drained) but their PCM is not
+          // fed into the recording mixer or the audio event stream. If
+          // neither track crosses the threshold within the fallback window,
+          // lock to the first track we saw (avoids dropping quiet greetings).
+          const frameMeanAbs = frameSumAbs / Math.max(1, rawSamples.length);
+          if (
+            this.primaryAgentTrackSid === null
+            && frameMeanAbs > RetellAudioChannel.PRIMARY_TRACK_MEAN_ABS_THRESHOLD
+          ) {
+            this.primaryAgentTrackSid = trackSid ?? null;
+            if (this.primaryTrackFallbackTimer) {
+              clearTimeout(this.primaryTrackFallbackTimer);
+              this.primaryTrackFallbackTimer = null;
+            }
+            console.log(
+              `[retell] locked primary agent track ${who} (frameMeanAbs=${Math.round(frameMeanAbs)})`
+            );
+          } else if (this.primaryAgentTrackSid === null && !this.primaryTrackFallbackTimer) {
+            // Arm the fallback once on the first frame from any track.
+            const candidate = trackSid ?? null;
+            this.primaryTrackFallbackTimer = setTimeout(() => {
+              if (this.primaryAgentTrackSid === null) {
+                this.primaryAgentTrackSid = candidate;
+                console.log(
+                  `[retell] primary track fallback locked ${who} (no track exceeded threshold within ${RetellAudioChannel.PRIMARY_TRACK_FALLBACK_MS}ms)`
+                );
+              }
+              this.primaryTrackFallbackTimer = null;
+            }, RetellAudioChannel.PRIMARY_TRACK_FALLBACK_MS);
+          }
+          const isPrimary = this.primaryAgentTrackSid === trackSid;
 
           const frameBuffer = Buffer.from(
             frame.data.buffer,
@@ -645,14 +753,20 @@ export class RetellAudioChannel extends BaseAudioChannel {
           this._stats.bytesReceived += frameBuffer.length;
           // Resample from LiveKit 48kHz → 24kHz for consumers
           const pcm24k = resample(frameBuffer, sampleRate, 24000);
-          this.captureAgentAudio(pcm24k, performance.now() - this._connectMonotonicMs);
-          this.emit("audio", pcm24k);
+          if (isPrimary) {
+            this.captureAgentAudio(pcm24k, performance.now() - this._connectMonotonicMs);
+            this.emit("audio", pcm24k);
+          }
         }
       } catch (err) {
         if (err instanceof Error) {
           this._stats.errorEvents.push(err.message);
         }
       }
+      const finalMean = sampleCount > 0 ? Math.round(sumAbs / sampleCount) : 0;
+      console.log(
+        `[retell] Audio read loop ended ${who} frames=${frameCount} meanAbs=${finalMean} peak=${peakAbs}`
+      );
     };
 
     readLoop();
