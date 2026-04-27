@@ -13,6 +13,7 @@
   "dependencies": {
     "@fastify/cookie": "^11.0.2",
     "@fastify/cors": "^10.0.0",
+    "@fastify/rate-limit": "^10.3.0",
     "@fastify/websocket": "^11.0.0",
     "@octokit/rest": "^22.0.1",
     "@vent/artifacts": "workspace:*",
