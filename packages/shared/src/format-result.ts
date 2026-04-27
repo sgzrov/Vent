@@ -11,7 +11,6 @@ import type {
   ConversationCallResult,
   ConversationTurn,
   ObservedToolCall,
-  AudioActionResult,
   LatencyMetrics,
   ProsodyMetrics,
   ToolCallMetrics,
@@ -158,7 +157,6 @@ export interface FormattedConversationResult {
   call_metadata: FormattedCallMetadata | null;
   // Optional in default mode: omitted when empty/null.
   warnings?: string[];
-  audio_actions?: AudioActionResult[];
   emotion?: FormattedEmotion;
   caller_prompt?: string;
   debug?: FormattedConversationDebug;
@@ -184,7 +182,6 @@ export function formatConversationResult(
   const warnings = dedupeStrings([
     ...formatProviderWarningMessages(r.call_metadata?.provider_warnings),
   ]);
-  const audioActions = r.audio_action_results ?? [];
   const emotion = r.metrics?.prosody ? formatEmotion(r.metrics.prosody) : null;
 
   const result: FormattedConversationResult = {
@@ -200,7 +197,6 @@ export function formatConversationResult(
   };
 
   if (warnings.length > 0) result.warnings = warnings;
-  if (audioActions.length > 0) result.audio_actions = audioActions;
   if (emotion) result.emotion = emotion;
   if (verbose) result.caller_prompt = r.caller_prompt;
   if (debug) result.debug = debug;
@@ -221,7 +217,7 @@ function formatTranscript(
       role: t.role,
       text: t.text,
     };
-    // Include user-facing timing/interrupt fields when present.
+    // Include user-facing timing fields when present.
     if (t.ttfb_ms != null) turn.ttfb_ms = t.ttfb_ms;
     if (t.ttfw_ms != null) turn.ttfw_ms = t.ttfw_ms;
     if (t.audio_duration_ms != null) turn.audio_duration_ms = t.audio_duration_ms;

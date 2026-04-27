@@ -53,7 +53,7 @@ npx vent-hq logout                       # Remove saved credentials
 ## Architecture Overview
 
 ### Core Concepts
-- **Vent** gives coding agents (Claude Code, Cursor, Codex) the ability to call, hear, and evaluate voice AI agents. The coding agent uses Vent to make real calls against your agent, reads back results (transcripts, latency, audio quality, interruptions, tool calls), and adapts code and platform config based on what it observes. Designed to be used iteratively — describe what your voice agent should do, let the coding agent work, come back to a fully working agent.
+- **Vent** gives coding agents (Claude Code, Cursor, Codex) the ability to call, hear, and evaluate voice AI agents. The coding agent uses Vent to make real calls against your agent, reads back results (transcripts, latency, audio quality, tool calls), and adapts code and platform config based on what it observes. Designed to be used iteratively — describe what your voice agent should do, let the coding agent work, come back to a fully working agent.
 - **Adapters** connect to agents on platforms (Vapi, Retell, LiveKit, ElevenLabs, Bland) or to custom endpoint / local agents (raw WebSocket via relay). Platform adapters require API keys, encrypted at rest with `PLATFORM_CONNECTIONS_MASTER_KEY`.
 
 ### Monorepo Structure

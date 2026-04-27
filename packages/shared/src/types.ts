@@ -16,7 +16,6 @@ export interface CallerPersona {
   disfluencies?: boolean;
   cooperation?: "cooperative" | "reluctant" | "hostile";
   emotion?: "neutral" | "cheerful" | "confused" | "frustrated" | "skeptical" | "rushed";
-  interruption_style?: "low" | "high";
   memory?: "reliable" | "unreliable";
   intent_clarity?: "clear" | "indirect" | "vague";
   confirmation_style?: "explicit" | "vague";
@@ -38,41 +37,6 @@ export interface CallerAudioEffects {
   jitter_ms?: number;
 }
 
-// ============================================================
-// Audio actions — infrastructure challenges injected into conversation turns
-// ============================================================
-
-export const AUDIO_ACTION_TYPES = [
-  "interrupt",
-  "inject_noise",
-  "split_sentence",
-  "noise_on_caller",
-] as const;
-
-export type AudioActionType = (typeof AUDIO_ACTION_TYPES)[number];
-
-export interface AudioAction {
-  at_turn: number;
-  action: AudioActionType;
-  /** What the caller says to interrupt (interrupt action) */
-  prompt?: string;
-  /** Duration in ms (used by some actions) */
-  duration_ms?: number;
-  /** Noise type for inject_noise / noise_on_caller (default "babble") */
-  noise_type?: "babble" | "white" | "pink";
-  /** Signal-to-noise ratio in dB (default 10) */
-  snr_db?: number;
-  /** Split sentence config (split_sentence action) */
-  split?: { part_a: string; part_b: string; pause_ms: number };
-}
-
-export interface AudioActionResult {
-  at_turn: number;
-  action: string;
-  metrics: Record<string, number | boolean>;
-  transcriptions?: Record<string, string | null>;
-}
-
 export interface ConversationCallSpec {
   name?: string;
   caller_prompt: string;
@@ -80,8 +44,6 @@ export interface ConversationCallSpec {
 
   silence_threshold_ms?: number;
   persona?: CallerPersona;
-  /** Audio actions to inject at specific turns (barge-in, silence, noise, etc.) */
-  audio_actions?: AudioAction[];
   /** Opt-in: run Hume prosody analysis on agent audio (requires HUME_API_KEY) */
   prosody?: boolean;
   /** Global audio effects applied to all caller audio (speakerphone, speed, noise, accent, etc.) */
@@ -472,7 +434,6 @@ export interface ConversationCallResult {
   transcript: ConversationTurn[];
 
   observed_tool_calls?: ObservedToolCall[];
-  audio_action_results?: AudioActionResult[];
   duration_ms: number;
   metrics: ConversationMetrics;
   error?: string;

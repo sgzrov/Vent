@@ -15,8 +15,6 @@ import { LANGUAGE_NAMES } from "@vent/voice";
 
 // @ts-expect-error — esbuild inlines .txt files as strings via loader
 import SYSTEM_PROMPT from "./caller-system-prompt.txt";
-// @ts-expect-error — esbuild inlines .txt files as strings via loader
-import INTERRUPT_PLAN_SYSTEM_PROMPT from "./caller-interrupt-prompt.txt";
 
 const MODEL = "claude-haiku-4-5-20251001";
 const MAX_TOKENS = 1024;
@@ -48,10 +46,6 @@ const PERSONA_TRAIT_MAP: Record<string, Record<string, string>> = {
     frustrated: "Express frustration about the situation. Be impatient. If the agent doesn't help quickly, escalate your displeasure.",
     skeptical: "Be skeptical of what the agent says. Question claims and ask for proof or details. Don't take things at face value.",
     rushed: "Be in a hurry. Mention you don't have much time. Push for quick resolution. Cut short long explanations.",
-  },
-  interruption_style: {
-    low: "Sometimes interrupt the agent mid-sentence with follow-up questions or corrections when they're being verbose.",
-    high: "Frequently cut off the agent. Start talking before they finish. Be impatient with long explanations.",
   },
   memory: {
     reliable: "",
@@ -95,7 +89,7 @@ function compilePersona(persona: CallerPersona): string {
   if (instructions.length === 0) return "";
 
   return (
-    "\n\nBehavioral modifiers (apply these consistently across ALL turns, but never override the JSON format, turn-taking, interruption, or brevity rules above):\n" +
+    "\n\nBehavioral modifiers (apply these consistently across ALL turns, but never override the JSON format, turn-taking, or brevity rules above):\n" +
     instructions.map((i) => `- ${i}`).join("\n")
   );
 }
@@ -114,7 +108,6 @@ export class CallerLLM {
   private history: Array<{ role: "user" | "assistant"; content: string }> = [];
   private callerPrompt: string;
   private systemPrompt: string;
-  private interruptPlanSystemPrompt: string;
 
   constructor(callerPrompt: string, persona?: CallerPersona, language?: string) {
     this.client = new Anthropic();
@@ -123,10 +116,6 @@ export class CallerLLM {
     this.systemPrompt =
       SYSTEM_PROMPT +
       `\n\nToday's date is ${today}.` +
-      (persona ? compilePersona(persona) : "") +
-      (language && language !== "en" ? compileLanguage(language) : "");
-    this.interruptPlanSystemPrompt =
-      INTERRUPT_PLAN_SYSTEM_PROMPT +
       (persona ? compilePersona(persona) : "") +
       (language && language !== "en" ? compileLanguage(language) : "");
   }
@@ -254,46 +243,6 @@ export class CallerLLM {
   }
 
   /**
-   * Pre-plan whether the caller would cut off the upcoming agent turn if it
-   * gets too long or goes in the wrong direction. This happens before the
-   * agent starts speaking, so execution stays in the realtime audio path.
-   */
-  async planInterrupt(
-    currentCallerText: string,
-  ): Promise<InterruptDecision> {
-    const decisionMessages = [
-      ...this.history,
-      {
-        role: "user" as const,
-        content:
-          `[Planning only, before the agent's next response. You just said: "${currentCallerText}"]\n\n` +
-          `If the agent's next reply becomes long, repetitive, or goes in the wrong direction, ` +
-          `would you naturally cut them off on this turn?\n` +
-          `Return JSON only using one of these shapes:\n` +
-          `{"mode":"listen"}\n` +
-          `{"mode":"interrupt","text":"what you'd actually say to cut them off"}\n\n` +
-          `If you interrupt, the text must be ONLY the spoken interruption.`,
-      },
-    ];
-
-    const response = await this.client.messages.create({
-      model: MODEL,
-      max_tokens: MAX_TOKENS,
-      temperature: 0.7,
-      system: this.interruptPlanSystemPrompt,
-      messages: decisionMessages,
-    });
-
-    const text =
-      response.content[0]?.type === "text"
-        ? response.content[0].text.trim()
-        : "";
-
-    const decision = parseInterruptDecision(text);
-    return decision;
-  }
-
-  /**
    * Classify agent speech as filler (transitional/holding before a tool result)
    * or complete (substantive response). Used to detect when an agent says
    * "Let me check that" before executing a tool call — so Vent can wait
@@ -380,10 +329,6 @@ export type CallerDecision =
   | { mode: "closing"; text: string }
   | { mode: "end_now" };
 
-export type InterruptDecision =
-  | { mode: "listen" }
-  | { mode: "interrupt"; text: string };
-
 export type FillerClassification = "filler" | "complete";
 
 function parseCallerDecision(raw: string): CallerDecision | null {
@@ -432,38 +377,6 @@ function parseCallerDecisionJson(text: string): CallerDecision | null {
   }
 
   return null;
-}
-
-function parseInterruptDecision(raw: string): InterruptDecision {
-  const text = raw.trim();
-  if (!text) return { mode: "listen" };
-
-  if (text === "[LISTEN]" || text.includes("[LISTEN]")) {
-    return { mode: "listen" };
-  }
-  if (text === "[END]" || text.includes("[END]")) {
-    return { mode: "listen" };
-  }
-
-  const candidate = extractJsonObject(text);
-  if (candidate) {
-    try {
-      const parsed = JSON.parse(candidate) as Record<string, unknown>;
-      const mode = parsed.mode;
-      const spoken = typeof parsed.text === "string" ? parsed.text.trim() : "";
-      if (mode === "listen") {
-        return { mode: "listen" };
-      }
-      if (mode === "interrupt" && spoken) {
-        return { mode: "interrupt", text: spoken };
-      }
-    } catch {
-      // Fall back to plain text below.
-    }
-  }
-
-  // Unparseable LLM output — safe fallback is to listen, not speak raw text
-  return { mode: "listen" };
 }
 
 function extractJsonObject(text: string): string | null {
