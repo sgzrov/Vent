@@ -77,7 +77,12 @@ async function agentSessionRoutes(app: FastifyInstance) {
     await app.db
       .update(schema.agentSessions)
       .set({ status: "closed", closed_at: new Date() })
-      .where(eq(schema.agentSessions.id, sessionId));
+      .where(
+        and(
+          eq(schema.agentSessions.id, sessionId),
+          eq(schema.agentSessions.user_id, userId),
+        ),
+      );
 
     // Clean up in-memory relay session if it exists
     cleanupSession(sessionId, { closeControl: true, code: 1000, reason: "session_closed" });
