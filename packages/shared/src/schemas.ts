@@ -64,6 +64,8 @@ export const ConversationCallSpecSchema = z.object({
   caller_audio: CallerAudioEffectsSchema.optional(),
   /** ISO 639-1 language code for multilingual calls (e.g., "es", "fr", "de"). Caller speaks this language, STT transcribes it, judge evaluates in it. */
   language: z.string().min(2).max(5).optional(),
+  /** Caller voice gender (English only; default female). Ignored if caller_audio.accent is set or language is non-English. */
+  voice: z.enum(["male", "female"]).optional(),
 });
 
 export const CallSpecSchema = z.object({
@@ -365,10 +367,37 @@ export const RunAggregateV2Schema = z.object({
   total_cost_usd: z.number().optional(),
 });
 
+// Terminal status the worker reports back to the API. Subset of the DB
+// runStatusEnum (`queued|running|pass|fail|cancelled`) — the runner-callback
+// only ever flips a run to a successful terminal state. `cancelled` is set
+// by the stop endpoint; `queued`/`running` by the lifecycle. If a new
+// runner-set terminal state is ever added, update both the DB enum and
+// this tuple.
+export const RUNNER_TERMINAL_STATUSES = ["pass", "fail"] as const;
+export type RunnerTerminalStatus = (typeof RUNNER_TERMINAL_STATUSES)[number];
+
 export const RunnerCallbackV2Schema = z.object({
   run_id: z.string().uuid(),
-  status: z.enum(["pass", "fail"]),
+  status: z.enum(RUNNER_TERMINAL_STATUSES),
   conversation_result: ConversationCallResultSchema,
   aggregate: RunAggregateV2Schema,
   error_text: z.string().optional(),
+});
+
+export const RunEventCallbackSchema = z.object({
+  run_id: z.string().uuid(),
+  event_type: z.string().min(1).max(64),
+  message: z.string().max(2000),
+  metadata_json: z.record(z.unknown()).optional(),
+});
+
+export const CallProgressCallbackSchema = z.object({
+  run_id: z.string().uuid(),
+  completed: z.number().int().nonnegative(),
+  total: z.number().int().positive(),
+  call_type: z.literal("conversation"),
+  call_name: z.string().min(1).max(256),
+  status: z.enum(["pass", "fail", "completed", "error"]),
+  duration_ms: z.number().nonnegative(),
+  result: z.record(z.unknown()).optional(),
 });

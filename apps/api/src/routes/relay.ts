@@ -4,7 +4,13 @@ import type { FastifyInstance } from "fastify";
 import { eq, and } from "drizzle-orm";
 import IORedis from "ioredis";
 import { schema } from "@vent/db";
+import { timingSafeEqual } from "node:crypto";
 import { RUNNER_CALLBACK_HEADER } from "@vent/shared";
+
+function timingSafeCompare(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(Buffer.from(a), Buffer.from(b));
+}
 import { broadcast } from "../lib/run-subscribers.js";
 import type WebSocket from "ws";
 
@@ -279,14 +285,12 @@ async function relayRoutes(app: FastifyInstance) {
       app.log.error({ sessionKey, err }, "relay/control: FAILED to publish relay-ready");
     }
 
-    // Send agent env vars so relay-client can inject them into the agent process.
-    const agentEnv: Record<string, string> = {};
-    const FORWARDED_KEYS = ["DEEPGRAM_API_KEY", "ANTHROPIC_API_KEY"];
-    for (const key of FORWARDED_KEYS) {
-      const val = process.env[key];
-      if (val) agentEnv[key] = val;
-    }
-    sendControl(session, { type: "config", env: agentEnv });
+    // Empty env handshake — preserves the relay-client connect ack ("config_received"
+    // event resolves the connect Promise). We deliberately do NOT forward provider
+    // API keys: any caller with a bootstrap access token could harvest server-side
+    // Deepgram/Anthropic keys. The local agent must bring its own credentials via
+    // its own process env / dotenv.
+    sendControl(session, { type: "config", env: {} });
 
     if (!isAgentSession && runId) {
       broadcast(runId, {
@@ -374,7 +378,7 @@ async function relayRoutes(app: FastifyInstance) {
     const secret = (req.headers as Record<string, string>)[RUNNER_CALLBACK_HEADER];
     const expectedSecret = process.env["RUNNER_CALLBACK_SECRET"];
 
-    if (!expectedSecret || secret !== expectedSecret) {
+    if (!expectedSecret || !secret || !timingSafeCompare(secret, expectedSecret)) {
       socket.close(4401, "Unauthorized");
       return;
     }
@@ -441,7 +445,7 @@ async function relayRoutes(app: FastifyInstance) {
   app.get<{ Params: { id: string } }>("/internal/relay-ready/:id", async (request, reply) => {
     const secret = (request.headers as Record<string, string>)[RUNNER_CALLBACK_HEADER];
     const expectedSecret = process.env["RUNNER_CALLBACK_SECRET"];
-    if (!expectedSecret || secret !== expectedSecret) {
+    if (!expectedSecret || !secret || !timingSafeCompare(secret, expectedSecret)) {
       return reply.status(401).send({ error: "Unauthorized" });
     }
 
