@@ -60,7 +60,7 @@ export class StreamingTranscriber {
   constructor(config?: StreamingTranscriberConfig) {
     this.apiKeyEnv = config?.apiKeyEnv ?? "DEEPGRAM_API_KEY";
     this.sampleRate = config?.sampleRate ?? 24000;
-    this.model = config?.model ?? "nova-2";
+    this.model = config?.model ?? "nova-3";
     this.language = config?.language;
   }
 
@@ -114,6 +114,10 @@ export class StreamingTranscriber {
       };
 
       this.connection.on(LiveTranscriptionEvents.Open, () => {
+        // A successful open clears any prior persistent connect-failure flag —
+        // a transient blip + recovery shouldn't permanently poison this
+        // transcriber's finalize() throw path.
+        this.connectionFailureError = null;
         // Send KeepAlive every 5s to prevent Deepgram's 10s idle timeout.
         this.keepAliveInterval = setInterval(() => {
           if (this.connection?.isConnected()) {
@@ -208,13 +212,24 @@ export class StreamingTranscriber {
             this.reconnecting = false;
           })
           .catch((err) => {
-            console.warn(`[STT] Reconnect failed: ${err instanceof Error ? err.message : err}`);
+            const message = err instanceof Error ? err.message : String(err);
+            console.warn(`[STT] Reconnect failed: ${message}`);
             this.reconnecting = false;
             this.pendingAudio = [];
+            // Persist the failure so finalize() can surface it instead of
+            // silently returning an empty transcript. Without this, a bad
+            // DEEPGRAM_API_KEY shows up only as "agent stopped responding"
+            // 30s later — operators have no idea STT is broken.
+            this.connectionFailureError =
+              err instanceof Error ? err : new Error(message);
           });
       }
     }
   }
+
+  /** Set when a reconnect fails terminally (e.g. invalid API key, quota
+   *  exceeded). finalize() throws on this so the runner gets the real error. */
+  private connectionFailureError: Error | null = null;
 
   /**
    * Send CloseStream and wait for the socket Close event. Deepgram flushes
@@ -223,6 +238,11 @@ export class StreamingTranscriber {
    * finalSegments. Returns the complete transcript.
    */
   async finalize(): Promise<TranscriptionResult> {
+    // Surface a persistent connect/reconnect failure first so callers get
+    // the real cause (auth, quota, network) instead of an empty transcript.
+    if (this.connectionFailureError) {
+      throw new Error(`Deepgram STT unavailable: ${this.connectionFailureError.message}`);
+    }
     if (!this.hasFedAudio) {
       return { text: "", confidence: 0 };
     }
