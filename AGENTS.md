@@ -45,7 +45,6 @@ pnpm --filter vent-hq build              # Bundle CLI to dist/index.mjs
 npx vent-hq init                         # Bootstrap auth + install skill files + scaffold suite
 npx vent-hq run -f <suite.json>          # Run calls from a suite and stream results
 npx vent-hq agent start -f <config.json> # Start persistent relay session for local agent
-npx vent-hq status <run-id>              # Check or stream run status
 npx vent-hq login                        # Device auth flow via browser
 npx vent-hq logout                       # Remove saved credentials
 ```

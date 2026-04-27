@@ -213,7 +213,7 @@ export function printSummary(
     }
   }
 
-  stdoutSync(dim(`Full details: vent status ${runId}${options.verbose ? " --verbose" : ""}`) + "\n");
+  stdoutSync(dim(`Run ID: ${runId}`) + "\n");
 }
 
 export function buildRunSummaryJson(options: RunSummaryJsonOptions): Record<string, unknown> {

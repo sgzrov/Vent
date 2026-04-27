@@ -1,7 +1,6 @@
 import { parseArgs } from "node:util";
 import { runCommand } from "./commands/run.js";
 import { agentStartCommand, agentStopCommand } from "./commands/agent.js";
-import { statusCommand } from "./commands/status.js";
 import { loginCommand } from "./commands/login.js";
 import { logoutCommand } from "./commands/logout.js";
 import { initCommand } from "./commands/init.js";
@@ -16,7 +15,6 @@ Commands:
   agent        Manage a shared local agent session
   run          Run a call from a suite file
   stop         Cancel a queued or running call
-  status       Check status of a previous run
   login        Authenticate via browser
   logout       Remove saved credentials
 Options:
@@ -45,8 +43,6 @@ Start options:
 
 Stop options:
   vent-hq agent stop <session-id>`;
-
-const STATUS_USAGE = `Usage: vent-hq status <run-id> [--verbose]`;
 
 async function main(): Promise<number> {
   loadDotenv();
@@ -137,27 +133,6 @@ async function main(): Promise<number> {
       printError(`Unknown agent subcommand: ${subcommand}`);
       console.log(AGENT_USAGE);
       return 2;
-    }
-
-    case "status": {
-      if (commandArgs.includes("--help") || commandArgs.length === 0) {
-        console.log(STATUS_USAGE);
-        return 0;
-      }
-      const { values, positionals } = parseArgs({
-        args: commandArgs,
-        options: {
-          verbose: { type: "boolean", short: "v", default: false },
-        },
-        allowPositionals: true,
-        strict: true,
-      });
-      const runId = positionals[0];
-      if (!runId) {
-        console.log(STATUS_USAGE);
-        return 2;
-      }
-      return statusCommand({ runId, verbose: values.verbose });
     }
 
     case "stop": {
