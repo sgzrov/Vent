@@ -96,20 +96,20 @@ async function executeInterrupt(
   const preInterruptAudio = await collectForDurationSafe(ctx.channel, 1000);
   const preText = await transcribeAudio(preInterruptAudio);
 
+  // Attach feedSTT just before collection — feeding pre-collect idle audio
+  // to Deepgram makes it slow to lock onto short utterances.
+  await ctx.transcriber.resetForNextTurn();
+  const feedSTT = (chunk: Buffer) => ctx.transcriber.feedAudio(chunk);
+
   // Send interrupt — clear stale audio first, then send through buffer
   const interruptTime = Date.now();
   ctx.channel.sendAudio(interruptAudio);
 
-  // Collect post-interrupt response
-  await ctx.transcriber.resetForNextTurn();
-  const feedSTT = (chunk: Buffer) => ctx.transcriber.feedAudio(chunk);
   ctx.channel.on("audio", feedSTT);
-
   const { audio: postAudio, stats } = await collectUntilEndOfTurn(ctx.channel, {
     timeoutMs: 15000,
     vad: ctx.vad,
   });
-
   ctx.channel.off("audio", feedSTT);
 
   // Measure stop latency: time from interrupt send to new speech onset
@@ -165,19 +165,17 @@ async function executeInjectNoise(
     : generateBabbleNoise;
   const noise = noiseGenerator(noiseDurationMs);
 
+  await ctx.transcriber.resetForNextTurn();
+  const feedSTT = (chunk: Buffer) => ctx.transcriber.feedAudio(chunk);
+
   // Send noise while agent is speaking
   ctx.channel.sendAudio(noise);
 
-  // Collect rest of agent response
-  await ctx.transcriber.resetForNextTurn();
-  const feedSTT = (chunk: Buffer) => ctx.transcriber.feedAudio(chunk);
   ctx.channel.on("audio", feedSTT);
-
   const { audio: agentAudio, timedOut } = await collectUntilEndOfTurn(ctx.channel, {
     timeoutMs: 15000,
     vad: ctx.vad,
   });
-
   ctx.channel.off("audio", feedSTT);
 
   // If agent stopped quickly after noise and didn't resume, it falsely stopped
@@ -240,12 +238,12 @@ async function executeSplitSentence(
     await collectUntilEndOfTurn(ctx.channel, { timeoutMs: 10000, vad: ctx.vad });
   }
 
+  await ctx.transcriber.resetForNextTurn();
+  const feedSTT = (chunk: Buffer) => ctx.transcriber.feedAudio(chunk);
+
   // Send part B
   await ctx.channel.sendAudio(audioB);
 
-  // Collect the agent's full response
-  await ctx.transcriber.resetForNextTurn();
-  const feedSTT = (chunk: Buffer) => ctx.transcriber.feedAudio(chunk);
   ctx.channel.on("audio", feedSTT);
 
   const { audio: responseAudio } = await collectUntilEndOfTurn(ctx.channel, {
