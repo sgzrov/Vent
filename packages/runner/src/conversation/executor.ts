@@ -18,7 +18,6 @@ import type {
   ConversationMetrics,
   ObservedToolCall,
   ToolCallMetrics,
-  AudioActionResult,
   ComponentLatency,
   ComponentLatencyMetrics,
   LatencyMetrics,
@@ -26,7 +25,6 @@ import type {
 } from "@vent/shared";
 import { synthesize, TTSSession, BatchVAD, VoiceActivityDetector, StreamingTranscriber, applyEffects, resolveAccentVoiceId, resolveLanguageVoiceId, resolveGenderVoiceId, analyzeAudioQuality, concatPcm, type AudioQualityMetrics } from "@vent/voice";
 import { CallerLLM } from "./caller-llm.js";
-import { executeAudioAction, mixCallerWithNoise, collectForDurationSafe } from "./audio-actions.js";
 import { collectUntilEndOfTurn, linearRegressionSlope } from "../audio-tests/helpers.js";
 import { computeAllMetrics } from "../metrics/index.js";
 import { analyzeProsody } from "../metrics/prosody.js";
@@ -176,7 +174,6 @@ export async function runConversationCall(
 
   const agentAudioBuffers: Buffer[] = [];
   const turnSignalQualities: AudioQualityMetrics[] = [];
-  const audioActionResults: AudioActionResult[] = [];
   let agentText: string | null = null;
 
   // Track channel disconnect — when the agent hangs up, the call ends naturally.
@@ -404,7 +401,6 @@ export async function runConversationCall(
       ...(finalError != null ? { error: finalError } : {}),
       transcript,
       observed_tool_calls: observedToolCalls.length > 0 ? observedToolCalls : undefined,
-      audio_action_results: audioActionResults.length > 0 ? audioActionResults : undefined,
       duration_ms: Math.round(performance.now() - startTime),
       metrics,
       call_metadata: callMetadata ?? undefined,
@@ -492,38 +488,6 @@ export async function runConversationCall(
         adaptiveThreshold.update(stats);
         continue;
       }
-      // Check for audio action at this turn (split_sentence skips CallerLLM)
-      const audioAction = spec.audio_actions?.find((a) => a.at_turn === turn);
-
-      if (audioAction && audioAction.action === "split_sentence") {
-        // This action replaces the caller utterance entirely
-        const callerTimestamp = performance.now() - startTime;
-        const actionLabel = `[split: "${audioAction.split?.part_a}" ... "${audioAction.split?.part_b}"]`;
-
-        transcript.push({
-          role: "caller",
-          text: actionLabel,
-          timestamp_ms: Math.round(callerTimestamp),
-        });
-
-        turnVAD.silenceThresholdMs = adaptiveThreshold.thresholdMs;
-
-        const { result: actionResult, agentText: actionAgentText } = await executeAudioAction(
-          audioAction,
-          { channel, vad: turnVAD, transcriber, callerAudioEffects: spec.caller_audio, ttsVoiceId, ttsSession },
-        );
-        audioActionResults.push(actionResult);
-        agentText = actionAgentText;
-
-        const agentTimestamp = performance.now() - startTime;
-        transcript.push({
-          role: "agent",
-          text: actionAgentText,
-          timestamp_ms: Math.round(agentTimestamp),
-        });
-        continue;
-      }
-
       // Step 1: Caller LLM generates the next full utterance.
       let callerText: string | null;
       let ttsMs = 0;
@@ -724,36 +688,11 @@ export async function runConversationCall(
       callerText = callerDecision.text;
       spokenCallerText = prepareCallerSpeechText(channel, callerText);
       const emittedCallerText = spokenCallerText ?? callerText;
-      const interruptionStyle = spec.persona?.interruption_style;
 
       console.log(
         `    [caller] turn=${turn} decision=${callerDecision.mode} t=${sinceStartMs(startTime)}ms ` +
         `text="${summarizeDebugText(emittedCallerText)}"`
       );
-
-      // Interrupt planning still uses the old blocking TTS path
-      const interruptGateProb = interruptionStyle === "high" ? 1.0 : 0.5;
-      const interruptPlanEligible = !shouldStopAfterAgentReply
-        && interruptionStyle
-        && turn >= 2
-        && Math.random() < interruptGateProb;
-      const interruptPlanPromise = interruptPlanEligible
-        ? caller.planInterrupt(emittedCallerText)
-        : Promise.resolve({ mode: "listen" } as const);
-      const interruptPlan = await interruptPlanPromise;
-      const plannedInterrupt = interruptPlan.mode === "interrupt"
-        ? {
-            text: interruptPlan.text,
-            delayMs: interruptionStyle === "high"
-              ? 500 + Math.random() * 1000
-              : 1500 + Math.random() * 1500,
-            audioPromise: (async () => {
-              let audio = await ttsSession.synthesize(interruptPlan.text);
-              if (spec.caller_audio) audio = applyEffects(audio, spec.caller_audio);
-              return audio;
-            })(),
-          }
-        : null;
 
       if (!callerAudio) {
         throw new Error(`Caller audio was not prepared for turn ${turn}`);
@@ -782,17 +721,6 @@ export async function runConversationCall(
         tts_ms: ttsMs,
       });
 
-      // Audio was already sent to the channel during the streaming pipeline.
-      // For noise_on_caller actions, we need to re-send with noise mixed in.
-      if (audioAction?.action === "noise_on_caller") {
-        callerAudio = mixCallerWithNoise(
-          callerAudio,
-          audioAction.noise_type ?? "babble",
-          audioAction.snr_db ?? 10,
-        );
-        await channel.sendAudio(callerAudio);
-      }
-
       sendTime = Date.now();
       console.log(
         `    [caller-send] turn=${turn} t=${sinceStartMs(startTime)}ms ` +
@@ -801,186 +729,6 @@ export async function runConversationCall(
 
       // Attach STT feed — agent response audio starts arriving after caller sends.
       channel.on("audio", feedSTT);
-
-      // Handle interrupt action: wait for agent speech, then send interrupt
-      if (audioAction?.action === "interrupt") {
-        const { result: actionResult, agentText: actionAgentText } = await executeAudioAction(
-          audioAction,
-          { channel, vad: turnVAD, transcriber, callerAudioEffects: spec.caller_audio, ttsVoiceId, ttsSession },
-        );
-        audioActionResults.push(actionResult);
-        channel.off("audio", feedSTT);
-
-        agentText = actionAgentText;
-        const agentTimestamp = performance.now() - startTime;
-        transcript.push({
-          role: "agent",
-          text: actionAgentText,
-          timestamp_ms: Math.round(agentTimestamp),
-        });
-        continue;
-      }
-
-      // Handle inject_noise action: send noise during agent speech
-      if (audioAction?.action === "inject_noise") {
-        const { result: actionResult, agentText: actionAgentText } = await executeAudioAction(
-          audioAction,
-          { channel, vad: turnVAD, transcriber, callerAudioEffects: spec.caller_audio, ttsVoiceId, ttsSession },
-        );
-        audioActionResults.push(actionResult);
-        channel.off("audio", feedSTT);
-
-        agentText = actionAgentText;
-        const agentTimestamp = performance.now() - startTime;
-        transcript.push({
-          role: "agent",
-          text: actionAgentText,
-          timestamp_ms: Math.round(agentTimestamp),
-        });
-        continue;
-      }
-
-      // ── Preplanned persona interruption ─────────────────────────────
-      // If the caller persona is likely to cut the agent off, plan that
-      // before the turn starts and execute it inline once speech begins.
-      if (plannedInterrupt) {
-        const abortCtrl = new AbortController();
-
-        let speechDetected = false;
-        const onSpeechCheck = (chunk: Buffer) => {
-          if (speechDetected) return;
-          const int16 = new Int16Array(chunk.buffer, chunk.byteOffset, chunk.length / 2);
-          let sumSq = 0;
-          for (let i = 0; i < int16.length; i++) sumSq += int16[i]! * int16[i]!;
-          const rms = Math.sqrt(sumSq / int16.length);
-          if (rms > 300) {
-            speechDetected = true;
-            setTimeout(() => abortCtrl.abort(), plannedInterrupt.delayMs);
-          }
-        };
-        channel.on("audio", onSpeechCheck);
-
-        turnVAD.silenceThresholdMs = adaptiveThreshold.thresholdMs;
-        const peekResult = await collectUntilEndOfTurn(
-          channel,
-          { timeoutMs: resolveCollectionTimeoutMs(30000), vad: turnVAD, signal: abortCtrl.signal, preferPlatformEOT: !!channel.hasPlatformEndOfTurn }
-        );
-        channel.off("audio", onSpeechCheck);
-
-        if (!peekResult.aborted) {
-          // Agent finished speaking before the preplanned cut-in point.
-          channel.off("audio", feedSTT);
-
-          const { text: fullText, confidence } = await transcriber.finalize();
-          let resolvedText = fullText;
-          channel.consumeAgentText?.();
-
-          agentText = resolvedText || "";
-          adaptiveThreshold.update(peekResult.stats);
-
-          const agentTimestamp = performance.now() - startTime;
-          const audioDurationMs = Math.round((peekResult.audio.length / 2 / 24000) * 1000);
-          const ttfbMs = peekResult.stats.firstChunkAt !== null ? Math.max(0, peekResult.stats.firstChunkAt - sendTime) : undefined;
-          const ttfwMs = peekResult.stats.speechOnsetAt !== null ? Math.max(0, peekResult.stats.speechOnsetAt - sendTime) : undefined;
-          const speechSegments = batchVAD.analyze(peekResult.audio);
-          if (spec.prosody) agentAudioBuffers.push(Buffer.from(peekResult.audio));
-          turnSignalQualities.push(analyzeAudioQuality(peekResult.audio, speechSegments));
-          transcript.push({
-            role: "agent",
-            text: agentText,
-            timestamp_ms: Math.round(agentTimestamp),
-            audio_duration_ms: audioDurationMs,
-            ttfb_ms: ttfbMs,
-            ttfw_ms: ttfwMs,
-          });
-          if (shouldStopAfterAgentReply) break;
-          continue;
-        }
-
-        // We have partial agent speech — send the preplanned interruption.
-        channel.off("audio", feedSTT);
-        const partialText = await transcriber.finalize();
-        const partialAgentText = partialText.text || "";
-        console.log(`    [interrupt-plan] turn=${turn} sending planned interruption="${plannedInterrupt.text.slice(0, 60)}"`);
-
-        // Record partial agent turn (was interrupted mid-speech)
-        const agentTimestamp = performance.now() - startTime;
-        const preAudioDurationMs = Math.round((peekResult.audio.length / 2 / 24000) * 1000);
-        const preTtfbMs = peekResult.stats.firstChunkAt !== null ? Math.max(0, peekResult.stats.firstChunkAt - sendTime) : undefined;
-        const preTtfwMs = peekResult.stats.speechOnsetAt !== null ? Math.max(0, peekResult.stats.speechOnsetAt - sendTime) : undefined;
-        const preSpeechSegments = batchVAD.analyze(peekResult.audio);
-        if (spec.prosody) agentAudioBuffers.push(Buffer.from(peekResult.audio));
-        turnSignalQualities.push(analyzeAudioQuality(peekResult.audio, preSpeechSegments));
-        transcript.push({
-          role: "agent",
-          text: partialAgentText,
-          timestamp_ms: Math.round(agentTimestamp),
-          audio_duration_ms: preAudioDurationMs,
-          ttfb_ms: preTtfbMs,
-          ttfw_ms: preTtfwMs,
-        });
-
-        // Send interrupt (raw = skip clear/mark for immediate delivery)
-        const interruptAudio = await plannedInterrupt.audioPromise;
-        const interruptTime = Date.now();
-        sendTime = Date.now();
-        channel.sendAudio(interruptAudio);
-
-        const interruptCallerTimestamp = performance.now() - startTime;
-        const interruptAudioDurationMs = Math.round((interruptAudio.length / 2 / 24000) * 1000);
-        transcript.push({
-          role: "caller",
-          text: plannedInterrupt.text,
-          timestamp_ms: Math.round(interruptCallerTimestamp),
-          caller_decision_mode: "continue",
-          audio_duration_ms: interruptAudioDurationMs,
-        });
-
-        // Collect post-interrupt agent response
-        await transcriber.resetForNextTurn();
-        const feedPostSTT = (chunk: Buffer) => transcriber.feedAudio(chunk);
-        channel.on("audio", feedPostSTT);
-
-        turnVAD.silenceThresholdMs = adaptiveThreshold.thresholdMs;
-        const { audio: postAudio, stats: postStats } = await collectUntilEndOfTurn(
-          channel,
-          { timeoutMs: resolveCollectionTimeoutMs(30000), vad: turnVAD, preferPlatformEOT: !!channel.hasPlatformEndOfTurn }
-        );
-        channel.off("audio", feedPostSTT);
-
-        // Measure stop latency
-        const stopLatencyMs = postStats.speechOnsetAt !== null
-          ? Math.max(0, postStats.speechOnsetAt - interruptTime)
-          : -1;
-        console.log(`    [interrupt] stop_latency=${stopLatencyMs}ms`);
-
-        let postAgentText = "";
-        if (postAudio.length > 0) {
-          const { text } = await transcriber.finalize();
-          postAgentText = text;
-          channel.consumeAgentText?.();
-        }
-
-        agentText = postAgentText;
-        const postAgentTimestamp = performance.now() - startTime;
-        const postAudioDurationMs = Math.round((postAudio.length / 2 / 24000) * 1000);
-        const postTtfbMs = postStats.firstChunkAt !== null ? Math.max(0, postStats.firstChunkAt - interruptTime) : undefined;
-        const postTtfwMs = postStats.speechOnsetAt !== null ? Math.max(0, postStats.speechOnsetAt - interruptTime) : undefined;
-        const postSpeechSegments = batchVAD.analyze(postAudio);
-        if (spec.prosody) agentAudioBuffers.push(Buffer.from(postAudio));
-        turnSignalQualities.push(analyzeAudioQuality(postAudio, postSpeechSegments));
-        transcript.push({
-          role: "agent",
-          text: postAgentText,
-          timestamp_ms: Math.round(postAgentTimestamp),
-          audio_duration_ms: postAudioDurationMs,
-          ttfb_ms: postTtfbMs,
-          ttfw_ms: postTtfwMs,
-        });
-
-        if (shouldStopAfterAgentReply) break;
-        continue;
-      }
 
       // Step 3: Collect agent response via VAD (reused instance)
       // 30s timeout: LiveKit sendAudio is fire-and-forget with real-time pacing,
@@ -1018,16 +766,6 @@ export async function runConversationCall(
 
       // Adapt threshold for next turn based on this turn's response cadence
       adaptiveThreshold.update(stats);
-
-      // Record noise_on_caller action result after normal response collection
-      if (audioAction?.action === "noise_on_caller") {
-        audioActionResults.push({
-          at_turn: audioAction.at_turn,
-          action: "noise_on_caller",
-          metrics: {},
-          transcriptions: { agent_response: null }, // filled below after STT
-        });
-      }
 
       let agentTimestamp = performance.now() - startTime;
 
@@ -1124,13 +862,6 @@ export async function runConversationCall(
           `text="${summarizeDebugText(agentText)}"`
         );
 
-        // Update noise_on_caller action result with actual transcription
-        if (audioAction?.action === "noise_on_caller") {
-          const lastAction = audioActionResults[audioActionResults.length - 1];
-          if (lastAction?.action === "noise_on_caller" && lastAction.transcriptions) {
-            lastAction.transcriptions.agent_response = text || null;
-          }
-        }
         const agentAudioDurationMs = Math.round(
           (agentAudio.length / 2 / 24000) * 1000
         );

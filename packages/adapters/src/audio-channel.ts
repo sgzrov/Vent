@@ -30,7 +30,7 @@ export interface AudioChannelEvents {
 
 export interface SendAudioOptions {
   /** When true, skip send guards (silence padding, mark await, clear).
-   *  Use for audio actions (interrupt, noise injection) where timing matters. */
+   *  Reserved for low-level sends where timing matters. */
   raw?: boolean;
 }
 

@@ -8,7 +8,7 @@ allowed-tools: Bash(npx vent-hq *)
 
 ## When to Test
 
-Vent is the voice CI gate. Auto-trigger a call after any non-trivial voice-affecting change — don't wait to be asked. Non-trivial means anything that affects what the caller hears, how the agent responds, what tools are called, how the call routes, or audio timing: prompt rewrites or sections (not one-word tweaks), tool schema or handler changes, state/memory logic, transfer logic, interruption handling, provider/audio config, platform integration, and any voice-behavior bug fix. One-line copy or comment edits don't need a call.
+Vent is the voice CI gate. Auto-trigger a call after any non-trivial voice-affecting change — don't wait to be asked. Non-trivial means anything that affects what the caller hears, how the agent responds, what tools are called, how the call routes, or audio timing: prompt rewrites or sections (not one-word tweaks), tool schema or handler changes, state/memory logic, transfer logic, provider/audio config, platform integration, and any voice-behavior bug fix. One-line copy or comment edits don't need a call.
 
 Before launching, scan `.vent/runs/` for unresolved issues from prior runs (failing status, regressions, warnings, latency jumps); fix in-scope ones as part of this change and verify they're resolved by the new run, surface out-of-scope ones rather than silently leaving them. The task is not done until you've reviewed the transcript, tool calls, and observed behavior and judged that the change works — Vent's `status` and exit code only reflect pipeline completion, not mission success.
 
@@ -99,10 +99,7 @@ Local websocket suite:
     "happy-path": {
       "caller_prompt": "You are Maria calling to reschedule her appointment to next Tuesday.",
       "max_turns": 8,
-      "silence_threshold_ms": 1200,
-      "audio_actions": [
-        { "action": "interrupt", "at_turn": 3, "prompt": "Just give me the earliest one." }
-      ]
+      "silence_threshold_ms": 1200
     }
   }
 }
@@ -131,13 +128,11 @@ Call fields:
 
 - `caller_prompt` and `max_turns` are required.
 - `silence_threshold_ms` must be `200-10000`. Common ranges: FAQ `800-1200`, tool calls `2000-3000`, complex reasoning `3000-5000`.
-- `persona` supports `pace`, `clarity`, `disfluencies`, `cooperation`, `emotion`, `interruption_style`, `memory`, `intent_clarity`, and `confirmation_style`.
-- `audio_actions` supports `interrupt`, `inject_noise`, `split_sentence`, and `noise_on_caller`.
+- `persona` supports `pace`, `clarity`, `disfluencies`, `cooperation`, `emotion`, `memory`, `intent_clarity`, and `confirmation_style`.
 - `caller_audio` supports noise, speed, speakerphone, mic distance, clarity, accent, packet loss, and jitter.
 - `language` is an ISO 639-1 code such as `en`, `es`, `fr`, `de`, `it`, `nl`, or `ja`.
 - `voice` is `"male"` or `"female"` (English only; default female). Use to flip the caller's perceived gender. Ignored if `caller_audio.accent` is set or `language` is non-English.
 - `prosody: true` enables emotion analysis and requires Hume access.
-- Prefer explicit `audio_actions.interrupt` over `persona.interruption_style` for deterministic barge-in tests. `persona.interruption_style` is only a preplanned caller tendency.
 
 ## Connections and Credentials
 
@@ -219,8 +214,6 @@ Use the LiveKit helper for observability; do not publish `vent:*` topics manuall
 Most result fields are always present; `latency`, `component_latency`, `call_metadata`, and `emotion` may be `null` when the underlying analysis didn't run; `debug` is absent without `--verbose`. Branch on null before reading nested fields. Use `--verbose` only when the default doesn't explain a failure — when you need `platform_transcript` (to check Vent's STT), per-turn or component-level latency breakdowns, the raw tool-call timeline, or provider-native artifacts in `debug.provider_metadata`. Otherwise skip — it just adds noise.
 
 Vent's transcript is ground truth. Judge on semantic intent: ignore homophones and minor mis-hears (`"check teach hat"` for `"check that"`, missing question marks on short tails) — those are streaming-STT noise on Vent's caller side, not agent bugs, and **don't surface them in the report** (they're Vent-side artifacts, not actionable for the user). But clear gibberish or word-soup (e.g. `"Cristoxin"` where the agent should have said `"Of course, talk soon"`) is **not** a Vent artifact — Vent's STT does not invent words like that. It means the platform's TTS produced corrupted audio or the agent's STT/LLM generated the wrong text, and the fix lives there (TTS voice config, agent prompt, model temperature, codec issue). Never dismiss the run as a "Vent harness STT" issue; iterate on the agent or flag the platform.
-
-`audio_actions` lists turns with injected interrupts; check the next turn to judge whether the agent acknowledged or restarted. Overtalk needs the recording and isn't evaluable from text alone.
 
 For transfers: `call_metadata.transfer_attempted` (provider claimed) and `transfer_completed` (Vent-verified) can disagree — report both. `transfers[]` carries destination, type, and per-attempt status.
 

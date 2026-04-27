@@ -1,30 +1,8 @@
 import { z } from "zod";
-import { AUDIO_ACTION_TYPES } from "./types.js";
 
 // ============================================================
 // V2 Schemas — Dynamic voice agent calls
 // ============================================================
-
-export const AudioActionSchema = z.object({
-  at_turn: z.number().int().min(0),
-  action: z.enum(AUDIO_ACTION_TYPES),
-  prompt: z.string().optional(),
-  duration_ms: z.number().int().min(1000).max(30000).optional(),
-  noise_type: z.enum(["babble", "white", "pink"]).optional(),
-  snr_db: z.number().min(0).max(40).optional(),
-  split: z.object({
-    part_a: z.string().min(1),
-    part_b: z.string().min(1),
-    pause_ms: z.number().int().min(500).max(5000),
-  }).optional(),
-});
-
-export const AudioActionResultSchema = z.object({
-  at_turn: z.number().int().min(0),
-  action: z.string(),
-  metrics: z.record(z.union([z.number(), z.boolean()])),
-  transcriptions: z.record(z.union([z.string(), z.null()])).optional(),
-});
 
 export const CallerPersonaSchema = z.object({
   pace: z.enum(["slow", "normal", "fast"]).optional(),
@@ -32,7 +10,6 @@ export const CallerPersonaSchema = z.object({
   disfluencies: z.boolean().optional(),
   cooperation: z.enum(["cooperative", "reluctant", "hostile"]).optional(),
   emotion: z.enum(["neutral", "cheerful", "confused", "frustrated", "skeptical", "rushed"]).optional(),
-  interruption_style: z.enum(["low", "high"]).optional(),
   memory: z.enum(["reliable", "unreliable"]).optional(),
   intent_clarity: z.enum(["clear", "indirect", "vague"]).optional(),
   confirmation_style: z.enum(["explicit", "vague"]).optional(),
@@ -59,7 +36,6 @@ export const ConversationCallSpecSchema = z.object({
 
   silence_threshold_ms: z.number().int().min(200).max(10000).optional(),
   persona: CallerPersonaSchema,
-  audio_actions: z.array(AudioActionSchema).optional(),
   prosody: z.boolean().optional(),
   caller_audio: CallerAudioEffectsSchema.optional(),
   /** ISO 639-1 language code for multilingual calls (e.g., "es", "fr", "de"). Caller speaks this language, STT transcribes it, judge evaluates in it. */
@@ -350,7 +326,6 @@ export const ConversationCallResultSchema = z.object({
   transcript: z.array(ConversationTurnSchema),
 
   observed_tool_calls: z.array(ObservedToolCallSchema).optional(),
-  audio_action_results: z.array(AudioActionResultSchema).optional(),
   duration_ms: z.number(),
   metrics: ConversationMetricsSchema,
   error: z.string().optional(),
