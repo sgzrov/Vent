@@ -61,7 +61,6 @@ Swap `adapter` for `retell`, `livekit`, `elevenlabs`, `bland`, or `websocket` to
 | `vent-hq init`                      | One-time setup: auth, skill files, starter suite           |
 | `vent-hq run -f <suite.json>`       | Run a call (or all calls) from a suite, stream results     |
 | `vent-hq run -f <s> --call <name>`  | Run a single named call                                    |
-| `vent-hq status <run-id>`           | Check or stream the status of a previous run               |
 | `vent-hq stop <run-id>`             | Cancel a queued or running call                            |
 | `vent-hq agent start -f <s>`        | Keep a relay session open for a local WebSocket agent      |
 | `vent-hq login` / `logout`          | Manage credentials                                         |

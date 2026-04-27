@@ -31,7 +31,7 @@ If the user explicitly opts out ("just report", "don't iterate", "stop after the
 
 ## Claude Code Execution
 
-Use a 5-minute shell-tool timeout (`300000` ms) on Vent run commands so normal calls are not killed by the default 2-minute Bash timeout. This is not backgrounding; wait for stdout/results before ending your response. Use the JSON returned by `npx vent-hq run` directly; do not call `vent status` unless checking an older run.
+Use a 5-minute shell-tool timeout (`300000` ms) on Vent run commands so normal calls are not killed by the default 2-minute Bash timeout. This is not backgrounding; wait for stdout/results before ending your response. Use the JSON returned by `npx vent-hq run` directly.
 
 Claude Code serializes separate Bash tool calls for `npx vent-hq ...`, so run multiple calls from one suite by invoking each named call with `--call <name>` in one Bash command using `&` and a final `wait`:
 
@@ -69,12 +69,13 @@ For these composites, raise the Bash timeout to **10 minutes** (`600000` ms) —
 ```bash
 npx vent-hq init                                  # First-time setup (auth + skill install + starter suite)
 npx vent-hq login                                 # Log in to existing account
+npx vent-hq login --status                        # Print whether credentials are present
+npx vent-hq logout                                # Remove saved credentials from ~/.vent/credentials
 npx vent-hq run -f .vent/suite.X.json             # Run a single-call suite
 npx vent-hq run -f .vent/suite.X.json --call NAME # Run one named call from a multi-call suite
 npx vent-hq run ... --session <session-id>        # Add to any run; routes through an existing local relay session
-npx vent-hq run ... --verbose                     # Add to any run or status; include verbose debug fields
+npx vent-hq run ... --verbose                     # Add to any run; include verbose debug fields
 npx vent-hq stop <run-id>                         # Cancel a queued or running run
-npx vent-hq status <run-id>                       # Fetch results for a previous run
 npx vent-hq agent start -f .vent/suite.X.json     # Start a shared local relay session
 npx vent-hq agent stop <session-id>               # Stop a shared local relay session
 ```
