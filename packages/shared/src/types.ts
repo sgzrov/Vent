@@ -88,6 +88,8 @@ export interface ConversationCallSpec {
   caller_audio?: CallerAudioEffects;
   /** ISO 639-1 language code for multilingual calls (e.g., "es", "fr", "de"). Caller speaks this language, STT transcribes it, judge evaluates in it. */
   language?: string;
+  /** Caller voice gender (English only). "male" → aura-2-apollo-en, "female" → aura-2-thalia-en (default). Ignored if caller_audio.accent is set or language is non-English. */
+  voice?: "male" | "female";
 }
 
 // ============================================================
