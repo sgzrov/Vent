@@ -1,5 +1,10 @@
 app = "vent-worker"
 primary_region = "iad"
+# Wait up to 5m (Fly's hard cap) for in-flight voice calls to drain on deploy.
+# Calls longer than 5m will still be SIGKILLed mid-call; combined with
+# maxStalledCount: 0 in queue-runtime.ts the run fails cleanly rather than
+# being replayed and double-billed.
+kill_timeout = "5m"
 
 [build]
   dockerfile = "Dockerfile"

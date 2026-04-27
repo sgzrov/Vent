@@ -45,7 +45,9 @@ export const queuePlugin = fp(async (app) => {
       const q = new Queue(name, {
         connection,
         defaultJobOptions: {
-
+          // Voice calls are non-idempotent (each execution = a real billed phone call).
+          // Never let BullMQ auto-retry on a thrown error.
+          attempts: 1,
           removeOnComplete: { age: 3600, count: 1000 },
           removeOnFail: { age: 86_400, count: 5000 },
         },
