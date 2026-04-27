@@ -11,6 +11,9 @@
   <a href="https://github.com/vent-hq/vent/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="License" /></a>
 </p>
 
+<p align="center">
+  <img src=".github/screenshot.png" alt="Vent screenshot" />
+</p>
 
 ---
 
