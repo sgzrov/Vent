@@ -60,20 +60,26 @@ export const runs = pgTable(
   }),
 );
 
-export const scenarioResults = pgTable("scenario_results", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  run_id: uuid("run_id")
-    .notNull()
-    .references(() => runs.id, { onDelete: "cascade" }),
-  name: text("name").notNull(),
-  status: scenarioStatusEnum("status").notNull(),
-  test_type: text("test_type").default("conversation"),
-  metrics_json: jsonb("metrics_json").notNull(),
-  trace_json: jsonb("trace_json").notNull(),
-  created_at: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-});
+export const scenarioResults = pgTable(
+  "scenario_results",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    run_id: uuid("run_id")
+      .notNull()
+      .references(() => runs.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    status: scenarioStatusEnum("status").notNull(),
+    test_type: text("test_type").default("conversation"),
+    metrics_json: jsonb("metrics_json").notNull(),
+    trace_json: jsonb("trace_json").notNull(),
+    created_at: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => ({
+    scenarioResultsRunIdIdx: index("scenario_results_run_id_idx").on(table.run_id),
+  }),
+);
 
 export const accessTokens = pgTable("access_tokens", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -162,15 +168,24 @@ export const agentSessions = pgTable("agent_sessions", {
   closed_at: timestamp("closed_at", { withTimezone: true }),
 });
 
-export const runEvents = pgTable("run_events", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  run_id: uuid("run_id")
-    .notNull()
-    .references(() => runs.id, { onDelete: "cascade" }),
-  event_type: text("event_type").notNull(),
-  message: text("message").notNull(),
-  metadata_json: jsonb("metadata_json"),
-  created_at: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-});
+export const runEvents = pgTable(
+  "run_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    run_id: uuid("run_id")
+      .notNull()
+      .references(() => runs.id, { onDelete: "cascade" }),
+    event_type: text("event_type").notNull(),
+    message: text("message").notNull(),
+    metadata_json: jsonb("metadata_json"),
+    created_at: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => ({
+    runEventsRunIdCreatedAtIdx: index("run_events_run_id_created_at_idx").on(
+      table.run_id,
+      table.created_at,
+    ),
+  }),
+);
