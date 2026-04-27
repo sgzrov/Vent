@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { eq, and, sql } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 import { schema } from "@vent/db";
 import { z } from "zod";
 import {
@@ -14,22 +14,6 @@ import {
 import type { FastifyInstance } from "fastify";
 
 const PLATFORM_ADAPTERS = new Set(["livekit", "vapi", "retell", "elevenlabs", "bland"]);
-
-// ---- Usage limit error ----
-
-export class UsageLimitError extends Error {
-  public limit: number;
-  public used: number;
-
-  constructor(limit: number, used: number) {
-    super(
-      `To prevent abuse, unverified accounts are limited to ${limit} runs. Sign in to verify your account for unlimited access.`,
-    );
-    this.name = "UsageLimitError";
-    this.limit = limit;
-    this.used = used;
-  }
-}
 
 export class FleetCapacityError extends Error {
   constructor() {
@@ -179,24 +163,6 @@ export async function submitRun(
 
     if (existing) {
       return { run_id: existing.id, status: existing.status, deduplicated: true };
-    }
-  }
-
-  // Usage limit check for anonymous access tokens
-  const [accessTokenRow] = await app.db
-    .select({ run_limit: schema.accessTokens.run_limit })
-    .from(schema.accessTokens)
-    .where(eq(schema.accessTokens.id, accessTokenId))
-    .limit(1);
-
-  if (accessTokenRow?.run_limit != null) {
-    const [{ count }] = await app.db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(schema.runs)
-      .where(eq(schema.runs.user_id, userId));
-
-    if (count >= accessTokenRow.run_limit) {
-      throw new UsageLimitError(accessTokenRow.run_limit, count);
     }
   }
 
@@ -356,6 +322,7 @@ export async function submitRun(
   // Enqueue the job
   const jobData = {
     run_id: runId,
+    user_id: userId,
     adapter: resolvedAdapter,
     call_spec: { call: call ?? null },
     voice_config: voiceConfig,

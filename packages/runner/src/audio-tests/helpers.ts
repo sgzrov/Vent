@@ -258,6 +258,11 @@ export async function collectUntilEndOfTurn(
           }
           if (platformDrainTimer && !platformConfirmedSilent && !budgetExhausted) {
             console.log(`    [vad] Audible audio arrived during drain window — extending turn`);
+            // Reset firstEOTAt so the next pause's extension-budget check
+            // starts from now, not from the stale platform EOT timestamp.
+            // Without this, drain-extended turns can hit budget exhaustion
+            // prematurely on a subsequent legit pause.
+            firstEOTAt = null;
             schedulePlatformDrain(platformDrainReason || "end_of_turn confirmed", platformDrainMs);
           }
         }

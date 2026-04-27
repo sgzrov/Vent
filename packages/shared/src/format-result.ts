@@ -49,11 +49,12 @@ interface FormattedTranscriptTurn {
 interface FormattedLatency {
   response_time_ms: number;
   response_time_source: "ttfw" | "ttfb";
-  p50_response_time_ms: number;
-  p90_response_time_ms: number;
   p95_response_time_ms: number;
-  p99_response_time_ms: number;
   first_response_time_ms: number;
+  // Verbose-only: extra percentiles, ttfw clones, drift, padding, m2e.
+  p50_response_time_ms?: number;
+  p90_response_time_ms?: number;
+  p99_response_time_ms?: number;
   mean_ttfw_ms?: number;
   p50_ttfw_ms?: number;
   p90_ttfw_ms?: number;
@@ -95,11 +96,12 @@ interface FormattedComponentLatency {
   mean_stt_ms?: number;
   mean_llm_ms?: number;
   mean_tts_ms?: number;
+  bottleneck?: "stt" | "llm" | "tts";
+  // Verbose-only.
   p95_stt_ms?: number;
   p95_llm_ms?: number;
   p95_tts_ms?: number;
   mean_speech_duration_ms?: number;
-  bottleneck?: "stt" | "llm" | "tts";
 }
 
 interface FormattedCallMetadata {
@@ -108,18 +110,19 @@ interface FormattedCallMetadata {
   provider_session_id?: string;
   ended_reason?: string;
   cost_usd?: number;
-  cost_breakdown?: CostBreakdown;
-  usage?: UsageEntry[];
   recording_url?: string;
-  recording_variants?: Record<string, string>;
-  provider_debug_urls?: Record<string, string>;
-  variables?: Record<string, unknown>;
   transfer_attempted?: boolean;
   transfer_completed?: boolean;
   escalated?: boolean;
   transfer_count?: number;
   completed_transfer_count?: number;
   transfers?: CallTransfer[];
+  // Verbose-only.
+  cost_breakdown?: CostBreakdown;
+  usage?: UsageEntry[];
+  recording_variants?: Record<string, string>;
+  provider_debug_urls?: Record<string, string>;
+  variables?: Record<string, unknown>;
 }
 
 interface FormattedDebugToolCall {
@@ -146,7 +149,6 @@ interface FormattedConversationDebug {
 export interface FormattedConversationResult {
   name: string | null;
   status: "completed" | "error";
-  caller_prompt: string;
   duration_ms: number;
   error: string | null;
   transcript: FormattedTranscriptTurn[];
@@ -154,9 +156,11 @@ export interface FormattedConversationResult {
   tool_calls: FormattedToolCalls;
   component_latency: FormattedComponentLatency | null;
   call_metadata: FormattedCallMetadata | null;
-  warnings: string[];
-  audio_actions: AudioActionResult[];
-  emotion: FormattedEmotion | null;
+  // Optional in default mode: omitted when empty/null.
+  warnings?: string[];
+  audio_actions?: AudioActionResult[];
+  emotion?: FormattedEmotion;
+  caller_prompt?: string;
   debug?: FormattedConversationDebug;
 }
 
@@ -174,26 +178,34 @@ export function formatConversationResult(
   const r = raw as ConversationCallResult;
   if (typeof r.caller_prompt !== "string") return null;
 
-  const debug = options.verbose ? formatDebug(r) : undefined;
+  const verbose = options.verbose ?? false;
+  const debug = verbose ? formatDebug(r) : undefined;
 
-  return {
+  const warnings = dedupeStrings([
+    ...formatProviderWarningMessages(r.call_metadata?.provider_warnings),
+  ]);
+  const audioActions = r.audio_action_results ?? [];
+  const emotion = r.metrics?.prosody ? formatEmotion(r.metrics.prosody) : null;
+
+  const result: FormattedConversationResult = {
     name: r.name ?? null,
     status: r.status,
-    caller_prompt: r.caller_prompt,
     duration_ms: r.duration_ms,
     error: r.error ?? null,
     transcript: formatTranscript(r.transcript, options),
-    latency: r.metrics?.latency ? formatLatency(r.metrics.latency, r.metrics) : null,
-    tool_calls: formatToolCalls(r.metrics?.tool_calls, r.observed_tool_calls),
-    component_latency: formatComponentLatency(r.metrics?.component_latency),
-    call_metadata: formatCallMetadata(r.call_metadata),
-    warnings: dedupeStrings([
-      ...formatProviderWarningMessages(r.call_metadata?.provider_warnings),
-    ]),
-    audio_actions: r.audio_action_results ?? [],
-    emotion: r.metrics?.prosody ? formatEmotion(r.metrics.prosody) : null,
-    ...(debug ? { debug } : {}),
+    latency: r.metrics?.latency ? formatLatency(r.metrics.latency, r.metrics, verbose) : null,
+    tool_calls: formatToolCalls(r.metrics?.tool_calls, r.observed_tool_calls, verbose),
+    component_latency: formatComponentLatency(r.metrics?.component_latency, verbose),
+    call_metadata: formatCallMetadata(r.call_metadata, verbose),
   };
+
+  if (warnings.length > 0) result.warnings = warnings;
+  if (audioActions.length > 0) result.audio_actions = audioActions;
+  if (emotion) result.emotion = emotion;
+  if (verbose) result.caller_prompt = r.caller_prompt;
+  if (debug) result.debug = debug;
+
+  return result;
 }
 
 // ---- Helpers ----
@@ -232,7 +244,7 @@ function formatTranscript(
   });
 }
 
-function formatLatency(latency: LatencyMetrics, metrics: ConversationCallResult["metrics"]): FormattedLatency | null {
+function formatLatency(latency: LatencyMetrics, metrics: ConversationCallResult["metrics"], verbose: boolean): FormattedLatency | null {
   const hasTtfw =
     metrics.mean_ttfw_ms != null
     && latency.p50_ttfw_ms != null
@@ -242,12 +254,16 @@ function formatLatency(latency: LatencyMetrics, metrics: ConversationCallResult[
   const result: FormattedLatency = {
     response_time_ms: hasTtfw ? metrics.mean_ttfw_ms! : metrics.mean_ttfb_ms,
     response_time_source: responseTimeSource,
-    p50_response_time_ms: hasTtfw ? latency.p50_ttfw_ms! : latency.p50_ttfb_ms,
-    p90_response_time_ms: hasTtfw ? (latency.p90_ttfw_ms ?? latency.p90_ttfb_ms) : latency.p90_ttfb_ms,
     p95_response_time_ms: hasTtfw ? latency.p95_ttfw_ms! : latency.p95_ttfb_ms,
-    p99_response_time_ms: hasTtfw ? (latency.p99_ttfw_ms ?? latency.p99_ttfb_ms) : latency.p99_ttfb_ms,
     first_response_time_ms: hasTtfw ? (latency.first_turn_ttfw_ms ?? latency.first_turn_ttfb_ms) : latency.first_turn_ttfb_ms,
   };
+
+  if (!verbose) return result;
+
+  // Verbose-only: extra percentiles, ttfw clones, drift, padding, m2e.
+  result.p50_response_time_ms = hasTtfw ? latency.p50_ttfw_ms! : latency.p50_ttfb_ms;
+  result.p90_response_time_ms = hasTtfw ? (latency.p90_ttfw_ms ?? latency.p90_ttfb_ms) : latency.p90_ttfb_ms;
+  result.p99_response_time_ms = hasTtfw ? (latency.p99_ttfw_ms ?? latency.p99_ttfb_ms) : latency.p99_ttfb_ms;
 
   if (hasTtfw) {
     result.mean_ttfw_ms = metrics.mean_ttfw_ms;
@@ -268,6 +284,7 @@ function formatLatency(latency: LatencyMetrics, metrics: ConversationCallResult[
 function formatToolCalls(
   summary: ToolCallMetrics | undefined,
   observed: ObservedToolCall[] | undefined,
+  verbose: boolean,
 ): FormattedToolCalls {
   return {
     total: summary?.total ?? observed?.length ?? 0,
@@ -275,16 +292,64 @@ function formatToolCalls(
     failed: summary?.failed ?? observed?.filter((c) => c.successful === false).length ?? 0,
     mean_latency_ms: summary?.mean_latency_ms,
     names: summary?.names ?? [...new Set((observed ?? []).map((c) => c.name))],
-    observed: (observed ?? []).map((c) => ({
-      name: c.name,
-      arguments: c.arguments,
-      result: c.result,
-      successful: c.successful,
-      provider_tool_type: c.provider_tool_type,
-      latency_ms: c.latency_ms,
-      turn_index: c.turn_index,
-    })),
+    observed: (observed ?? []).map((c) => {
+      const entry: FormattedToolCalls["observed"][number] = {
+        name: c.name,
+        arguments: stripExecutionMessage(c.arguments),
+        result: verbose ? c.result : truncateLargeArrays(c.result),
+        successful: c.successful,
+        latency_ms: c.latency_ms,
+        turn_index: c.turn_index,
+      };
+      // Only surface provider_tool_type when it carries information beyond the
+      // generic "custom" default — that's the only value users care about
+      // (e.g. "end_call", "transfer").
+      if (c.provider_tool_type && c.provider_tool_type !== "custom") {
+        entry.provider_tool_type = c.provider_tool_type;
+      }
+      return entry;
+    }),
   };
+}
+
+const TOOL_RESULT_ARRAY_LIMIT = 5;
+
+/**
+ * Recursively walk a tool result and truncate any array longer than
+ * TOOL_RESULT_ARRAY_LIMIT items, replacing the tail with a marker. Tool
+ * results commonly include long lists of mock/test data the agent doesn't
+ * need to read in full.
+ */
+function truncateLargeArrays(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    if (value.length <= TOOL_RESULT_ARRAY_LIMIT) {
+      return value.map(truncateLargeArrays);
+    }
+    return [
+      ...value.slice(0, TOOL_RESULT_ARRAY_LIMIT).map(truncateLargeArrays),
+      { _truncated: `${value.length - TOOL_RESULT_ARRAY_LIMIT} more entries omitted; use --verbose for full result` },
+    ];
+  }
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value)) {
+      out[k] = truncateLargeArrays(v);
+    }
+    return out;
+  }
+  return value;
+}
+
+/**
+ * Drop the `execution_message` field from tool arguments. It's the agent's
+ * pre-tool spoken prefix (e.g. "Looking up your account...") and is already
+ * visible in the transcript — having it inline noises up the report.
+ */
+function stripExecutionMessage(args: Record<string, unknown>): Record<string, unknown> {
+  if (!args || typeof args !== "object") return args;
+  const { execution_message: _drop, ...rest } = args as Record<string, unknown>;
+  void _drop;
+  return rest;
 }
 
 function formatEmotion(prosody: ProsodyMetrics): FormattedEmotion {
@@ -297,27 +362,29 @@ function formatEmotion(prosody: ProsodyMetrics): FormattedEmotion {
   };
 }
 
-function formatComponentLatency(cl: ComponentLatencyMetrics | undefined): FormattedComponentLatency | null {
+function formatComponentLatency(cl: ComponentLatencyMetrics | undefined, verbose: boolean): FormattedComponentLatency | null {
   if (!cl) return null;
+  const result: FormattedComponentLatency = {
+    mean_stt_ms: cl.mean_stt_ms,
+    mean_llm_ms: cl.mean_llm_ms,
+    mean_tts_ms: cl.mean_tts_ms,
+    bottleneck: cl.bottleneck,
+  };
+  if (!verbose) return result;
   const speechDurations = cl.per_turn
     .map((t) => t.speech_duration_ms)
     .filter((v): v is number => v != null);
   const meanSpeech = speechDurations.length > 0
     ? Math.round(speechDurations.reduce((a, b) => a + b, 0) / speechDurations.length)
     : undefined;
-  return {
-    mean_stt_ms: cl.mean_stt_ms,
-    mean_llm_ms: cl.mean_llm_ms,
-    mean_tts_ms: cl.mean_tts_ms,
-    p95_stt_ms: cl.p95_stt_ms,
-    p95_llm_ms: cl.p95_llm_ms,
-    p95_tts_ms: cl.p95_tts_ms,
-    mean_speech_duration_ms: meanSpeech,
-    bottleneck: cl.bottleneck,
-  };
+  result.p95_stt_ms = cl.p95_stt_ms;
+  result.p95_llm_ms = cl.p95_llm_ms;
+  result.p95_tts_ms = cl.p95_tts_ms;
+  result.mean_speech_duration_ms = meanSpeech;
+  return result;
 }
 
-function formatCallMetadata(meta: CallMetadata | undefined): FormattedCallMetadata | null {
+function formatCallMetadata(meta: CallMetadata | undefined, verbose: boolean): FormattedCallMetadata | null {
   if (!meta) return null;
   const transfers = meta.transfers?.map((transfer) => {
     const formattedTransfer: CallTransfer = {
@@ -338,13 +405,16 @@ function formatCallMetadata(meta: CallMetadata | undefined): FormattedCallMetada
     provider_session_id: meta.provider_session_id,
     ended_reason: meta.ended_reason,
     cost_usd: meta.cost_usd,
-    cost_breakdown: meta.cost_breakdown,
-    usage: meta.usage && meta.usage.length > 0 ? meta.usage : undefined,
     recording_url: meta.recording_url,
-    recording_variants: meta.recording_variants,
-    provider_debug_urls: meta.provider_debug_urls,
-    variables: meta.variables,
   };
+
+  if (verbose) {
+    result.cost_breakdown = meta.cost_breakdown;
+    result.usage = meta.usage && meta.usage.length > 0 ? meta.usage : undefined;
+    result.recording_variants = meta.recording_variants;
+    result.provider_debug_urls = meta.provider_debug_urls;
+    result.variables = meta.variables;
+  }
 
   if (transfers && transfers.length > 0) {
     const completedTransferCount = transfers.filter((transfer) => transfer.status === "completed").length;

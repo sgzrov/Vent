@@ -1,10 +1,9 @@
 import type { FastifyInstance } from "fastify";
-import { randomBytes, createHash, randomUUID } from "node:crypto";
+import { randomBytes, createHash } from "node:crypto";
 import { schema } from "@vent/db";
 
 const WINDOW_MS = 60 * 60 * 1000; // 1 hour
 const MAX_BOOTSTRAPS_PER_IP = 5;
-const DEFAULT_RUN_LIMIT = 10;
 
 interface RateEntry {
   count: number;
@@ -28,42 +27,16 @@ function checkRate(ip: string): boolean {
 }
 
 export async function agentAuthRoutes(app: FastifyInstance) {
-  // Anonymous bootstrap — zero-interaction account creation for agents
-  app.post("/auth/bootstrap", async (request, reply) => {
-    const ip = request.ip;
-
-    if (!checkRate(ip)) {
-      return reply.status(429).send({
-        error: "Too many accounts created. Try again later.",
-      });
-    }
-
-    const runLimit =
-      parseInt(process.env["ANONYMOUS_RUN_LIMIT"] ?? "", 10) ||
-      DEFAULT_RUN_LIMIT;
-
-    const userId = `anon_${randomUUID()}`;
-    const rawAccessToken = `vent_${randomBytes(24).toString("hex")}`;
-    const tokenHash = createHash("sha256").update(rawAccessToken).digest("hex");
-    const prefix = rawAccessToken.slice(0, 12);
-
-    await app.db.insert(schema.accessTokens).values({
-      user_id: userId,
-      token_hash: tokenHash,
-      name: "Bootstrap",
-      prefix,
-      is_anonymous: true,
-      run_limit: runLimit,
-    });
-
-    return reply.status(201).send({
-      access_token: rawAccessToken,
-      run_limit: runLimit,
-    });
-  });
-
-  // GitHub identity — zero-interaction account creation with verified identity
-  app.post("/auth/github", async (request, reply) => {
+  // GitHub identity — zero-interaction account creation with verified identity.
+  // Anonymous bootstrap was removed: every `vent-hq init` now requires either
+  // a working GitHub token (auto) or a one-time browser sign-in via WorkOS
+  // device flow (CLI fallback). No anonymous abuse vector.
+  app.post("/auth/github", {
+    config: {
+      // Identity creation — tighter cap. Per-IP since unauthenticated.
+      rateLimit: { max: 10, timeWindow: "1 hour" },
+    },
+  }, async (request, reply) => {
     const ip = request.ip;
 
     if (!checkRate(ip)) {
@@ -100,8 +73,6 @@ export async function agentAuthRoutes(app: FastifyInstance) {
       token_hash: tokenHash,
       name: `GitHub (${ghUser.login})`,
       prefix,
-      is_anonymous: false,
-      run_limit: null,
     });
 
     return reply.status(201).send({

@@ -87,6 +87,19 @@ export function resolveLanguageVoiceId(language: string): string | undefined {
 }
 
 // ============================================================
+// Gender presets — English-only male/female toggle
+// ============================================================
+
+export const GENDER_VOICE_DEFAULTS: Record<"male" | "female", string> = {
+  female: "aura-2-thalia-en",
+  male: "aura-2-apollo-en",
+};
+
+export function resolveGenderVoiceId(gender: "male" | "female"): string {
+  return GENDER_VOICE_DEFAULTS[gender];
+}
+
+// ============================================================
 // DSP effects
 // ============================================================
 

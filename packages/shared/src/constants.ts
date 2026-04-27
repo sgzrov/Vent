@@ -5,7 +5,16 @@ export const DEFAULT_POLL_INTERVAL_MS = 3_000;
 export const DEFAULT_AGENT_PORT = 3001;
 export const DEFAULT_API_PORT = 3000;
 
+// Legacy plaintext-secret header. Still used for relay WebSocket and relay-ready
+// GET (no body to sign). New POST callbacks use the HMAC headers below.
 export const RUNNER_CALLBACK_HEADER = "x-runner-secret";
+
+// HMAC-signed callback headers (for POST /internal/* routes).
+// Signature = HMAC-SHA256(secret, `${timestamp}.${rawBody}`), base64url.
+// Timestamp is unix milliseconds; reject if drift > RUNNER_CALLBACK_MAX_SKEW_MS.
+export const RUNNER_CALLBACK_SIGNATURE_HEADER = "x-vent-signature";
+export const RUNNER_CALLBACK_TIMESTAMP_HEADER = "x-vent-timestamp";
+export const RUNNER_CALLBACK_MAX_SKEW_MS = 5 * 60_000;
 
 export const RUN_QUEUE_PREFIX = "voice-ci-runs-";
 export const RUN_QUEUE_REGISTRY_SET = "vent:active-queues";

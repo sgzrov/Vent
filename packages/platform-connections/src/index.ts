@@ -51,22 +51,17 @@ function sha256(value: string): string {
 
 function normalizeMasterKey(raw: string): Buffer {
   const trimmed = raw.trim();
+  // Strict: 64 hex chars only. The previous fallback to UTF-8 32-byte
+  // strings silently accepted weak keys (e.g. an accidentally-short
+  // memorable phrase that happened to be 32 bytes). Generate via
+  // `openssl rand -hex 32`. No base64 fallback either — one canonical
+  // format avoids "did you mean hex or base64?" failure modes.
   if (/^[0-9a-fA-F]{64}$/.test(trimmed)) {
     return Buffer.from(trimmed, "hex");
   }
 
-  try {
-    const base64 = Buffer.from(trimmed, "base64");
-    if (base64.length === 32) return base64;
-  } catch {
-    // Fall through to UTF-8 parsing.
-  }
-
-  const utf8 = Buffer.from(trimmed, "utf8");
-  if (utf8.length === 32) return utf8;
-
   throw new Error(
-    `${PLATFORM_CONNECTIONS_MASTER_KEY_ENV} must decode to exactly 32 bytes (64 hex chars, base64, or 32-byte UTF-8 string)`,
+    `${PLATFORM_CONNECTIONS_MASTER_KEY_ENV} must be exactly 64 hex characters (generate with: openssl rand -hex 32)`,
   );
 }
 

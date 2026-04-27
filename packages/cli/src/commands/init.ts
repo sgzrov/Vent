@@ -1,6 +1,7 @@
 import { loadAccessToken, saveAccessToken, API_BASE } from "../lib/config.js";
 import { detectGitHubToken } from "../lib/github.js";
-import { printError, printSuccess } from "../lib/output.js";
+import { deviceAuthFlow } from "../lib/auth.js";
+import { printError, printInfo, printSuccess } from "../lib/output.js";
 import { installSkillsAndScaffold } from "../lib/setup.js";
 
 export async function initCommand(): Promise<number> {
@@ -12,7 +13,11 @@ export async function initCommand(): Promise<number> {
   if (token) {
     printSuccess("Authenticated.", { force: true });
   } else {
-    // No token — try GitHub identity first, then anonymous bootstrap
+    // Two paths to a token, in order of frictionlessness:
+    //  1. GitHub CLI token (via `gh auth token` or env) — silent.
+    //  2. Browser device-auth via WorkOS — one-time interactive sign-in.
+    // The legacy anonymous bootstrap path was removed; every account is
+    // now backed by a verified identity.
     let authenticated = false;
     const ghToken = detectGitHubToken();
 
@@ -30,48 +35,28 @@ export async function initCommand(): Promise<number> {
             username: string;
           };
           if (!access_token) throw new Error("Missing access token");
-          const token = access_token;
-          await saveAccessToken(token);
+          await saveAccessToken(access_token);
           printSuccess(`Authenticated as @${username} (via GitHub).`, {
             force: true,
           });
           authenticated = true;
         }
       } catch {
-        // GitHub verification failed — fall through to bootstrap
+        // GitHub verification failed — fall through to browser sign-in
       }
     }
 
     if (!authenticated) {
-      // Anonymous bootstrap (zero interaction, limited runs)
-      let res: Response;
-      try {
-        res = await fetch(`${API_BASE}/auth/bootstrap`, { method: "POST" });
-      } catch (err) {
-        printError(`Failed to reach API: ${(err as Error).message}`);
-        return 1;
-      }
-
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        printError((body as any).error ?? `Bootstrap failed (${res.status}).`);
-        return 1;
-      }
-
-      const { access_token, run_limit } = (await res.json()) as {
-        access_token?: string;
-        run_limit: number;
-      };
-      if (!access_token) {
-        printError("Bootstrap did not return a Vent access token.");
-        return 1;
-      }
-      const token = access_token;
-      await saveAccessToken(token);
-      printSuccess(
-        `Account created (${run_limit} runs). You'll be prompted to sign in for unlimited access.`,
+      printInfo(
+        "No GitHub token detected. Opening browser to sign in...",
         { force: true },
       );
+      const result = await deviceAuthFlow();
+      if (!result.ok) {
+        printError(`Sign-in failed: ${result.error}`);
+        return 1;
+      }
+      printSuccess("Authenticated.", { force: true });
     }
   }
 

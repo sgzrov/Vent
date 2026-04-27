@@ -7,11 +7,29 @@ declare module "fastify" {
   }
 }
 
+function parsePositiveInt(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const value = Number.parseInt(raw, 10);
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(`${name} must be a positive integer`);
+  }
+  return value;
+}
+
 export const dbPlugin = fp(async (app) => {
   const connectionString = process.env["DATABASE_URL"];
   if (!connectionString) {
     throw new Error("DATABASE_URL is required");
   }
-  const db = createDb(connectionString);
+  // Default 30 = comfortable headroom for SSE replays + cleanup interval +
+  // /internal/* callback transactions. Override with API_DB_POOL_MAX if you
+  // run a fatter API box.
+  const max = parsePositiveInt("API_DB_POOL_MAX", 30);
+  const db = createDb(connectionString, {
+    max,
+    idleTimeoutSeconds: 30,
+    maxLifetimeSeconds: 3600,
+  });
   app.decorate("db", db);
 });

@@ -5,8 +5,12 @@ import { schema } from "@vent/db";
 
 export async function keyRoutes(app: FastifyInstance) {
   const authPreHandler = { preHandler: app.verifyAuth };
+  // Mutating routes additionally enforce Origin allowlist for cookie-authed
+  // requests so a malicious site can't trigger key creation/revocation via
+  // an in-browser form POST against a signed-in dashboard user.
+  const mutatingPreHandler = { preHandler: app.verifyAuthAndCsrf };
 
-  app.post("/keys", authPreHandler, async (request, reply) => {
+  app.post("/keys", mutatingPreHandler, async (request, reply) => {
     const body = request.body as { name?: string } | undefined;
     const name = body?.name ?? "default";
 
@@ -57,7 +61,7 @@ export async function keyRoutes(app: FastifyInstance) {
 
   app.delete<{ Params: { id: string } }>(
     "/keys/:id",
-    authPreHandler,
+    mutatingPreHandler,
     async (request, reply) => {
       const { id } = request.params;
 

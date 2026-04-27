@@ -141,6 +141,13 @@
       "when": 1773400000000,
       "tag": "0019_simplify_test_type",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1777400000000,
+      "tag": "0020_event_indexes",
+      "breakpoints": true
     }
   ]
 }

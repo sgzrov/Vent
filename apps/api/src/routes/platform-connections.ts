@@ -28,8 +28,10 @@ function isUniqueViolation(err: unknown): boolean {
 
 export async function platformConnectionRoutes(app: FastifyInstance) {
   const authPreHandler = { preHandler: app.verifyAuth };
+  // Mutating routes opt into the additional CSRF Origin check.
+  const mutatingPreHandler = { preHandler: app.verifyAuthAndCsrf };
 
-  app.post("/platform-connections/ensure", authPreHandler, async (request, reply) => {
+  app.post("/platform-connections/ensure", mutatingPreHandler, async (request, reply) => {
     const parsed = EnsurePlatformConnectionSchema.safeParse(request.body);
     if (!parsed.success) {
       return reply.status(400).send({

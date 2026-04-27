@@ -80,8 +80,13 @@ export class BlandWsAudioChannel extends BaseAudioChannel {
   // extend a turn when the agent resumes after a pause.
   hasPlatformEndOfTurn = false;
   preferredSilenceThresholdMs = 1200;
+  // postVadContinuationMs is set conditionally in the constructor based on
+  // whether the call config declares tools. Bland sends webhook/dynamic_data
+  // events only AFTER tool completion — there's no real-time tool-start
+  // signal, so we extend the post-VAD continuation only when tools are
+  // possible. Tool-less agents don't pay the dead-air cost.
   postVadContinuationMs = 1000;
-  postToolCallContinuationMs = 2000;
+  postToolCallContinuationMs = 3500;
 
   private config: BlandWsAudioChannelConfig;
   private ws: WebSocket | null = null;
@@ -118,6 +123,11 @@ export class BlandWsAudioChannel extends BaseAudioChannel {
     super();
     this.config = config;
     this.channelId = randomBytes(12).toString("hex");
+    // Only pay the 3.5s dead-air cost when the call actually declares tools.
+    // For tool-less agents the default 1s VAD continuation is plenty.
+    if (config.callOptions?.tools && config.callOptions.tools.length > 0) {
+      this.postVadContinuationMs = 3500;
+    }
   }
 
   get connected(): boolean {

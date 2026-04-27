@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { Queue, Worker } from "bullmq";
+import { Queue, Worker, type Job } from "bullmq";
 import type IORedis from "ioredis";
 import {
   RUN_QUEUE_ACTIVITY_CHANNEL,
@@ -16,8 +16,15 @@ import type { WorkerMetrics } from "./metrics.js";
 const RECONCILE_INTERVAL_MS = 5_000;
 const HOT_QUEUE_SCAN_INTERVAL_MS = 15_000;
 
+// BullMQ stalled-replay protection. DEFAULT_TIMEOUT_MS in the runner is
+// 600_000 (10 min); lock comfortably exceeds it. BullMQ's LockManager
+// auto-renews every lockDuration/2 (~7.5 min) while the job is active —
+// no manual heartbeat needed.
+export const LOCK_DURATION_MS = 900_000;
+
 export interface RunJobData {
   run_id: string;
+  user_id?: string;
   adapter?: string;
   call_spec?: Record<string, unknown>;
   voice_config?: Record<string, unknown>;
@@ -29,11 +36,21 @@ export interface RunJobData {
 }
 
 interface QueueRuntimeOptions {
+  /** Shared IORedis for non-blocking ops (Queue, smembers, scan, multi). */
   connection: IORedis;
+  /** Dedicated IORedis for BullMQ Workers (used for blocking commands).
+   *  Required because mixing Worker blocking BLPOP with non-blocking ops
+   *  on the same connection deadlocks under load. */
+  workerConnection: IORedis;
   machineId: string;
   totalConcurrency: number;
   workerMetrics: WorkerMetrics;
-  processRun: (queueName: string, data: RunJobData) => Promise<void>;
+  processRun: (
+    queueName: string,
+    data: RunJobData,
+    job: Job<RunJobData>,
+    token: string | undefined,
+  ) => Promise<void>;
 }
 
 interface QueueState {
@@ -47,10 +64,16 @@ interface QueueState {
 
 export class PerUserQueueRuntime {
   private readonly connection: IORedis;
+  private readonly workerConnection: IORedis;
   private readonly machineId: string;
   private readonly totalConcurrency: number;
   private readonly workerMetrics: WorkerMetrics;
-  private readonly processRun: (queueName: string, data: RunJobData) => Promise<void>;
+  private readonly processRun: (
+    queueName: string,
+    data: RunJobData,
+    job: Job<RunJobData>,
+    token: string | undefined,
+  ) => Promise<void>;
 
   private readonly queueStates = new Map<string, QueueState>();
   private readonly hotQueues = new Map<string, number>();
@@ -64,6 +87,7 @@ export class PerUserQueueRuntime {
 
   constructor(opts: QueueRuntimeOptions) {
     this.connection = opts.connection;
+    this.workerConnection = opts.workerConnection;
     this.machineId = opts.machineId;
     this.totalConcurrency = opts.totalConcurrency;
     this.workerMetrics = opts.workerMetrics;
@@ -285,15 +309,21 @@ export class PerUserQueueRuntime {
   private createWorker(queueName: string, concurrency: number): Worker {
     const worker = new Worker<RunJobData>(
       queueName,
-      async (job) => {
-        await this.processRun(queueName, job.data);
+      async (job, token) => {
+        await this.processRun(queueName, job.data, job, token);
       },
       {
-        connection: this.connection,
+        // Workers MUST use a dedicated connection so BullMQ's blocking BLPOP
+        // doesn't contend with the non-blocking ops we issue on `connection`.
+        connection: this.workerConnection,
         concurrency,
-        lockDuration: 600_000,
+        lockDuration: LOCK_DURATION_MS,
         stalledInterval: 30_000,
-        maxStalledCount: 1,
+        // Voice calls are non-idempotent. If a lock lapses, send the job
+        // straight to `failed` rather than re-delivering it (which would
+        // place a second real phone call). Heartbeat in processRun keeps
+        // the lock alive for legitimately long-running jobs.
+        maxStalledCount: 0,
         removeOnComplete: { age: 3600, count: 1000 },
         removeOnFail: { age: 86_400, count: 5000 },
       },

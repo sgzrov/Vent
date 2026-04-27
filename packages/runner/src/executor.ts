@@ -22,8 +22,14 @@ export interface ExecuteCallOpts {
   callSpec: ConversationCallSpec;
   channelConfig: AudioChannelConfig;
   runId?: string;
+  /** Owning user — embedded in the recording artifact token so the API can
+   *  enforce that only the owner (not anyone with a leaked URL) can fetch it. */
+  userId?: string;
   onCallStart?: (info: CallStartInfo) => void;
   onCallComplete?: (result: ConversationCallResult) => void | Promise<void>;
+  /** External cancel signal — when fired, the call aborts at the next turn
+   *  boundary, partial transcript is preserved, and the channel is hung up. */
+  signal?: AbortSignal;
 }
 
 export interface ExecuteCallResult {
@@ -93,9 +99,14 @@ async function attachRecordingUrl(
           ...(result.call_metadata ?? {}),
           recording_url: recordingUrl,
         };
+      } else {
+        // Upload finalized but produced no URL (zero bytes captured, or
+        // multipart abort during cleanup). Log loudly so an operator can
+        // correlate "missing recording" with this run in worker logs.
+        console.warn(`[recording] FINALIZED_BUT_NO_URL run=${runId} — upload produced no URL (zero bytes or aborted)`);
       }
     } catch (err) {
-      console.warn(`live recording upload failed: ${(err as Error).message}`);
+      console.warn(`[recording] UPLOAD_FAILED run=${runId} error=${(err as Error).message}`);
     } finally {
       await channel.discardCallRecording?.().catch(() => {});
     }
@@ -106,14 +117,22 @@ async function attachRecordingUrl(
   await channel.discardCallRecording?.().catch(() => {});
 }
 
-function buildRecordingUrl(key: string, storage: NonNullable<ReturnType<typeof createStorageClient>>): Promise<string> | string {
+function buildRecordingUrl(
+  key: string,
+  storage: NonNullable<ReturnType<typeof createStorageClient>>,
+  userId: string | undefined,
+): Promise<string> | string {
+  // Signed-URL-only auth (S3/Twilio pattern). The HMAC token is the credential;
+  // 1h TTL bounds blast radius. No dashboard sign-in required.
   const apiBaseUrl =
     process.env["API_PUBLIC_URL"]
     ?? process.env["API_URL"]
     ?? "https://vent-api.fly.dev";
   const secret = process.env["RUNNER_CALLBACK_SECRET"] ?? "";
   if (secret) {
-    return buildArtifactUrl(apiBaseUrl, createArtifactToken(key, secret));
+    // userId is captured in the token payload for audit logging only — it's
+    // not enforced on access. May be undefined in dev / standalone runner.
+    return buildArtifactUrl(apiBaseUrl, createArtifactToken(key, secret, { userId: userId ?? "anon" }));
   }
   return storage.presignDownload(key, 3600);
 }
@@ -123,6 +142,7 @@ async function startRecordingUpload(
   resultName: string | undefined,
   callerPrompt: string,
   runId?: string,
+  userId?: string,
 ): Promise<ActiveRecordingUpload | null> {
   if (!runId) {
     console.log("[recording] startRecordingUpload: no runId");
@@ -137,7 +157,7 @@ async function startRecordingUpload(
   const storage = getRequiredStorageClient();
   const baseName = slugifyRecordingLabel(resultName ?? callerPrompt.slice(0, 48));
   const key = `recordings/${runId}/${baseName}-${randomUUID()}.wav`;
-  const recordingUrl = await buildRecordingUrl(key, storage);
+  const recordingUrl = await buildRecordingUrl(key, storage, userId);
   const multipart = await storage.createWavMultipartUpload(key);
   let aborted = false;
 
@@ -184,8 +204,10 @@ export async function executeCall(opts: ExecuteCallOpts): Promise<ExecuteCallRes
     callSpec: spec,
     channelConfig,
     runId,
+    userId,
     onCallStart,
     onCallComplete,
+    signal,
   } = opts;
 
   const notifyCallComplete = async (result: ConversationCallResult) => {
@@ -274,8 +296,9 @@ export async function executeCall(opts: ExecuteCallOpts): Promise<ExecuteCallRes
     // gets dropped — Deepgram only sees audio starting mid-sentence.
     const callResult = await runConversationCall(spec, channel, {
       onConnected: async () => {
-        recordingUpload = await startRecordingUpload(channel, spec.name, spec.caller_prompt, runId);
+        recordingUpload = await startRecordingUpload(channel, spec.name, spec.caller_prompt, runId, userId);
       },
+      signal,
     });
     result = callResult;
     await attachRecordingUrl(result, channel, perCallChannelConfig.adapter, recordingUpload, runId);
@@ -292,11 +315,26 @@ export async function executeCall(opts: ExecuteCallOpts): Promise<ExecuteCallRes
     const observedToolCalls = await channel.getCallData?.().catch(() => []) ?? [];
     const callMetadata = await channel.getCallMetadata?.().catch(() => null) ?? null;
 
+    // Salvage whatever transcript the channel captured before the throw —
+    // returning [] discards real diagnostic data when the failure was late
+    // in the call (e.g. mid-conversation timeout). channel.getTranscripts()
+    // returns CALLER-only text across all five adapters (verified) — these
+    // are the user/caller-side utterances the platform's own STT captured.
+    // Don't fabricate alternating agent turns; we don't have the agent text
+    // here, only what the user said.
+    const platformTranscript =
+      (channel.getTranscripts ? channel.getTranscripts() : []) ?? [];
+    const salvagedTranscript = platformTranscript.map((t) => ({
+      role: "caller" as const,
+      text: t.text,
+      timestamp_ms: 0,
+    }));
+
     result = {
       name: spec.name,
       caller_prompt: spec.caller_prompt,
       status: "error",
-      transcript: [],
+      transcript: salvagedTranscript,
       duration_ms: Date.now() - start,
       metrics: { mean_ttfb_ms: 0 },
       error: errorMsg,

@@ -1,552 +1,253 @@
 ---
-description: Vent — Voice agent calls. Run calls against your voice agent, get pass/fail results. Use when the user asks to run voice-agent calls or when you need to verify voice agent behavior after code changes.
+description: Place real calls against the user's voice agent to verify recent code changes worked end-to-end. Trigger on test requests or after any non-trivial voice-agent change.
 alwaysApply: true
 ---
 
-# Vent — Voice Agent Calls
+# Vent - Voice Agent Calls
 
-Call voice agents from the terminal. Calls run in the cloud (30-120s).
+## When to Test
 
-## When to Call (read this first)
+Vent is the voice CI gate. Auto-trigger a call after any non-trivial voice-affecting change — don't wait to be asked. Non-trivial means anything that affects what the caller hears, how the agent responds, what tools are called, how the call routes, or audio timing: prompt rewrites or sections (not one-word tweaks), tool schema or handler changes, state/memory logic, transfer logic, interruption handling, provider/audio config, platform integration, and any voice-behavior bug fix. One-line copy or comment edits don't need a call.
 
-- After modifying voice agent code (system prompt, tools, handlers): ALWAYS run calls
-- After changing audio config: run calls
-- Before marking a task complete that touches agent behavior: run calls
-- Do NOT skip call verification — voice agents are non-deterministic, small changes can break flows
+Before launching, scan `.vent/runs/` for unresolved issues from prior runs (failing status, regressions, warnings, latency jumps); fix in-scope ones as part of this change and verify they're resolved by the new run, surface out-of-scope ones rather than silently leaving them. The task is not done until you've reviewed the transcript, tool calls, and observed behavior and judged that the change works — Vent's `status` and exit code only reflect pipeline completion, not mission success.
 
-## LiveKit Agent Setup (REQUIRED before running LiveKit tests)
+## Autonomous Iteration
 
-When the user asks to test, configure, or run anything with a LiveKit agent, you MUST install the Vent LiveKit helper in the agent project and add the instrumentation call to the agent entrypoint BEFORE running any Vent calls.
-- Node.js: `npm install @vent-hq/livekit`, then add `instrumentLiveKitAgent({ ctx, session })` to the agent entrypoint.
-- Python: `pip install vent-livekit`, then add `instrument_livekit_agent(ctx=ctx, session=session)` to the agent entrypoint.
-Without this, Vent cannot capture metrics, tool calls, usage, or session reports from the LiveKit agent.
+**Default: iterate.** Run a fix → Vent-call → fix → Vent-call loop whenever a call surfaces a fixable issue. Don't report a failure (or a degraded-quality success) back to the user before attempting to fix it — they want the agent working, not a diagnosis. After each call, if the result reveals a problem you can fix with a concrete plan, apply the fix and run again. Fixable issues include: tool schema or registry gaps, missing handlers, prompt phrasing, **STT vocabulary mismatches** (e.g. domain terms misheard — Deepgram `keyterms`, custom vocabulary, prompt-level term lists), **latency tunables** (endpointing thresholds, preemptive generation, model selection), and audio quality config. If you'd be guessing at the next attempt, stop and ask the user instead of trying.
 
-Before running a LiveKit test, verify the agent process is running (`ps aux | grep <agent_process>`). If it's not running, start it before attempting any calls.
+**"Mission success but with quality problems" still requires iteration.** If the call ran end-to-end but had noticeably bad latency, STT mishearing the agent's domain vocabulary, audio artifacts, or any other caller-experience degradation that has a concrete fix, the call is *not done* — apply the fix and re-run. Don't downgrade fixable problems to "observations" or "things worth flagging." The pipeline running cleanly is the floor, not the ceiling.
 
-LiveKit worker restart caveat: After restarting a LiveKit agent process, wait at least 60 seconds before running a Vent call. If calls were attempted against stale workers (failed with "agent did not speak" or "no speech detected"), kill the agent, wait 60 seconds for ALL stale workers to deregister, then restart. Do not restart the agent multiple times in quick succession — each restart creates another stale worker registration that compounds the problem.
+**Never ask permission to iterate.** "Want me to apply this and re-run?" / "Should I fix it?" / "Let me know if you want me to..." — these are skill violations. If you have a concrete fix, apply it and run the next call. The user opts out by saying so explicitly; silence is not opt-out.
 
-## Setup (if no Vent access token)
+Stop iterating and report when one of:
 
-If `~/.vent/credentials` does not exist and `VENT_ACCESS_TOKEN` is not set:
+- The next call confirms the fix worked AND no further fixable issues remain (success — done).
+- The same fix fails twice (your hypothesis is wrong; ask the user).
+- The failure mode shifts between attempts (you're chasing a moving target).
+- You can't justify the next call against its provider cost — each call spends real money and provider quota.
+
+If the user explicitly opts out ("just report", "don't iterate", "stop after the first call", "I'll fix it myself"), respect that — run once, report, stop. Otherwise iterate by default. The first time you start an autonomous loop in a session, mention it once so the user knows it's happening (e.g. "the call surfaced X — fixing and re-running; I'll report back when it converges or stops making progress").
+
+## Cursor Execution
+
+Use a 5-minute shell-tool timeout (`300000` ms) on Vent run commands so normal calls are not killed by the default 2-minute Bash timeout. This is not backgrounding; wait for stdout/results before ending your response. Use the JSON returned by `npx vent-hq run` directly; do not call `vent status` unless checking an older run.
+
+Cursor cannot run separate shell tool calls concurrently — for multiple calls from one suite, invoke each named call with `--call <name>` in one shell command using `&` and a final `wait`:
 
 ```bash
-npx vent-hq init
+npx vent-hq run -f .vent/suite.vapi.json --call happy-path & \
+npx vent-hq run -f .vent/suite.vapi.json --call tool-path & \
+wait
 ```
-
-One command. No email, no browser, no human interaction needed. You get 10 free runs instantly.
-
-## Commands
-
-| Command | Purpose |
-|---------|---------|
-| `npx vent-hq init` | First-time setup (creates account + installs skills) |
-| `npx vent-hq agent start -f .vent/suite.<adapter>.json` | Start one shared local agent session (required for `start_command`) |
-| `npx vent-hq agent stop <session-id>` | Close a shared local agent session |
-| `npx vent-hq run -f .vent/suite.<adapter>.json` | Run a call from suite file (auto-selects if only one call) |
-| `npx vent-hq run -f .vent/suite.<adapter>.json --verbose` | Include debug fields in the result JSON |
-| `npx vent-hq run -f .vent/suite.<adapter>.json --call <name>` | Run a specific named call |
-| `npx vent-hq stop <run-id>` | Cancel a queued or running call |
-| `npx vent-hq status <run-id>` | Check results of a previous run |
-| `npx vent-hq status <run-id> --verbose` | Re-print a run with debug fields included |
-
-## When To Use `--verbose`
-
-Default output is enough for most work. It already includes:
-- transcript
-- latency
-- audio analysis
-- tool calls
-- summary cost / recording / transfers
-
-Use `--verbose` only when you need debugging detail that is not in the default result:
-- per-turn debug fields: timestamps, caller decision mode, silence pad, STT confidence, platform transcript
-- raw signal analysis: `debug.signal_quality`
-- harness timings: `debug.harness_overhead`
-- raw prosody payload and warnings
-- raw provider warnings
-- per-turn component latency arrays
-- raw observed tool-call timeline
-- provider-specific metadata in `debug.provider_metadata`
-
-Trigger `--verbose` when:
-- transcript accuracy looks wrong and you need to inspect `platform_transcript`
-- latency is bad and you need per-turn/component breakdowns
-- interruptions/barge-in behavior looks wrong
-- tool-call execution looks inconsistent or missing
-- the provider returned warnings/errors or you need provider-native artifacts
-
-Skip `--verbose` when:
-- you only need pass/fail, transcript, latency, tool calls, recording, or summary
-- you are doing quick iteration on prompt wording and the normal result already explains the failure
-
-## Normalization Contract
-
-Vent always returns one normalized result shape on `stdout` across adapters. Treat these as the stable categories:
-- `transcript`
-- `latency`
-- `tool_calls`
-- `component_latency`
-- `call_metadata`
-- `warnings`
-- `audio_actions`
-- `emotion`
-
-Source-of-truth policy:
-- Vent computes transcript, latency, and audio-quality metrics itself.
-- Hosted adapters choose the best source per category, usually provider post-call data for tool calls, call metadata, transfers, provider transcripts, and recordings.
-- Realtime provider events are fallback or enrichment only when post-call data is missing, delayed, weaker for that category, or provider-specific.
-- `LiveKit` helper events are the provider-native path for rich in-agent observability.
-- `websocket`/custom agents are realtime-native but still map into the same normalized categories.
-- Keep adapter-specific details in `call_metadata.provider_metadata` or `debug.provider_metadata`, not in new top-level fields.
-
-
-## Critical Rules
-
-1. **Run all calls in parallel in ONE shell command** — Cursor cannot run multiple shell tool calls concurrently. Instead, launch all calls in a **single** shell command using `&` and `wait`. Example: `npx vent-hq run -f .vent/suite.bland.json --call call-1 & npx vent-hq run -f .vent/suite.bland.json --call call-2 & wait`. Set a 300-second (5 min) timeout. NEVER run calls as separate commands — they will serialize.
-2. **Handle backgrounded commands** — If a call command gets moved to background by the system, wait for it to complete before proceeding. Never end your response without delivering call results.
-3. **Output format** — In non-TTY mode (when run by an agent), every SSE event is written to stdout as a JSON line. Results are always in stdout.
-4. **This skill is self-contained** — The full config schema is below. Do NOT re-read this file.
-5. **Always analyze results** — The run command outputs complete JSON with full transcript, latency, and tool calls. Use `--verbose` only when the default result is not enough to explain the failure. Analyze this output directly — do NOT run `vent status` afterwards unless you are re-checking a past run.
 
 ## Workflow
 
-### First time: create the call suite
+1. Identify the behavior under test. Read enough of the agent codebase to understand its system prompt, tools, handlers, routes, provider config, platform wiring, and expected handoffs.
+2. Reuse an existing `.vent/suite.<adapter>.json` when possible. If `.vent/` contains multiple suites, inspect `connection.adapter` and report which suite file produced the result.
+3. Create or update a suite only when the existing calls do not cover the changed behavior. Name calls after real flows, for example `reschedule-appointment`, not `call-1`.
+4. If the suite uses `start_command`, start one shared local session first with `npx vent-hq agent start -f .vent/suite.<adapter>.json`, then pass `--session <session-id>` to each run.
 
-1. Read the voice agent's codebase — understand its system prompt, tools, intents, and domain.
-2. Read the **Full Config Schema** section below for all available fields.
-3. Create the suite file in `.vent/` using the naming convention: `.vent/suite.<adapter>.json` (e.g., `.vent/suite.vapi.json`, `.vent/suite.websocket.json`, `.vent/suite.retell.json`). This prevents confusion when multiple adapters are tested in the same project.
-   - Name calls after specific flows (e.g., `"reschedule-appointment"`, not `"call-1"`)
-   - Write `caller_prompt` as a realistic persona with a specific goal, based on the agent's domain
-   - Set `max_turns` based on the flow complexity (simple FAQ: 4-6, booking: 8-12, complex: 12-20)
+   **For locally-run LiveKit agents: every run requires killing *all* workers, starting one fresh worker, and waiting a full 60 seconds before submitting.** Unconditional — LiveKit Cloud round-robins across registered workers, so a single survivor with a dead inference subprocess fails ~N-1 of N calls. Don't rely on `pkill -f <path-pattern>`; bare command lines like `node --import tsx agent.ts dev` won't match a path filter. Use `ps aux | grep -E "node.*agent\.ts|@livekit/agents.*ipc"`, `kill -9` by PID, re-run `ps` to confirm zero survivors, then start the fresh worker. Skipping the 60s wait fails with `did not publish audio track`; if that error appears alongside `Error [ERR_IPC_CHANNEL_CLOSED] from InferenceProcExecutor.doInference` in the agent log right after a "running EOU detection" line, that's a straggler — redo the kill sweep. Hosted LiveKit Cloud agents don't need any of this; run normally.
+5. Pick which call(s) to run based on the change. Fixed bug: replay the failing scenario. Changed tool: include a call that triggers that tool. Prompt or routing change: include the relevant happy path and any important edge path.
+6. Compare against the previous JSON in `.vent/runs/` when validating a fix or regression. Check status flips, latency jumps, tool-call success drops, cost jumps, and transcript divergence. Correlate with `git diff` between saved `git_sha` values when available; skip if no previous run exists.
 
-### Multiple suite files
+## Commands
 
-If `.vent/` contains more than one suite file, **always check which adapter each suite uses before running**. Read the `connection.adapter` field in each file. Never run a suite intended for a different adapter — results will be meaningless or fail. When reporting results, always state which suite file produced them (e.g., "Results from `.vent/suite.vapi.json`:").
+```bash
+npx vent-hq init                                  # First-time setup (auth + skill install + starter suite)
+npx vent-hq login                                 # Log in to existing account
+npx vent-hq run -f .vent/suite.X.json             # Run a single-call suite
+npx vent-hq run -f .vent/suite.X.json --call NAME # Run one named call from a multi-call suite
+npx vent-hq run ... --session <session-id>        # Add to any run; routes through an existing local relay session
+npx vent-hq run ... --verbose                     # Add to any run or status; include verbose debug fields
+npx vent-hq stop <run-id>                         # Cancel a queued or running run
+npx vent-hq status <run-id>                       # Fetch results for a previous run
+npx vent-hq agent start -f .vent/suite.X.json     # Start a shared local relay session
+npx vent-hq agent stop <session-id>               # Stop a shared local relay session
+```
 
-### Subsequent runs — reuse the existing suite
+If `~/.vent/credentials` is missing and `VENT_ACCESS_TOKEN` is not set, run `npx vent-hq init`. For an existing account, run `npx vent-hq login` or set `VENT_ACCESS_TOKEN`.
 
-A matching `.vent/suite.<adapter>.json` already exists? Just re-run it. No need to recreate.
+## Suite Config
 
-### Run calls
+Suites live in `.vent/suite.<adapter>.json`. `connection` is declared once per suite. `calls` is a named map, and each key becomes the call name used with `--call`.
 
-1. If the suite uses `start_command`, start the shared local session first:
-   ```
-   npx vent-hq agent start -f .vent/suite.<adapter>.json
-   ```
+Local websocket suite:
 
-2. Run calls:
-   ```
-   # suite with one call (auto-selects)
-   npx vent-hq run -f .vent/suite.<adapter>.json
-
-   # suite with multiple calls — pick one by name
-   npx vent-hq run -f .vent/suite.<adapter>.json --call happy-path
-
-   # local start_command — add --session
-   npx vent-hq run -f .vent/suite.<adapter>.json --call happy-path --session <session-id>
-   ```
-
-3. To run multiple calls from the same suite, **run them in parallel in one shell command**:
-   ```
-   npx vent-hq run -f .vent/suite.vapi.json --call happy-path & npx vent-hq run -f .vent/suite.vapi.json --call edge-case & wait
-   ```
-
-4. Analyze each result, identify failures, correlate with the codebase, and fix.
-5. **Compare with previous run** — Vent saves full result JSON to `.vent/runs/` after every run. Read the second-most-recent JSON in `.vent/runs/` and compare against the current run. Shape: `{ run_id, timestamp, git_sha, summary, call_results: [...] }`. Each entry in `call_results` is a flat normalized per-call result: `{ name, status, duration_ms, transcript, observed_tool_calls, metrics, cost_usd, ... }`. Compare: `call_results[i].status` flips, `call_results[i].metrics.latency_p50_ms` / `latency_p95_ms` changes >20%, `call_results[i].observed_tool_calls[].successful` count drops, `summary.total_cost_usd` increases >30%, `call_results[i].transcript` divergence. Correlate with `git diff` between the two runs' `git_sha` values. Skip if no previous run exists.
-
-## Connection
-
-- **BYO agent runtime**: your agent owns its own provider credentials. Use `start_command` for a local agent or `agent_url` for a hosted custom endpoint.
-- **Platform-direct runtime**: use adapter `vapi | retell | elevenlabs | bland | livekit`. This is the only mode where Vent itself needs provider credentials and saved platform connections apply.
-
-## WebSocket Protocol (BYO agents)
-
-When using `adapter: "websocket"`, Vent communicates with the agent over a single WebSocket connection:
-
-- **Binary frames** → PCM audio (16-bit mono, configurable sample rate)
-- **Text frames** → optional JSON events the agent can send for better test accuracy:
-
-| Event | Format | Purpose |
-|-------|--------|---------|
-| `speech-update` | `{"type":"speech-update","status":"started"\|"stopped"}` | Enables platform-assisted turn detection (more accurate than VAD alone) |
-| `tool_call` | `{"type":"tool_call","name":"...","arguments":{...},"result":...,"successful":bool,"duration_ms":number}` | Reports tool calls for observability |
-| `vent:timing` | `{"type":"vent:timing","stt_ms":number,"llm_ms":number,"tts_ms":number}` | Reports component latency breakdown per turn |
-| `vent:session` | `{"type":"vent:session","platform":"custom","provider_call_id":"...","provider_session_id":"..."}` | Reports stable provider/session identifiers |
-| `vent:call-metadata` | `{"type":"vent:call-metadata","call_metadata":{...}}` | Reports post-call metadata such as cost, recordings, variables, and provider-specific artifacts |
-| `vent:transcript` | `{"type":"vent:transcript","role":"caller"\|"agent","text":"...","turn_index":0}` | Reports platform/native transcript text for caller or agent |
-| `vent:transfer` | `{"type":"vent:transfer","destination":"...","status":"attempted"\|"completed"}` | Reports transfer attempts and outcomes |
-| `vent:debug-url` | `{"type":"vent:debug-url","label":"log","url":"https://..."}` | Reports provider debug/deep-link URLs |
-| `vent:warning` | `{"type":"vent:warning","message":"...","code":"..."}` | Reports provider/runtime warnings worth preserving in run metadata |
-
-Vent sends `{"type":"end-call"}` to the agent when the test is done.
-
-All text frames are optional — audio-only agents work fine with VAD-based turn detection.
-
-## Full Config Schema
-
-- ALL calls MUST reference the agent's real context (system prompt, tools, knowledge base) from the codebase.
-
-<vent_run>
-{
-  "connection": { ... },
-  "calls": {
-    "happy-path": { ... },
-    "edge-case": { ... }
-  }
-}
-</vent_run>
-
-One suite file per platform/adapter. `connection` is declared once, `calls` is a named map of call specs. Each key becomes the call name. Run one call at a time with `--call <name>`.
-
-<config_connection>
-{
-  "connection": {
-    "adapter": "required -- websocket | livekit | vapi | retell | elevenlabs | bland",
-    "start_command": "shell command to start agent (relay only, required for local)",
-    "health_endpoint": "health check path after start_command (default: /health, relay only, required for local)",
-    "agent_url": "hosted custom agent URL (wss:// or https://). Use for BYO hosted agents.",
-    "agent_port": "local agent port (default: 3001, required for local)",
-    "platform": "optional authoring convenience for platform-direct adapters only. The CLI resolves this locally, creates/updates a saved platform connection, and strips raw provider secrets before submit. Do not use for websocket start_command or agent_url runs."
-  }
-}
-
-<credential_resolution>
-IMPORTANT: How to handle platform credentials (API keys, secrets, agent IDs):
-
-There are two product modes:
-- `BYO agent runtime`: your agent owns its own provider credentials. This covers both `start_command` (local) and `agent_url` (hosted custom endpoint).
-- `Platform-direct runtime`: Vent talks to `vapi`, `retell`, `elevenlabs`, `bland`, or `livekit` directly. This is the only mode that uses saved platform connections.
-
-1. For `start_command` and `agent_url` runs, do NOT put Deepgram / ElevenLabs / OpenAI / other provider keys into Vent config unless the Vent adapter itself needs them. Those credentials belong to the user's local or hosted agent runtime.
-2. For platform-direct adapters (`vapi`, `retell`, `elevenlabs`, `bland`, `livekit`), the CLI auto-resolves credentials from `.env.local`, `.env`, and the current shell env. If those env vars already exist, you can omit credential fields from the config JSON entirely.
-3. If you include credential fields in the config, put the ACTUAL VALUE, NOT the env var name. WRONG: `"vapi_api_key": "VAPI_API_KEY"`. RIGHT: `"vapi_api_key": "sk-abc123..."` or omit the field.
-4. The CLI uses the resolved provider config to create or update a saved platform connection server-side, then submits only `platform_connection_id`. Users should not manually author `platform_connection_id`.
-5. To check whether credentials are already available, inspect `.env.local`, `.env`, and any relevant shell env visible to the CLI process.
-6. **IMPORTANT: `npx vent-hq` commands auto-load `.env` files — never use `source .env && export` before running them.** Only your own custom scripts (e.g. `npx tsx my-script.ts`) need manual env loading. To add a new credential, just append it to `.env` and the CLI picks it up automatically on the next run.
-
-Auto-resolved env vars per platform:
-| Platform | Config field | Env var (auto-resolved from `.env.local`, `.env`, or shell env) |
-|----------|-------------|-----------------------------------|
-| Vapi | vapi_api_key | VAPI_API_KEY |
-| Vapi | vapi_assistant_id | VAPI_ASSISTANT_ID or VAPI_AGENT_ID |
-| Bland | bland_api_key | BLAND_API_KEY |
-| Bland | bland_pathway_id | BLAND_PATHWAY_ID |
-| Bland | persona_id | BLAND_PERSONA_ID |
-| LiveKit | livekit_api_key | LIVEKIT_API_KEY |
-| LiveKit | livekit_api_secret | LIVEKIT_API_SECRET |
-| LiveKit | livekit_url | LIVEKIT_URL |
-| Retell | retell_api_key | RETELL_API_KEY |
-| Retell | retell_agent_id | RETELL_AGENT_ID |
-| ElevenLabs | elevenlabs_api_key | ELEVENLABS_API_KEY |
-| ElevenLabs | elevenlabs_agent_id | ELEVENLABS_AGENT_ID |
-
-The CLI strips raw platform secrets before `/runs/submit`. Platform-direct runs go through a saved `platform_connection_id` automatically. BYO agent runs (`start_command` and `agent_url`) do not.
-</credential_resolution>
-
-<config_adapter_rules>
-WebSocket (local agent via relay):
+```json
 {
   "connection": {
     "adapter": "websocket",
     "start_command": "npm run start",
     "health_endpoint": "/health",
     "agent_port": 3001
-  }
-}
-
-WebSocket (hosted custom agent):
-{
-  "connection": {
-    "adapter": "websocket",
-    "agent_url": "https://my-agent.fly.dev"
-  }
-}
-
-Retell:
-{
-  "connection": {
-    "adapter": "retell",
-    "platform": { "provider": "retell" }
-  }
-}
-Credentials auto-resolve from `.env.local`, `.env`, or shell env: RETELL_API_KEY, RETELL_AGENT_ID. Only add retell_api_key/retell_agent_id to the JSON if those env vars are not already available.
-max_concurrency for Retell: Pay-as-you-go includes 20 concurrent calls, with more available on demand; Enterprise has no cap. Ask the user which plan they're on. If unknown, default to 20.
-
-Bland:
-{
-  "connection": {
-    "adapter": "bland",
-    "platform": { "provider": "bland" }
-  }
-}
-Credentials auto-resolve from `.env.local`, `.env`, or shell env: BLAND_API_KEY, BLAND_PATHWAY_ID, BLAND_PERSONA_ID. Only add bland_api_key/bland_pathway_id/persona_id to the JSON if those env vars are not already available.
-max_concurrency for Bland: Start=10, Build=50, Scale=100, Enterprise=unlimited. Ask the user which plan they're on. If unknown, default to 10.
-Note: All agent config (voice, model, tools, etc.) is set on the pathway itself, not in Vent config.
-
-Vapi:
-{
-  "connection": {
-    "adapter": "vapi",
-    "platform": { "provider": "vapi" }
-  }
-}
-Credentials auto-resolve from `.env.local`, `.env`, or shell env: VAPI_API_KEY, VAPI_ASSISTANT_ID (or VAPI_AGENT_ID). Only add vapi_api_key/vapi_assistant_id to the JSON if those env vars are not already available.
-max_concurrency for Vapi: every account includes 10 concurrent call slots by default; self-serve accounts can buy extra reserved lines, and Enterprise includes unlimited concurrency. Set this to the user's purchased limit. If unknown, default to 10.
-All assistant config (voice, model, transcriber, interruption settings, etc.) is set on the Vapi assistant itself, not in Vent config.
-
-ElevenLabs:
-{
-  "connection": {
-    "adapter": "elevenlabs",
-    "platform": { "provider": "elevenlabs" }
-  }
-}
-Credentials auto-resolve from `.env.local`, `.env`, or shell env: ELEVENLABS_API_KEY, ELEVENLABS_AGENT_ID. Only add elevenlabs_api_key/elevenlabs_agent_id to the JSON if those env vars are not already available.
-max_concurrency for ElevenLabs: Free=4, Starter=6, Creator=10, Pro=20, Scale=30, Business=30. Burst pricing can temporarily allow up to 3x the base limit. Ask the user which plan they're on and whether burst is enabled. If unknown, default to 4.
-
-LiveKit:
-{
-  "connection": {
-    "adapter": "livekit",
-    "platform": {
-      "provider": "livekit",
-      "livekit_agent_name": "my-agent",
-      "max_concurrency": 5
+  },
+  "calls": {
+    "happy-path": {
+      "caller_prompt": "You are Maria calling to reschedule her appointment to next Tuesday.",
+      "max_turns": 8,
+      "silence_threshold_ms": 1200,
+      "audio_actions": [
+        { "action": "interrupt", "at_turn": 3, "prompt": "Just give me the earliest one." }
+      ]
     }
   }
 }
-Credentials auto-resolve from `.env.local`, `.env`, or shell env: LIVEKIT_API_KEY, LIVEKIT_API_SECRET, LIVEKIT_URL. Only add these to the JSON if those env vars are not already available.
-livekit_agent_name is optional -- only needed if your LiveKit agent registered with an explicit dispatch name in the SDK, e.g. Python `@server.rtc_session(agent_name="…")` or `WorkerOptions(agent_name="…")`, Node.js `new ServerOptions({ agentName: "…" })`. Omit for automatic dispatch.
-The livekit adapter requires the LiveKit Agents SDK. It depends on Agents SDK signals (lk.agent.state, lk.transcription) for readiness detection, turn timing, and component latency. Custom LiveKit participants not using the Agents SDK should use the websocket adapter with a relay instead.
-max_concurrency for LiveKit Cloud: Build=5, Ship=20, Scale=50 managed inference sessions. Agent session concurrency can be higher (Build=5, Ship=20, Scale up to 600), but managed inference is the usual gating limit for voice agents. Ask the user which tier they're on. If unknown, default to 5.
-Know the provider/account concurrency limits and use them in planning, but Vent does not enforce provider caps at runtime. Hosted worker throughput is an infra setting: `WORKER_TOTAL_CONCURRENCY` caps one worker Machine.
-</config_adapter_rules>
-</config_connection>
-
-
-<call_config>
-<tool_call_capture>
-vapi/retell/elevenlabs/bland: automatic via platform API (no user code needed).
-WebSocket: user's agent must emit a JSON text frame per tool call: {"type":"tool_call","name":"...","arguments":{},"result":{},"successful":true,"duration_ms":150}
-LiveKit: use the `@vent-hq/livekit` (Node) or `vent-livekit` (Python) helper. See the "LiveKit Agent Setup" section. The helper captures tool calls automatically from Agents SDK session events — do not publish on Vent topics manually.
-</tool_call_capture>
-
-<component_timing>
-Platform adapters (vapi/retell/elevenlabs/bland/livekit) get STT/LLM/TTS breakdown automatically.
-WebSocket agents can opt in by sending a JSON text frame after each agent turn:
-  {"type":"vent:timing","stt_ms":120,"llm_ms":450,"tts_ms":80}
-All fields optional. Send one per agent response. Without this, component_latency is omitted from results.
-When modifying a WebSocket agent's code, add this text frame after TTS completes to enable component latency reporting.
-</component_timing>
-
-<metadata_capture>
-WebSocket agents can emit richer observability metadata as JSON text frames:
-  {"type":"vent:session","platform":"custom","provider_call_id":"call_123","provider_session_id":"session_abc"}
-  {"type":"vent:call-metadata","call_metadata":{"recording_url":"https://...","cost_usd":0.12,"provider_debug_urls":{"log":"https://..."}}}
-  {"type":"vent:debug-url","label":"trace","url":"https://..."}
-  {"type":"vent:session-report","report":{"room_name":"room-123","events":[...],"metrics":[...]}}
-  {"type":"vent:transcript","role":"caller","text":"I need to reschedule","turn_index":0}
-
-`vent:session-report` in the docs is not a blanket instruction for LiveKit agents. In LiveKit mode, only publish what the helper explicitly supports — hand-rolling a report from `ctx.addShutdownCallback` runs after `room.disconnect()` and fails with "engine is closed".
-
-LiveKit agents get all metadata through the `@vent-hq/livekit` (Node) / `vent-livekit` (Python) helper — it subscribes to Agents SDK session events (`metrics_collected`, `function_tools_executed`, `conversation_item_added`, `session_usage_updated`, close) and publishes on Vent topics automatically. Transcript and agent-state timing come from native LiveKit room signals (`lk.transcription`, `lk.agent.state`) — the helper does not duplicate them.
-
-Node.js — `npm install @vent-hq/livekit`:
-```ts
-import { instrumentLiveKitAgent } from "@vent-hq/livekit";
-
-const vent = instrumentLiveKitAgent({ ctx, session });
-```
-Python — `pip install vent-livekit`:
-```python
-from vent_livekit import instrument_livekit_agent
-
-vent = instrument_livekit_agent(ctx=ctx, session=session)
 ```
 
-The helper is the only supported integration path for LiveKit Agents SDK agents. Do not publish on `vent:*` topics manually — let the helper forward SDK events.
-</metadata_capture>
+Platform-direct suite:
 
-<config_call>
-Each call in the `calls` map. The key is the call name (e.g. `"reschedule-appointment"`, not `"call-1"`).
-{
-      "caller_prompt": "required — caller persona and behavior (name -> goal -> emotion -> conditional behavior)",
-    "max_turns": "required — default 6",
-    "silence_threshold_ms": "optional — end-of-turn threshold ms (default 800, 200-10000). 800-1200 FAQ, 2000-3000 tool calls, 3000-5000 complex reasoning.",
-    "persona": "optional — caller behavior controls",
-    {
-      "pace": "slow | normal | fast",
-      "clarity": "clear | vague | rambling",
-      "disfluencies": "true | false",
-      "cooperation": "cooperative | reluctant | hostile",
-      "emotion": "neutral | cheerful | confused | frustrated | skeptical | rushed",
-      "interruption_style": "optional preplanned interrupt tendency: low | high. If set, Vent may pre-plan a caller cut-in before the agent turn starts. It does NOT make a mid-turn interrupt LLM call.",
-      "memory": "reliable | unreliable",
-      "intent_clarity": "clear | indirect | vague",
-      "confirmation_style": "explicit | vague"
-    },
-    "audio_actions": "optional — per-turn audio stress calls",
-    [
-      { "action": "interrupt", "at_turn": "N", "prompt": "what caller says" },
-      { "action": "inject_noise", "at_turn": "N", "noise_type": "babble | white | pink", "snr_db": "0-40" },
-      { "action": "split_sentence", "at_turn": "N", "split": { "part_a": "...", "part_b": "...", "pause_ms": "500-5000" } },
-      { "action": "noise_on_caller", "at_turn": "N" }
-    ],
-    "prosody": "optional — Hume emotion analysis (default false)",
-    "caller_audio": "optional — omit for clean audio",
-    {
-      "noise": { "type": "babble | white | pink", "snr_db": "0-40" },
-      "speed": "0.5-2.0 (1.0 = normal)",
-      "speakerphone": "true | false",
-      "mic_distance": "close | normal | far",
-      "clarity": "0.0-1.0 (1.0 = perfect)",
-      "accent": "american | british | australian | filipino | spanish_mexican | spanish_peninsular | spanish_colombian | spanish_argentine | german | french | italian | dutch | japanese",
-      "packet_loss": "0.0-0.3",
-      "jitter_ms": "0-100"
-    },
-    "language": "optional — ISO 639-1: en, es, fr, de, it, nl, ja"
-}
-
-Interruption rules:
-- `audio_actions: [{ "action": "interrupt", ... }]` is the deterministic per-turn interrupt test. Prefer this for evaluation.
-- `persona.interruption_style` is only a preplanned caller tendency. If used, Vent decides before the agent response starts whether this turn may cut in.
-- Vent no longer pauses mid-turn to ask a second LLM whether to interrupt.
-- For production-faithful testing, prefer explicit `audio_actions.interrupt` over persona interruption.
-
-<examples_call>
-<simple_suite_example>
+```json
 {
   "connection": {
     "adapter": "vapi",
     "platform": { "provider": "vapi" }
   },
   "calls": {
-    "reschedule-appointment": {
-      "caller_prompt": "You are Maria, calling to reschedule her dentist appointment from Thursday to next Tuesday. She's in a hurry and wants this done quickly.",
+    "happy-path": {
+      "caller_prompt": "You are Maria calling to reschedule her appointment to next Tuesday.",
       "max_turns": 8
-    },
-    "cancel-appointment": {
-      "caller_prompt": "You are Tom, calling to cancel his appointment for Friday. He's calm and just wants confirmation.",
-      "max_turns": 6
     }
   }
 }
-</simple_suite_example>
+```
 
-<advanced_call_example>
-A call entry with advanced options (persona, audio actions, prosody):
+Write `caller_prompt` as a realistic caller with a name, goal, mood, constraints, and conditional behavior. Set `max_turns` based on flow complexity: FAQ `4-6`, booking or tool use `8-12`, complex flows `12-20`.
+
+Call fields:
+
+- `caller_prompt` and `max_turns` are required.
+- `silence_threshold_ms` must be `200-10000`. Common ranges: FAQ `800-1200`, tool calls `2000-3000`, complex reasoning `3000-5000`.
+- `persona` supports `pace`, `clarity`, `disfluencies`, `cooperation`, `emotion`, `interruption_style`, `memory`, `intent_clarity`, and `confirmation_style`.
+- `audio_actions` supports `interrupt`, `inject_noise`, `split_sentence`, and `noise_on_caller`.
+- `caller_audio` supports noise, speed, speakerphone, mic distance, clarity, accent, packet loss, and jitter.
+- `language` is an ISO 639-1 code such as `en`, `es`, `fr`, `de`, `it`, `nl`, or `ja`.
+- `voice` is `"male"` or `"female"` (English only; default female). Use to flip the caller's perceived gender. Ignored if `caller_audio.accent` is set or `language` is non-English.
+- `prosody: true` enables emotion analysis and requires Hume access.
+- Prefer explicit `audio_actions.interrupt` over `persona.interruption_style` for deterministic barge-in tests. `persona.interruption_style` is only a preplanned caller tendency.
+
+## Connections and Credentials
+
+### Adapter choice
+
+Use `websocket` for your own local or hosted runtime. Use `start_command` for local agents or `agent_url` for hosted custom endpoints. For `start_command` and `agent_url`, do not put Deepgram, ElevenLabs, OpenAI, or other agent runtime keys into Vent config unless the Vent adapter itself needs them — the tested agent owns its own runtime credentials.
+
+Use `vapi`, `retell`, `elevenlabs`, `bland`, or `livekit` for platform-direct testing. In this mode Vent itself talks to the provider on the user's behalf.
+
+Vent provides `DEEPGRAM_API_KEY` and `ANTHROPIC_API_KEY` for its hosted caller/evaluation stack — those are Vent's, not the tested agent's.
+
+### Credential resolution
+
+In platform-direct mode the CLI auto-resolves credentials from `.env.local`, `.env`, and the current shell environment. Do not run `source .env && export` before Vent commands. If you include credential fields in JSON, use the actual value, not the env var name. Do not manually author `platform_connection_id`; the CLI creates or updates the saved platform connection automatically.
+
+Auto-resolved env vars and JSON fields:
+
+- Vapi: `VAPI_API_KEY` -> `vapi_api_key`; `VAPI_ASSISTANT_ID` or `VAPI_AGENT_ID` -> `vapi_assistant_id`
+- Bland: `BLAND_API_KEY` -> `bland_api_key`; `BLAND_PATHWAY_ID` -> `bland_pathway_id`; `BLAND_PERSONA_ID` -> `persona_id`
+- LiveKit: `LIVEKIT_API_KEY` -> `livekit_api_key`; `LIVEKIT_API_SECRET` -> `livekit_api_secret`; `LIVEKIT_URL` -> `livekit_url`
+- Retell: `RETELL_API_KEY` -> `retell_api_key`; `RETELL_AGENT_ID` -> `retell_agent_id`
+- ElevenLabs: `ELEVENLABS_API_KEY` -> `elevenlabs_api_key`; `ELEVENLABS_AGENT_ID` -> `elevenlabs_agent_id`
+
+### Provider config
+
+Use existing provider config when possible: Vapi assistant, Retell agent, ElevenLabs agent, Bland pathway, or LiveKit agent. Bland uniquely supports inline config — `platform` may use `bland_pathway_id`, `persona_id`, or an inline `task` (with optional voice, model, and turn-handling overrides; see Bland's API docs for the full field list).
+
+### Concurrency
+
+When you fan out multiple Vent calls in parallel against the same provider (for example, running several named calls from one suite at once with `&` and `wait`), respect the provider's per-account concurrency limit. Exceeding it makes calls queue or fail at the provider — Vent does not enforce these caps for you.
+
+Record the limit as `max_concurrency` in the suite's `platform` block so it's visible on future runs. Ask the user which plan they're on if sizing matters; otherwise use the conservative default in bold.
+
+- **Vapi**: **10** included per account; reserved lines can be purchased self-serve; Enterprise is unlimited.
+- **Retell**: Pay-as-you-go includes **20**; Enterprise has no cap.
+- **Bland**: Start=**10**, Build=50, Scale=100, Enterprise=unlimited.
+- **ElevenLabs**: Free=**4**, Starter=6, Creator=10, Pro=20, Scale=30, Business=30. Burst pricing can temporarily allow up to 3x base.
+- **LiveKit Cloud**: Build=**5**, Ship=20, Scale=50 managed inference sessions (the usual gate for voice agents); agent-session concurrency can go higher (Scale up to 600).
+
+## WebSocket
+
+For `adapter: "websocket"`, Vent sends binary 16-bit mono PCM audio over one websocket connection. Websocket text frames are optional JSON events. Audio-only websocket agents still work, but events improve turn detection and observability. Vent sends `{"type":"end-call"}` when the test is done.
+
+Useful websocket text frames:
+
+```jsonc
+{"type":"speech-update","status":"started"}
+{"type":"speech-update","status":"stopped"}
+{"type":"tool_call","name":"check_availability","arguments":{},"result":{},"successful":true,"duration_ms":150}
+{"type":"vent:timing","stt_ms":120,"llm_ms":450,"tts_ms":80}
+{"type":"vent:session","platform":"custom","provider_call_id":"call_123","provider_session_id":"session_abc"}
+{"type":"vent:call-metadata","call_metadata":{"recording_url":"https://...","cost_usd":0.12}}
+{"type":"vent:transcript","role":"caller","text":"I need to reschedule","turn_index":0}
+{"type":"vent:transfer","destination":"+15551234567","status":"attempted"}
+{"type":"vent:debug-url","label":"trace","url":"https://..."}
+{"type":"vent:warning","message":"provider warning","code":"provider_warning"}
+```
+
+`vent:session-report` is **not** handled by the websocket adapter — it's only consumed by the LiveKit helper. Do not emit it from a websocket agent.
+
+Platform adapters capture tool calls automatically. Websocket agents must emit `tool_call` frames for tool observability. Platform adapters get component latency automatically. Websocket agents should emit `vent:timing` after each agent response when STT/LLM/TTS breakdown is available.
+
+## LiveKit
+
+Before running LiveKit tests, install and add the Vent helper to the LiveKit agent entrypoint. Node: `npm install @vent-hq/livekit`, then call `instrumentLiveKitAgent({ ctx, session })`. Python: `pip install vent-livekit`, then call `instrument_livekit_agent(ctx=ctx, session=session)`.
+
+LiveKit direct mode requires the LiveKit Agents SDK. Custom LiveKit participants should use the websocket adapter with a relay. If the LiveKit agent registered with an explicit dispatch name, set `livekit_agent_name` in `platform`.
+
+LiveKit does not support multiple concurrent Vent calls against one agent process yet. Run LiveKit calls sequentially unless you intentionally start separate agent worker processes and route each call to its own process. For Node agents, that means separate Node.js processes. Do not treat parallel calls against a single LiveKit worker as a valid concurrency test until multi-call support is engineered.
+
+Use the LiveKit helper for observability; do not publish `vent:*` topics manually. Do not hand-roll `vent:session-report` from `ctx.addShutdownCallback`; after `room.disconnect()` it can fail with `engine is closed`. The helper captures SDK metrics, tool events, conversation items, usage, and close events. Native LiveKit `lk.transcription` and `lk.agent.state` provide transcript and agent-state timing.
+
+## Output
+
+### Live result
+
+`npx vent-hq run` returns a single JSON result on stdout in non-TTY mode (not an SSE JSONL stream). Exit codes: `0` = call ran through the pipeline; `1` = pipeline-level failure; `2` = harness error.
+
+Most result fields are always present; `latency`, `component_latency`, `call_metadata`, and `emotion` may be `null` when the underlying analysis didn't run; `debug` is absent without `--verbose`. Branch on null before reading nested fields. Use `--verbose` only when the default doesn't explain a failure — when you need `platform_transcript` (to check Vent's STT), per-turn or component-level latency breakdowns, the raw tool-call timeline, or provider-native artifacts in `debug.provider_metadata`. Otherwise skip — it just adds noise.
+
+Vent's transcript is ground truth. Judge on semantic intent: ignore homophones and minor mis-hears (`"check teach hat"` for `"check that"`, missing question marks on short tails) — those are streaming-STT noise on Vent's caller side, not agent bugs, and **don't surface them in the report** (they're Vent-side artifacts, not actionable for the user). But clear gibberish or word-soup (e.g. `"Cristoxin"` where the agent should have said `"Of course, talk soon"`) is **not** a Vent artifact — Vent's STT does not invent words like that. It means the platform's TTS produced corrupted audio or the agent's STT/LLM generated the wrong text, and the fix lives there (TTS voice config, agent prompt, model temperature, codec issue). Never dismiss the run as a "Vent harness STT" issue; iterate on the agent or flag the platform.
+
+`audio_actions` lists turns with injected interrupts; check the next turn to judge whether the agent acknowledged or restarted. Overtalk needs the recording and isn't evaluable from text alone.
+
+For transfers: `call_metadata.transfer_attempted` (provider claimed) and `transfer_completed` (Vent-verified) can disagree — report both. `transfers[]` carries destination, type, and per-attempt status.
+
+### Saved history
+
+After every run, Vent writes the full result JSON to `.vent/runs/`. Shape:
+
+```jsonc
 {
-  "noisy-interruption-booking": {
-    "caller_prompt": "You are James, an impatient customer calling from a loud coffee shop to book a plumber for tomorrow morning. You interrupt the agent mid-sentence when they start listing availability — you just want the earliest slot.",
-    "max_turns": 12,
-    "persona": { "pace": "fast", "cooperation": "reluctant", "emotion": "rushed", "interruption_style": "high" },
-    "audio_actions": [
-      { "action": "interrupt", "at_turn": 3, "prompt": "Just give me the earliest one!" },
-      { "action": "inject_noise", "at_turn": 1, "noise_type": "babble", "snr_db": 15 }
-    ],
-    "caller_audio": { "noise": { "type": "babble", "snr_db": 20 }, "speed": 1.3 },
-    "prosody": true
-  }
+  "run_id": "...",
+  "timestamp": "2026-04-21T...Z",
+  "git_sha": "...",
+  "summary": { "calls_total": 2, "total_duration_ms": 12345, "total_cost_usd": 0.01 },
+  "call_results": [
+    { "name": "happy-path", "status": "completed", "duration_ms": 6123, "transcript": [], "observed_tool_calls": [], "latency": { "response_time_ms": 420, "p95_response_time_ms": 980 }, "call_metadata": { "cost_usd": 0.004 } }
+  ]
 }
-</advanced_call_example>
+```
 
-</examples_call>
-</config_call>
+When comparing against a prior run (Workflow step 6), inspect:
 
-<output_conversation_test>
-{
-  "name": "sarah-hotel-booking",
-  "status": "completed",
-  "caller_prompt": "You are Sarah, calling to book...",
-  "duration_ms": 45200,
-  "error": null,
-  "transcript": [
-    { "role": "caller", "text": "Hi, I'd like to book..." },
-    { "role": "agent", "text": "Sure! What date?", "ttfb_ms": 650, "ttfw_ms": 780, "audio_duration_ms": 2400 },
-    { "role": "agent", "text": "Let me check availability.", "ttfb_ms": 540, "ttfw_ms": 620, "audio_duration_ms": 1400 },
-    { "role": "caller", "text": "Just the earliest slot please", "audio_duration_ms": 900 },
-    { "role": "agent", "text": "Sure, the earliest is 9 AM tomorrow.", "ttfb_ms": 220, "ttfw_ms": 260, "audio_duration_ms": 2100 }
-  ],
-  "latency": {
-    "response_time_ms": 890, "response_time_source": "ttfw",
-    "p50_response_time_ms": 850, "p90_response_time_ms": 1100, "p95_response_time_ms": 1400, "p99_response_time_ms": 1550,
-    "first_response_time_ms": 1950,
-    "mean_ttfw_ms": 890, "p50_ttfw_ms": 850, "p95_ttfw_ms": 1400, "p99_ttfw_ms": 1550,
-    "first_turn_ttfw_ms": 1950,
-    "drift_slope_ms_per_turn": -45.2, "mean_silence_pad_ms": 128, "mouth_to_ear_est_ms": 1020
-  },
-  "tool_calls": {
-    "total": 2, "successful": 2, "failed": 0, "mean_latency_ms": 340,
-    "names": ["check_availability", "book_appointment"],
-    "observed": [{ "name": "check_availability", "arguments": { "date": "2026-03-12" }, "result": { "slots": ["09:00", "10:00"] }, "successful": true, "latency_ms": 280, "turn_index": 3 }]
-  },
-  "component_latency": {
-    "mean_stt_ms": 120, "mean_llm_ms": 450, "mean_tts_ms": 80,
-    "p95_stt_ms": 180, "p95_llm_ms": 620, "p95_tts_ms": 110,
-    "mean_speech_duration_ms": 2100,
-    "bottleneck": "llm"
-  },
-  "call_metadata": {
-    "platform": "vapi",
-    "cost_usd": 0.08,
-    "recording_url": "https://example.com/recording",
-    "ended_reason": "customer_ended_call",
-    "transfers": []
-  },
-  "warnings": [],
-  "audio_actions": [],
-  "emotion": {
-    "naturalness": 0.72, "mean_calmness": 0.65, "mean_confidence": 0.58, "peak_frustration": 0.08, "emotion_trajectory": "stable"
-  }
-}
+- Run-completion status flips: `call_results[i].status` (pipeline-only — judge mission success from the transcript)
+- Latency: `call_results[i].latency.response_time_ms` (mean) or `latency.p95_response_time_ms` increased >20%
+- Tool calls: count of `call_results[i].observed_tool_calls[].successful` dropped
+- Cost: `summary.total_cost_usd` or `call_results[i].call_metadata.cost_usd` increased >30%
+- Transcript: `call_results[i].transcript` diverged in semantic content (ignore STT noise)
 
-Always present: name, status, caller_prompt, duration_ms, error, transcript, tool_calls, warnings, audio_actions. Nullable when analysis didn't run: latency, component_latency, call_metadata, emotion (requires prosody: true), debug (requires --verbose).
+## Reporting Results
 
-### Result presentation
+Before reporting, read the agent's code to locate where the observed behavior originates. If the issue is small and you can fix it, fix it and explain what you did — don't ask permission first.
 
-When you report a conversation result to the user, always include:
+Adapt the report shape to the call — a clean pass needs little, a regression with a multi-layer cause needs more. Use a transcript excerpt when it helps the user see what happened.
 
-1. **Summary** — the overall verdict and the 1-3 most important findings.
-2. **Transcript summary** — a short narrative of what happened in the call.
-3. **Recording URL** — include `call_metadata.recording_url` when present; explicitly say when it is unavailable.
-4. **Next steps** — concrete fixes, follow-up tests, or why no change is needed.
+Hard rules:
 
-Use metrics to support the summary, not as the whole answer. Do not dump raw numbers without interpretation.
+- Pair raw numbers with their plain-English meaning — don't drop the number, but don't leave it unexplained. E.g. "p95 latency was 850ms, which is snappy and well within natural conversational pacing" or "p95 hit 1.6 seconds with the LLM as the bottleneck — noticeably sluggish to a caller."
+- Name the user's voice agent by platform on first mention (e.g. "the Vapi agent responded snappily throughout") so the user knows immediately which agent the observation is about. After that, just say "the agent" — don't repeat the platform name on every line.
+- Always include the recording from `call_metadata.recording_url` as an inline `[Recording](url)` link, placed in **one block at the very end of the report** — never sprinkled through the prose. Single call: one link as the last line. Multi-call: one labeled link per call (e.g. `reschedule-appointment: [Recording](url)`). Never paste a bare URL.
+- Mission success is your judgment, not Vent's. The per-call `status` is only `"completed"` (pipeline ran) or `"error"` (pipeline failed); decide whether the agent actually accomplished the scenario from the transcript and tool calls.
+- Similar-sounding word substitutions (e.g. "ocean" for "OSHA") are STT ambiguity, not comprehension failure. The fix lives in STT keyword hints, custom vocabulary, or a prompt-level term list — not the agent's reasoning.
+- Surface only what the user can act on in their own agent's code or config — never `warnings[]` (infrastructure noise), Vent-side artifacts (caller wait modes, harness timing, internal pipeline quirks), or `cost_usd` unless asked.
 
-When `call_metadata.transfer_attempted` is present, explicitly say whether the transfer only appeared attempted or was mechanically verified as completed (`call_metadata.transfer_completed`). Use `call_metadata.transfers[]` to report transfer type, destination, status, and sources.
-
-### Judging guidance
-
-Use the transcript, metrics, test scenario, and relevant agent instructions/system prompt to judge:
-
-| Dimension | What to check |
-|--------|----------------|
-| **Hallucination detection** | Check whether the agent stated anything not grounded in its instructions, tools, or the conversation itself. |
-| **Instruction following** | Compare the agent's behavior against its system prompt and the test's expected constraints. |
-| **Context retention** | Check whether the agent forgot or contradicted information established earlier in the call. |
-| **Semantic accuracy** | Check whether the agent correctly understood the caller's intent and responded to the real request. |
-| **Goal completion** | Decide whether the agent achieved what the test scenario was designed to verify. |
-| **Transfer correctness** | For transfer scenarios, judge whether transfer was appropriate, whether it completed, whether it went to the expected destination, and whether enough context was passed during the handoff. |
-
-Ignore minor STT mis-transcriptions in `transcript` text (e.g. `"check teach hat"` for `"check that"`, swapped homophones, missing question marks on short tails). These are streaming-STT artifacts, not agent bugs. Judge on semantic intent, not exact spelling. Only flag transcript quality when it prevents understanding what the agent actually said.
-
-### Interruption evaluation
-
-Evaluate interruption handling by reading the transcript and listening to the recording. Flag any turn where the agent ignores a barge-in, repeats itself from scratch, or loses context after being cut off.
-
-| Dimension | How to evaluate |
-|--------|----------------|
-| **Recovery** | After a caller cuts in, does the agent's next reply acknowledge or address the barge-in rather than restarting from scratch? |
-| **Context retention** | After the interruption, does the agent remember pre-interrupt conversation state? |
-| **Overtalk** | Does the agent keep speaking for long after the caller starts, or does it yield promptly? Use the recording to judge. |
-</output_conversation_test>
-</call_config>
-
-
-## Exit Codes
-
-0=pass, 1=fail, 2=error
-
-## Vent Access Token
-
-Set `VENT_ACCESS_TOKEN` env var or run `npx vent-hq login`.
+For multi-call runs, lead with your own judgment of what happened across the calls (e.g. "3 of 4 did what they were supposed to; `cancel-appointment` never actually canceled"), not a parroted pass/fail count. Then cover each call with whatever depth it needs.

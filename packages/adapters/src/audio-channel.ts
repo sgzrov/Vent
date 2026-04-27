@@ -135,6 +135,17 @@ export abstract class BaseAudioChannel extends EventEmitter implements AudioChan
 
   private _recordingCapture = new CallRecordingCapture();
 
+  constructor() {
+    super();
+    // No-op error listener so adapter `emit("error", err)` calls don't crash
+    // the worker process when no caller-side listener is attached. The runner
+    // only attaches a real listener inside collectUntilEndOfTurn — any WS
+    // error between turns (LLM phase, TTS gen, idle) would otherwise hit zero
+    // listeners and Node throws "Unhandled 'error' event" → process exit.
+    // Errors are still recorded in _stats.errorEvents at the emit site.
+    this.on("error", () => {});
+  }
+
   get stats(): ChannelStats {
     return this._stats;
   }

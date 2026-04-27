@@ -8,6 +8,7 @@ declare module "fastify" {
   interface FastifyInstance {
     verifyAccessToken: (request: import("fastify").FastifyRequest, reply: import("fastify").FastifyReply) => Promise<void>;
     verifyAuth: (request: import("fastify").FastifyRequest, reply: import("fastify").FastifyReply) => Promise<void>;
+    verifyAuthAndCsrf: (request: import("fastify").FastifyRequest, reply: import("fastify").FastifyReply) => Promise<void>;
   }
   interface FastifyRequest {
     accessTokenId?: string;
@@ -133,7 +134,7 @@ export const authPlugin = fp(async (app) => {
           // Send refreshed cookie back through the proxy
           reply.header(
             "Set-Cookie",
-            `wos-session=${refreshResult.sealedSession}; Path=/; HttpOnly; Secure; SameSite=Lax`
+            `wos-session=${refreshResult.sealedSession}; Path=/; HttpOnly; Secure; SameSite=Strict`
           );
 
           // Re-authenticate with the fresh session
@@ -159,6 +160,31 @@ export const authPlugin = fp(async (app) => {
     });
   }
 
+  // Allowlist of origins that may make cross-site mutating cookie requests.
+  // Re-derive lazily because DASHBOARD_URL is read at startup in index.ts.
+  const csrfAllowedOrigins = new Set<string>(
+    [process.env["DASHBOARD_URL"], ...(process.env["DASHBOARD_URLS"] ?? "").split(",")]
+      .map((s) => (s ?? "").trim())
+      .filter((s) => s.length > 0),
+  );
+
+  // Stricter than verifyAuth — additionally enforces that cookie-authed
+  // mutating requests come from an allowed Origin. Stops cross-site form
+  // POSTs in the user's browser from triggering state changes (CSRF).
+  // Bearer-token requests skip the Origin check (CLI/server-to-server).
+  async function verifyAuthAndCsrf(request: any, reply: any) {
+    await verifyAuth(request, reply);
+    if (reply.sent) return;
+    if (request.authMethod === "session") {
+      const origin = request.headers["origin"];
+      if (!origin || !csrfAllowedOrigins.has(origin)) {
+        await reply.status(403).send({ error: "CSRF: Origin not allowed for cookie-authed mutation" });
+        return;
+      }
+    }
+  }
+
   app.decorate("verifyAccessToken", verifyAccessToken);
   app.decorate("verifyAuth", verifyAuth);
+  app.decorate("verifyAuthAndCsrf", verifyAuthAndCsrf);
 });

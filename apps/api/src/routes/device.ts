@@ -19,7 +19,9 @@ export async function deviceRoutes(app: FastifyInstance) {
     process.env["DASHBOARD_URL"]!;
 
   // Start a device authorization session (no auth required)
-  app.post("/device/start", async (_request, reply) => {
+  app.post("/device/start", {
+    config: { rateLimit: { max: 20, timeWindow: "5 minutes" } },
+  }, async (_request, reply) => {
     const sessionId = randomBytes(32).toString("hex");
     const userCode = generateUserCode();
     const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
@@ -39,7 +41,10 @@ export async function deviceRoutes(app: FastifyInstance) {
   });
 
   // Poll for authorization result (no auth required)
-  app.post("/device/exchange", async (request, reply) => {
+  app.post("/device/exchange", {
+    // CLI polls every ~2s for up to ~15 min; cap generously but bounded.
+    config: { rateLimit: { max: 600, timeWindow: "5 minutes" } },
+  }, async (request, reply) => {
     const { session_id } = request.body as { session_id?: string };
     if (!session_id) {
       return reply.status(400).send({ error: "session_id is required" });
@@ -67,22 +72,46 @@ export async function deviceRoutes(app: FastifyInstance) {
       return reply.send({ status: "pending" });
     }
 
-    // Approved — deliver the access token and consume the session
-    await app.db
+    // Approved — atomically consume the session and capture the token. The
+    // UPDATE … WHERE consumed_at IS NULL RETURNING guarantees only one
+    // concurrent /device/exchange poll claims the token; the loser sees
+    // an empty rowcount and reports "consumed" instead of leaking a
+    // duplicate token to a second client.
+    const claimed = await app.db
       .update(schema.deviceSessions)
       .set({ consumed_at: new Date(), raw_access_token: null })
-      .where(eq(schema.deviceSessions.id, session.id));
+      .where(
+        and(
+          eq(schema.deviceSessions.id, session.id),
+          isNull(schema.deviceSessions.consumed_at),
+        ),
+      )
+      .returning({ token: schema.deviceSessions.raw_access_token });
 
+    if (claimed.length === 0) {
+      return reply.send({ status: "consumed" });
+    }
+
+    // The UPDATE returns the row's value AFTER the SET, which is null. Use
+    // the token we read pre-UPDATE — safe because the row lock guaranteed
+    // we're the one who claimed it.
     return reply.send({
       status: "approved",
       access_token: session.raw_access_token,
     });
   });
 
-  // Approve a device session (authenticated — called by dashboard)
-  const authPreHandler = { preHandler: app.verifyAuth };
+  // Approve a device session (authenticated — called by dashboard, so cookie-
+  // authed; CSRF Origin check applies in addition to auth).
+  const mutatingPreHandler = { preHandler: app.verifyAuthAndCsrf };
 
-  app.post("/device/approve", authPreHandler, async (request, reply) => {
+  app.post("/device/approve", {
+    ...mutatingPreHandler,
+    // Tight cap because user_code is only ~39 bits of entropy. With 10
+    // attempts per 5 min per authed user (and a 15-min code TTL), brute-
+    // forcing any pending session is infeasible.
+    config: { rateLimit: { max: 10, timeWindow: "5 minutes" } },
+  }, async (request, reply) => {
     const { user_code } = request.body as { user_code?: string };
     if (!user_code) {
       return reply.status(400).send({ error: "user_code is required" });

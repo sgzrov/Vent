@@ -33,6 +33,10 @@ export async function transcribe(
     let response;
     try {
       response = await deepgram.listen.prerecorded.transcribeFile(audio, {
+        // Pin model so batch transcripts are consistent with streaming
+        // (StreamingTranscriber defaults to nova-3). Without this, batch
+        // calls fall back to the Deepgram account default which can drift.
+        model: "nova-3",
         encoding: "linear16",
         sample_rate: sampleRate,
         channels: 1,

@@ -33,23 +33,6 @@ async function installClaudeCode(cwd: string): Promise<void> {
   await fs.mkdir(dir, { recursive: true });
   await fs.writeFile(path.join(dir, "SKILL.md"), claudeCodeSkill);
   printSuccess("Claude Code: .claude/skills/vent/SKILL.md", { force: true });
-
-  // Auto-approve vent-hq Bash commands so parallel tool calls work.
-  // Claude Code only parallelizes Bash when permissionCheck().behavior === "allow".
-  const settingsPath = path.join(cwd, ".claude", "settings.json");
-  const ventPermission = "Bash(npx vent-hq *)";
-  let settings: { permissions?: { allow?: string[] } };
-  try {
-    settings = JSON.parse(await fs.readFile(settingsPath, "utf-8"));
-  } catch {
-    settings = {};
-  }
-  const allow = settings.permissions?.allow ?? [];
-  if (!allow.includes(ventPermission)) {
-    settings.permissions = { ...settings.permissions, allow: [...allow, ventPermission] };
-    await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2) + "\n");
-    printSuccess("Claude Code: .claude/settings.json (auto-approve vent-hq commands)", { force: true });
-  }
 }
 
 async function installCursor(cwd: string): Promise<void> {
@@ -59,7 +42,10 @@ async function installCursor(cwd: string): Promise<void> {
   printSuccess("Cursor: .cursor/rules/vent.mdc", { force: true });
 }
 
-const VENT_MARKER = "# Vent — Voice Agent Calls";
+const VENT_MARKERS = [
+  "# Vent - Voice Agent Calls",
+  "# Vent — Voice Agent Calls",
+];
 
 async function installCodex(cwd: string): Promise<void> {
   const filePath = path.join(cwd, "AGENTS.md");
@@ -71,10 +57,14 @@ async function installCodex(cwd: string): Promise<void> {
     // file doesn't exist yet
   }
 
-  if (existing.includes(VENT_MARKER)) {
+  const markerIndex = VENT_MARKERS
+    .map((marker) => existing.indexOf(marker))
+    .filter((idx) => idx >= 0)
+    .sort((a, b) => a - b)[0];
+
+  if (markerIndex != null) {
     // Replace everything from the Vent heading to end of file
-    const idx = existing.indexOf(VENT_MARKER);
-    await fs.writeFile(filePath, existing.slice(0, idx).trimEnd() + "\n\n" + codexSkill + "\n");
+    await fs.writeFile(filePath, existing.slice(0, markerIndex).trimEnd() + "\n\n" + codexSkill + "\n");
   } else if (existing) {
     // Append to existing AGENTS.md
     await fs.writeFile(filePath, existing.trimEnd() + "\n\n" + codexSkill + "\n");
