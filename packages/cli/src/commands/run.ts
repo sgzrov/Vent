@@ -1,9 +1,9 @@
 import * as fs from "node:fs/promises";
+import type { PlatformConfig } from "@vent/shared";
 import { apiFetch, ApiError, ensurePlatformConnection } from "../lib/api.js";
-import { deviceAuthFlow } from "../lib/auth.js";
 import { streamRunEvents } from "../lib/sse.js";
 import { printEvent, printError, printInfo, printSummary, printWarn, debug } from "../lib/output.js";
-import { loadAccessToken, saveAccessToken } from "../lib/config.js";
+import { loadAccessToken } from "../lib/config.js";
 import { saveRunHistory } from "../lib/run-history.js";
 import { resolveRemotePlatformConfig } from "../lib/platform-connections.js";
 import type { SSEEvent } from "../lib/sse.js";
@@ -78,7 +78,7 @@ export async function runCommand(args: RunArgs): Promise<number> {
 
   // 2b. Resolve remote platform credentials from local env and keep them local to the CLI.
   // The CLI will upsert a saved platform connection and submit only the resulting ID.
-  let resolvedRemotePlatform = null;
+  let resolvedRemotePlatform: PlatformConfig | null = null;
   try {
     resolvedRemotePlatform = resolveRemotePlatformConfig(config);
   } catch (err) {
@@ -151,39 +151,13 @@ export async function runCommand(args: RunArgs): Promise<number> {
   try {
     submitResult = await submitPrepared(activeAccessToken);
   } catch (err) {
-    // Auto-trigger login when anonymous run limit is hit
-    if (err instanceof ApiError && err.status === 403) {
-      const body = err.body as { code?: string } | undefined;
-      if (body?.code === "USAGE_LIMIT") {
-        printInfo(
-          "To prevent abuse, we require a verified account after 10 runs. Opening browser to sign in...",
-          { force: true },
-        );
-        const authResult = await deviceAuthFlow();
-        if (!authResult.ok) {
-          printError("Authentication failed. Run `npx vent-hq login` manually.");
-          return 1;
-        }
-        activeAccessToken = authResult.accessToken;
-        await saveAccessToken(activeAccessToken);
-        printInfo("Authenticated! Retrying run submission...", { force: true });
-        try {
-          submitResult = await submitPrepared(activeAccessToken);
-        } catch (retryErr) {
-          debug(`retry submit error: ${(retryErr as Error).message}`);
-          printError(`Submit failed after login: ${(retryErr as Error).message}`);
-          return 2;
-        }
-      } else {
-        debug(`submit error: ${(err as Error).message}`);
-        printError(`Submit failed: ${(err as Error).message}`);
-        return 2;
-      }
-    } else {
-      debug(`submit error: ${(err as Error).message}`);
-      printError(`Submit failed: ${(err as Error).message}`);
-      return 2;
+    debug(`submit error: ${(err as Error).message}`);
+    if (err instanceof ApiError && err.status === 401) {
+      printError("Access token rejected. Run `npx vent-hq login` to re-authenticate.");
+      return 1;
     }
+    printError(`Submit failed: ${(err as Error).message}`);
+    return 2;
   }
 
   const { run_id } = submitResult;
@@ -203,8 +177,27 @@ export async function runCommand(args: RunArgs): Promise<number> {
   const callResults: SSEEvent[] = [];
   let runCompleteData: Record<string, unknown> | null = null;
 
+  // Fire-and-forget cancel POST when the user hits Ctrl+C / receives SIGTERM.
+  // Without this, aborting the SSE stream leaves the worker running the call
+  // to completion — the platform keeps billing for a call no one is listening
+  // to. Best-effort: 5s timeout, errors swallowed; if the stop POST fails the
+  // stuck-run cleanup eventually catches it (much later, after the call ends).
+  let stopRequested = false;
+  // Tracked so we can `await` the stop POST before process.exit. Without this,
+  // the SSE abort + immediate exit may kill the request before the TCP
+  // handshake completes, leaving the worker running and the platform billing.
+  let stopPromise: Promise<unknown> | null = null;
   const onSignal = () => {
-    debug("received SIGINT/SIGTERM — aborting stream");
+    debug("received SIGINT/SIGTERM — requesting cancel and aborting stream");
+    if (!stopRequested) {
+      stopRequested = true;
+      stopPromise = apiFetch(`/runs/${run_id}/stop`, activeAccessToken, {
+        method: "POST",
+        signal: AbortSignal.timeout(5_000),
+      }).catch((err: unknown) => {
+        debug(`stop POST failed: ${(err as Error).message}`);
+      });
+    }
     abortController.abort();
   };
   process.on("SIGINT", onSignal);
@@ -225,9 +218,18 @@ export async function runCommand(args: RunArgs): Promise<number> {
 
       if (event.event_type === "run_complete") {
         runCompleteData = meta;
-        const status = meta.status as string | undefined;
-        exitCode = status === "pass" ? 0 : 1;
-        debug(`run_complete: status=${status} exitCode=${exitCode}`);
+        // Exit code reflects pipeline completion only, not mission success.
+        // 0 = every call ran end-to-end through the pipeline; 1 = at least
+        // one call errored at the pipeline level; 2 = harness error (set
+        // elsewhere). Mission success is the coding agent's judgment from
+        // the transcript — not something Vent claims to know.
+        const anyCallErrored = callResults.some((e) => {
+          const callMeta = (e.metadata_json ?? {}) as Record<string, unknown>;
+          const callStatus = callMeta["status"];
+          return callStatus === "error";
+        });
+        exitCode = anyCallErrored ? 1 : 0;
+        debug(`run_complete: anyCallErrored=${anyCallErrored} exitCode=${exitCode}`);
       }
 
       if (event.event_type === "error") {
@@ -287,6 +289,14 @@ export async function runCommand(args: RunArgs): Promise<number> {
   }
 
   debug(`exiting with code ${exitCode}`);
+
+  // If a SIGINT/SIGTERM kicked off a stop POST, wait for it to finish
+  // (or its 5s timeout to fire) before exiting. Without this `await`,
+  // process.exit can race the in-flight TCP handshake and the stop is
+  // never sent — worker keeps running, platform keeps billing.
+  if (stopPromise) {
+    await stopPromise;
+  }
 
   // Force exit — the fetch TCP socket from the SSE stream keeps the event loop
   // alive indefinitely. Without this, the process hangs after calls complete,

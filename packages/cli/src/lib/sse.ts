@@ -80,7 +80,7 @@ export async function* streamRunEvents(
 
     try {
       while (true) {
-        let readResult: ReadableStreamReadResult<Uint8Array>;
+        let readResult: { done: boolean; value?: Uint8Array };
         try {
           readResult = await reader.read();
         } catch (err) {

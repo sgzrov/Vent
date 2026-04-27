@@ -26,7 +26,7 @@ export async function deviceAuthFlow(): Promise<AuthResult> {
     if (!res.ok) {
       return { ok: false, error: `Failed to start device auth: ${res.status}` };
     }
-    startData = await res.json();
+    startData = (await res.json()) as typeof startData;
   } catch {
     return { ok: false, error: "Could not reach Vent API. Check your connection." };
   }
@@ -52,7 +52,10 @@ export async function deviceAuthFlow(): Promise<AuthResult> {
 
       if (!res.ok) continue;
 
-      const data = await res.json();
+      const data = (await res.json()) as {
+        status?: "pending" | "approved" | "expired" | "consumed" | "invalid";
+        access_token?: string;
+      };
 
       const accessToken = data.access_token;
       if (data.status === "approved" && accessToken) {
