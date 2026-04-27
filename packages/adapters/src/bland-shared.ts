@@ -365,11 +365,22 @@ export function buildBlandCallMetadata(
         ? data.call_length * 60
         : undefined;
 
+  // Bland's GET /v1/calls/{id} response doesn't include a cost field —
+  // billing is dashboard-only. Estimate from duration × Bland's documented
+  // connected-call rate ($0.09/min). This is a heuristic: actual charges
+  // depend on the account plan and may include additional charges (voicemail,
+  // unanswered attempt fees, etc.). Rounded to 4 decimals (≈ tenth of a cent).
+  const BLAND_PRICE_PER_MIN_USD = 0.09;
+  const cost_usd =
+    durationS != null
+      ? Math.round((durationS / 60) * BLAND_PRICE_PER_MIN_USD * 10_000) / 10_000
+      : undefined;
+
   return {
     platform: "bland",
     provider_call_id: data.call_id ?? callId ?? undefined,
     ended_reason: buildBlandEndedReason(data),
-    cost_usd: data.price,
+    cost_usd,
     recording_url: data.recording_url ?? undefined,
     variables: data.variables,
     provider_warnings: data.error_message ? [{ message: data.error_message, code: "provider_error" }] : undefined,
