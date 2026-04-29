@@ -114,7 +114,7 @@ const LiveKitPlatformSchema = BasePlatformSchema.extend({
   livekit_api_secret: z.string().optional(),
   livekit_url: z.string().optional(),
   livekit_agent_name: z.string().optional(),
-});
+}).strict();
 
 const VapiPlatformSchema = BasePlatformSchema.extend({
   provider: z.literal("vapi"),
