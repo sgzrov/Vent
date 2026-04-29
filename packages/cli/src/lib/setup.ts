@@ -8,6 +8,8 @@ import claudeCodeSkill from "../skills/claude-code.md";
 import cursorSkill from "../skills/cursor.md";
 // @ts-ignore
 import codexSkill from "../skills/codex.md";
+// @ts-ignore
+import windsurfSkill from "../skills/windsurf.md";
 
 export const SUITE_SCAFFOLD = JSON.stringify(
   {
@@ -40,6 +42,13 @@ async function installCursor(cwd: string): Promise<void> {
   await fs.mkdir(dir, { recursive: true });
   await fs.writeFile(path.join(dir, "vent.mdc"), cursorSkill);
   printSuccess("Cursor: .cursor/rules/vent.mdc", { force: true });
+}
+
+async function installWindsurf(cwd: string): Promise<void> {
+  const dir = path.join(cwd, ".windsurf", "skills", "vent");
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, "SKILL.md"), windsurfSkill);
+  printSuccess("Windsurf: .windsurf/skills/vent/SKILL.md", { force: true });
 }
 
 const VENT_MARKERS = [
@@ -85,6 +94,7 @@ export async function installSkillsAndScaffold(cwd: string): Promise<void> {
   await installClaudeCode(cwd);
   await installCursor(cwd);
   await installCodex(cwd);
+  await installWindsurf(cwd);
 
   // Scaffold .vent/suite.json if missing
   const suitePath = path.join(cwd, ".vent", "suite.json");
