@@ -12,7 +12,7 @@
 </p>
 
 <p align="center">
-  <img src=".github/vent-demo.gif" alt="Vent demo" />
+  <img src=".github/screenshot.png" alt="Vent screenshot" />
 </p>
 
 ---
