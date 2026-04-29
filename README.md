@@ -8,9 +8,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/vent-hq/vent/stargazers"><img src="https://img.shields.io/github/stars/vent-hq/vent" alt="GitHub stars" /></a>
-  <a href="https://www.npmjs.com/package/vent-hq"><img src="https://img.shields.io/npm/v/vent-hq" alt="npm" /></a>
-  <a href="https://github.com/vent-hq/vent/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="License" /></a>
+  <a href="https://github.com/sgzrov/Vent/stargazers"><img src="https://img.shields.io/github/stars/sgzrov/Vent?style=flat&labelColor=4A4A4A&color=3B82F6" alt="GitHub stars" /></a>
+  <a href="https://www.npmjs.com/package/vent-hq"><img src="https://img.shields.io/npm/v/vent-hq?style=flat&labelColor=4A4A4A&color=A4D60E" alt="npm" /></a>
+  <a href="https://github.com/sgzrov/Vent/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-3B82F6?style=flat&labelColor=4A4A4A" alt="License" /></a>
 </p>
 
 ---
