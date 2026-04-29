@@ -1,18 +1,15 @@
 <p align="center">
-  <img src=".github/logo.png" alt="Vent" width="80" />
+  <img src=".github/logo.png" alt="Vent" width="56" />
 </p>
 
 <p align="center">
-  <strong>Agent CLI for voice AI development</strong>
+  Agent CLI for voice AI development.<br />
+  Your coding agent places real calls and verifies them autonomously.
 </p>
 
 <p align="center">
   <a href="https://www.npmjs.com/package/vent-hq"><img src="https://img.shields.io/npm/v/vent-hq" alt="npm" /></a>
   <a href="https://github.com/vent-hq/vent/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="License" /></a>
-</p>
-
-<p align="center">
-  <img src=".github/screenshot.png" alt="Vent screenshot" />
 </p>
 
 ---
