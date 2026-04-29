@@ -1,6 +1,6 @@
 # vent-hq
 
-**Agent CLI for voice AI development.** Lets coding agents (Claude Code, Cursor, Codex) place real calls against your voice agent and read back transcripts, latency, audio, tool calls, and 60+ computed metrics — so they can iterate on prompts, flows, and platform config based on what actually happened.
+**Agent CLI for voice AI development.** Lets coding agents (Claude Code, Cursor, Codex, Windsurf) place real calls against your voice agent and read back transcripts, latency, audio, tool calls, and 60+ computed metrics — so they can iterate on prompts, flows, and platform config based on what actually happened.
 
 Works with **Vapi, Retell, LiveKit, ElevenLabs, Bland, and custom WebSocket endpoints**.
 
@@ -24,7 +24,7 @@ npx vent-hq@latest init
 
 `init` will:
 - Authenticate via GitHub (if you have `gh` installed) or open a browser for device-code auth
-- Install skill files for Claude Code (`.claude/skills/vent/SKILL.md`), Cursor (`.cursor/rules/vent.mdc`), and Codex (`AGENTS.md`)
+- Install skill files for Claude Code (`.claude/skills/vent/SKILL.md`), Cursor (`.cursor/rules/vent.mdc`), Codex (`AGENTS.md`), and Windsurf (`.windsurf/skills/vent/SKILL.md`)
 - Scaffold a starter suite at `.vent/suite.json`
 
 After `init`, your coding agent reads the skill file and takes over from there.
