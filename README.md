@@ -75,7 +75,9 @@ Hosted only. Set your API key and agent/assistant ID, save as a platform connect
 
 Test local agents in dev mode or deployed agents on LiveKit Cloud — same config, different `LIVEKIT_URL`. Target a specific agent with `livekit_agent_name`.
 
-Since LiveKit does not forward events natively, install our first-class instrumentation libraries — [`@vent-hq/livekit`](https://www.npmjs.com/package/@vent-hq/livekit) (Node) or [`vent-livekit`](https://pypi.org/project/vent-livekit/) (Python). One line:
+Since LiveKit does not forward events natively, install our first-class instrumentation libraries — [`@vent-hq/livekit`](https://www.npmjs.com/package/@vent-hq/livekit) (Node) or [`vent-livekit`](https://pypi.org/project/vent-livekit/) (Python).
+
+One line:
 
 ```ts
 const vent = instrumentLiveKitAgent({ ctx, session });
@@ -85,7 +87,7 @@ const vent = instrumentLiveKitAgent({ ctx, session });
 vent = instrument_livekit_agent(ctx=ctx, session=session)
 ```
 
-Both packages hook the LiveKit Agents `AgentSession` lifecycle (`metrics_collected`, `function_tools_executed`, `conversation_item_added`, `user_input_transcribed`, `session_usage_updated`, `close`) and publish to 10 dedicated DataChannel topics (`vent:call-metadata`, `vent:debug-url`, `vent:warning`, `vent:metrics`, `vent:tool-calls`, `vent:transfer`, `vent:conversation-item`, `vent:user-input-transcribed`, `vent:session-usage`, `vent:session-report`). Session report auto-publishes on `session.close` — the last safe window before `room.disconnect`. Without the instrumentation, Vent still captures agent state transitions and transcripts directly from the Agents SDK.
+Both packages hook the LiveKit Agents `AgentSession` lifecycle (`metrics_collected`, `function_tools_executed`, `conversation_item_added`, `user_input_transcribed`, `session_usage_updated`, `close`) and publish to 10 dedicated Vent DataChannel topics. Session report auto-publishes on `session.close` — the last safe window before `room.disconnect`. Without the instrumentation, Vent still captures agent state transitions and transcripts directly from the Agents SDK.
 
 #### Bland
 
