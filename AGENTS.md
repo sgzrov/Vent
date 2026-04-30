@@ -112,7 +112,7 @@ Each `vent run` executes a single call. Run N calls in parallel via separate she
 - `WORKER_METRICS_PORT` — Optional internal Prometheus scrape port for worker metrics (default `9091`)
 - `WORKOS_API_KEY`, `WORKOS_CLIENT_ID`, `WORKOS_COOKIE_PASSWORD` — WorkOS auth
 - `PLATFORM_CONNECTIONS_MASTER_KEY` — 32-byte hex key for encrypting platform credentials (`openssl rand -hex 32`)
-- `ANTHROPIC_API_KEY`, `DEEPGRAM_API_KEY`, `HUME_API_KEY` — AI/voice providers
+- `ANTHROPIC_API_KEY`, `DEEPGRAM_API_KEY` — AI/voice providers
 - `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_ENDPOINT`, `S3_BUCKET`, `S3_REGION` — Cloudflare R2
 
 ## Code Style

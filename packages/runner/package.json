@@ -16,8 +16,7 @@
     "@vent/adapters": "workspace:*",
     "@vent/artifacts": "workspace:*",
     "@vent/shared": "workspace:*",
-    "@vent/voice": "workspace:*",
-    "hume": "^0.15.15"
+    "@vent/voice": "workspace:*"
   },
   "devDependencies": {
     "typescript": "catalog:"

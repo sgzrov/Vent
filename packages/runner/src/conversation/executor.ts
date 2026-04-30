@@ -7,7 +7,7 @@
  * 3. Collect agent audio (VAD for end-of-turn)
  * 4. STT → text back to caller LLM
  * 5. Repeat until max_turns or the caller decides the conversation is over
- * 6. Compute metrics (latency, audio, tool calls, prosody)
+ * 6. Compute metrics (latency, audio, tool calls)
  */
 
 import type { AudioChannel } from "@vent/adapters";
@@ -27,7 +27,6 @@ import { synthesize, TTSSession, BatchVAD, VoiceActivityDetector, StreamingTrans
 import { CallerLLM } from "./caller-llm.js";
 import { collectUntilEndOfTurn, linearRegressionSlope } from "../audio-tests/helpers.js";
 import { computeAllMetrics } from "../metrics/index.js";
-import { analyzeProsody } from "../metrics/prosody.js";
 import { AdaptiveThreshold } from "./adaptive-threshold.js";
 
 function summarizeDebugText(text: string | null | undefined, maxChars = 96): string {
@@ -172,7 +171,6 @@ export async function runConversationCall(
     return remainingMs == null || remainingMs > minimumMs;
   };
 
-  const agentAudioBuffers: Buffer[] = [];
   const turnSignalQualities: AudioQualityMetrics[] = [];
   let agentText: string | null = null;
 
@@ -256,12 +254,6 @@ export async function runConversationCall(
     if (callMetadata) {
       console.log(`    Call metadata: ended_reason=${callMetadata.ended_reason ?? "unknown"}, cost=$${callMetadata.cost_usd?.toFixed(4) ?? "n/a"}`);
     }
-
-    // Prosody (only attempt on completed calls; partial buffers can analyze
-    // but the result is meaningless without a full conversation).
-    const prosodyResult = finalStatus === "completed" && spec.prosody
-      ? await safeAsync(() => analyzeProsody(agentAudioBuffers), null, "analyzeProsody")
-      : null;
 
     // Mean ttfb / ttfw — required field, fall back to 0.
     const meanTtfb = ttfbValues.length > 0
@@ -389,7 +381,6 @@ export async function runConversationCall(
       latency: latencyResult.latency,
       signal_quality: signalQuality,
       tool_calls: toolCallMetrics,
-      prosody: prosodyResult?.metrics,
       harness_overhead: latencyResult.harness_overhead,
       component_latency: componentLatencyMetrics,
     };
@@ -474,7 +465,6 @@ export async function runConversationCall(
           const agentTimestamp = performance.now() - startTime;
           const audioDurationMs = Math.round((agentAudio.length / 2 / 24000) * 1000);
           const speechSegments = batchVAD.analyze(agentAudio);
-          if (spec.prosody) agentAudioBuffers.push(Buffer.from(agentAudio));
           turnSignalQualities.push(analyzeAudioQuality(agentAudio, speechSegments));
           transcript.push({
             role: "agent",
@@ -652,7 +642,6 @@ export async function runConversationCall(
             (agentAudio.length / 2 / 24000) * 1000
           );
           const speechSegments = batchVAD.analyze(agentAudio);
-          if (spec.prosody) agentAudioBuffers.push(Buffer.from(agentAudio));
           turnSignalQualities.push(analyzeAudioQuality(agentAudio, speechSegments));
 
           transcript.push({
@@ -868,7 +857,6 @@ export async function runConversationCall(
 
         // Batch VAD on agent audio for speech/silence segmentation
         const speechSegments = batchVAD.analyze(agentAudio);
-        if (spec.prosody) agentAudioBuffers.push(Buffer.from(agentAudio));
         // Signal quality analysis on raw audio buffer
         turnSignalQualities.push(analyzeAudioQuality(agentAudio, speechSegments));
 

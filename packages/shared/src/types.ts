@@ -44,8 +44,6 @@ export interface ConversationCallSpec {
 
   silence_threshold_ms?: number;
   persona?: CallerPersona;
-  /** Opt-in: run Hume prosody analysis on agent audio (requires HUME_API_KEY) */
-  prosody?: boolean;
   /** Global audio effects applied to all caller audio (speakerphone, speed, noise, accent, etc.) */
   caller_audio?: CallerAudioEffects;
   /** ISO 639-1 language code for multilingual calls (e.g., "es", "fr", "de"). Caller speaks this language, STT transcribes it, judge evaluates in it. */
@@ -192,47 +190,6 @@ export interface RunPlatformSummary {
   platform: PlatformSummary | null;
 }
 
-
-// ============================================================
-// Prosody analysis types (Hume Expression Measurement)
-// ============================================================
-
-/** Per-turn emotional profile from Hume prosody analysis */
-export interface TurnEmotionProfile {
-  turn_index: number;
-  /** Full emotion distribution — all 48 Hume emotions with scores (0-1) */
-  emotions: Record<string, number>;
-  /** Composite: avg(Calmness, Contentment) */
-  calmness: number;
-  /** Composite: avg(Confidence, Determination) */
-  confidence: number;
-  /** Composite: avg(Anger, Annoyance, Contempt) */
-  frustration: number;
-  /** Composite: avg(Sympathy, Care) */
-  warmth: number;
-  /** Composite: avg(Confusion, Doubt, Anxiety) */
-  uncertainty: number;
-}
-
-/** Aggregate prosody metrics for a full conversation */
-export interface ProsodyMetrics {
-  /** Per-turn emotional profiles (agent turns only) */
-  per_turn: TurnEmotionProfile[];
-  /** Mean calmness across all agent turns (0-1) */
-  mean_calmness: number;
-  /** Mean confidence across all agent turns (0-1) */
-  mean_confidence: number;
-  /** Max frustration score seen in any single turn (0-1) */
-  peak_frustration: number;
-  /** Std dev of dominant emotion scores — high = consistent voice (0-1) */
-  emotion_consistency: number;
-  /** Composite: calmness + confidence + consistency - frustration (0-1) */
-  naturalness: number;
-  /** Direction of emotional shift across the conversation */
-  emotion_trajectory: "stable" | "improving" | "degrading" | "volatile";
-  /** Hume job processing time (ms) — infrastructure overhead */
-  hume_latency_ms: number;
-}
 
 export interface CallSpec {
   call: ConversationCallSpec;
@@ -421,7 +378,6 @@ export interface ConversationMetrics {
   tool_calls?: ToolCallMetrics;
   /** Raw audio signal quality (SNR, clipping, energy, F0) — aggregated across turns */
   signal_quality?: SignalQualityMetrics;
-  prosody?: ProsodyMetrics;
   harness_overhead?: HarnessOverhead;
   /** Per-component latency breakdown (STT/LLM/TTS) from platform events */
   component_latency?: ComponentLatencyMetrics;

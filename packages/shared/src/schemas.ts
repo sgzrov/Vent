@@ -36,7 +36,6 @@ export const ConversationCallSpecSchema = z.object({
 
   silence_threshold_ms: z.number().int().min(200).max(10000).optional(),
   persona: CallerPersonaSchema,
-  prosody: z.boolean().optional(),
   caller_audio: CallerAudioEffectsSchema.optional(),
   /** ISO 639-1 language code for multilingual calls (e.g., "es", "fr", "de"). Caller speaks this language, STT transcribes it, judge evaluates in it. */
   language: z.string().min(2).max(5).optional(),
@@ -203,27 +202,6 @@ export const LatencyMetricsSchema = z.object({
 });
 
 
-export const TurnEmotionProfileSchema = z.object({
-  turn_index: z.number().int().min(0),
-  emotions: z.record(z.string(), z.number()),
-  calmness: z.number(),
-  confidence: z.number(),
-  frustration: z.number(),
-  warmth: z.number(),
-  uncertainty: z.number(),
-});
-
-export const ProsodyMetricsSchema = z.object({
-  per_turn: z.array(TurnEmotionProfileSchema),
-  mean_calmness: z.number(),
-  mean_confidence: z.number(),
-  peak_frustration: z.number(),
-  emotion_consistency: z.number(),
-  naturalness: z.number(),
-  emotion_trajectory: z.enum(["stable", "improving", "degrading", "volatile"]),
-  hume_latency_ms: z.number(),
-});
-
 export const HarnessOverheadSchema = z.object({
   tts_per_turn_ms: z.array(z.number()),
   stt_per_turn_ms: z.array(z.number()),
@@ -314,7 +292,6 @@ export const ConversationMetricsSchema = z.object({
   latency: LatencyMetricsSchema.optional(),
   tool_calls: ToolCallMetricsSchema.optional(),
   signal_quality: SignalQualityMetricsSchema.optional(),
-  prosody: ProsodyMetricsSchema.optional(),
   harness_overhead: HarnessOverheadSchema.optional(),
   component_latency: ComponentLatencyMetricsSchema.optional(),
 });
