@@ -27,4 +27,3 @@ export async function computeAllMetrics(
 }
 
 export { computeLatencyMetrics, computeHarnessOverhead } from "./latency.js";
-export { analyzeProsody } from "./prosody.js";

@@ -12,7 +12,6 @@ import type {
   ConversationTurn,
   ObservedToolCall,
   LatencyMetrics,
-  ProsodyMetrics,
   ToolCallMetrics,
   CallMetadata,
   CallTransfer,
@@ -82,15 +81,6 @@ interface FormattedToolCalls {
   }>;
 }
 
-interface FormattedEmotion {
-  naturalness: number;
-  mean_calmness: number;
-  mean_confidence: number;
-  peak_frustration: number;
-  emotion_trajectory: "stable" | "improving" | "degrading" | "volatile";
-}
-
-
 interface FormattedComponentLatency {
   mean_stt_ms?: number;
   mean_llm_ms?: number;
@@ -138,7 +128,6 @@ interface FormattedDebugToolCall {
 interface FormattedConversationDebug {
   signal_quality?: SignalQualityMetrics;
   harness_overhead?: HarnessOverhead;
-  prosody?: ProsodyMetrics;
   provider_warnings?: ProviderWarning[];
   component_latency_per_turn?: ComponentLatency[];
   observed_tool_calls?: FormattedDebugToolCall[];
@@ -157,7 +146,6 @@ export interface FormattedConversationResult {
   call_metadata: FormattedCallMetadata | null;
   // Optional in default mode: omitted when empty/null.
   warnings?: string[];
-  emotion?: FormattedEmotion;
   caller_prompt?: string;
   debug?: FormattedConversationDebug;
 }
@@ -182,7 +170,6 @@ export function formatConversationResult(
   const warnings = dedupeStrings([
     ...formatProviderWarningMessages(r.call_metadata?.provider_warnings),
   ]);
-  const emotion = r.metrics?.prosody ? formatEmotion(r.metrics.prosody) : null;
 
   const result: FormattedConversationResult = {
     name: r.name ?? null,
@@ -197,7 +184,6 @@ export function formatConversationResult(
   };
 
   if (warnings.length > 0) result.warnings = warnings;
-  if (emotion) result.emotion = emotion;
   if (verbose) result.caller_prompt = r.caller_prompt;
   if (debug) result.debug = debug;
 
@@ -348,16 +334,6 @@ function stripExecutionMessage(args: Record<string, unknown>): Record<string, un
   return rest;
 }
 
-function formatEmotion(prosody: ProsodyMetrics): FormattedEmotion {
-  return {
-    naturalness: prosody.naturalness,
-    mean_calmness: prosody.mean_calmness,
-    mean_confidence: prosody.mean_confidence,
-    peak_frustration: prosody.peak_frustration,
-    emotion_trajectory: prosody.emotion_trajectory,
-  };
-}
-
 function formatComponentLatency(cl: ComponentLatencyMetrics | undefined, verbose: boolean): FormattedComponentLatency | null {
   if (!cl) return null;
   const result: FormattedComponentLatency = {
@@ -430,7 +406,6 @@ function formatDebug(result: ConversationCallResult): FormattedConversationDebug
   const debug = compactUnknownRecord({
     signal_quality: result.metrics?.signal_quality,
     harness_overhead: result.metrics?.harness_overhead,
-    prosody: result.metrics?.prosody,
     provider_warnings: nonEmptyArray(result.call_metadata?.provider_warnings),
     component_latency_per_turn: nonEmptyArray(result.metrics?.component_latency?.per_turn),
     observed_tool_calls: formatDebugToolCalls(result.observed_tool_calls),

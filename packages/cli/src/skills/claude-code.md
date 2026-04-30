@@ -133,7 +133,6 @@ Call fields:
 - `caller_audio` supports noise, speed, speakerphone, mic distance, clarity, accent, packet loss, and jitter.
 - `language` is an ISO 639-1 code such as `en`, `es`, `fr`, `de`, `it`, `nl`, or `ja`.
 - `voice` is `"male"` or `"female"` (English only; default female). Use to flip the caller's perceived gender. Ignored if `caller_audio.accent` is set or `language` is non-English.
-- `prosody: true` enables emotion analysis and requires Hume access.
 
 ## Connections and Credentials
 

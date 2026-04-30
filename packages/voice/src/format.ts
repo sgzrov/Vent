@@ -38,7 +38,6 @@ export function resample(
 
 /**
  * Wrap raw PCM 16-bit signed mono data in a WAV container.
- * Required for APIs (like Hume) that don't accept raw PCM.
  */
 export function pcmToWav(pcm: Buffer, sampleRate = 24000): Buffer {
   const numChannels = 1;
