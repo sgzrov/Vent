@@ -13,6 +13,10 @@
   <a href="https://github.com/sgzrov/Vent/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-3B82F6?style=flat&labelColor=4A4A4A" alt="License" /></a>
 </p>
 
+<p align="center">
+  See our launch on <a href="https://x.com/stephangazarov/status/2050108082798420402?s=20">X</a>!
+</p>
+
 ---
 
 ### What is Vent?
