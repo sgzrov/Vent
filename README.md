@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  See our launch on <a href="https://x.com/stephangazarov/status/2050108082798420402?s=20">X</a>!
+  See our launch on <a href="https://x.com/stephangazarov/status/2050137498735747473?s=20">X</a>!
 </p>
 
 ---
